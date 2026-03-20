@@ -559,7 +559,7 @@ const $ = (s, p) => (p || document).querySelector(s);
 const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
 
 // ── Version ──
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 
 (async function checkVersion() {
   try {
@@ -802,6 +802,11 @@ $('#micBtn').addEventListener('click', async () => {
     return;
   }
   if (micState === 'identifying') return;
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('Microphone access requires HTTPS. Please access the app via https://');
+    return;
+  }
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
