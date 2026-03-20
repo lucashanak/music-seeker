@@ -12,9 +12,10 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 - **Two download methods:**
   - **spotDL** — Direct download in FLAC or MP3 (runs as a sidecar Docker container)
   - **Lidarr** — Torrent-based downloads with automatic artist monitoring
-- **Shazam Recognition** — Identify songs via your microphone, then download them instantly
-- **Spotify Playlists** — Browse your Spotify playlists and download individual tracks or full playlists
-- **Library Detection** — Shows "In Library" badge for tracks already in your Navidrome collection
+- **Song Recognition** — Identify songs via your microphone using Shazam, with AcoustID fingerprinting as fallback, then download them instantly
+- **Spotify Playlists** — Browse your Spotify playlists and download individual tracks or full playlists with automatic Navidrome playlist creation
+- **Smart Downloads** — Checks your Navidrome library before downloading and skips tracks you already have
+- **Library Detection** — Shows "In Library" badge for tracks already in your Navidrome collection (fuzzy matching handles remasters, feat. tags, etc.)
 - **Download Management** — Real-time progress tracking, retry failed downloads, cancel running downloads
 - **Browser Notifications** — Get notified when downloads complete (even in background tabs)
 - **User Management** — JWT authentication with admin/user roles
@@ -29,10 +30,11 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 ## Requirements
 
 - Docker & Docker Compose
-- [Spotify Developer App](https://developer.spotify.com/dashboard) (Client ID, Client Secret, Refresh Token)
+- [Spotify Developer App](https://developer.spotify.com/dashboard) (Client ID + Client Secret required; Refresh Token only needed for playlist browsing)
 - [spotDL Docker image](https://github.com/spotDL/spotify-downloader) built locally as `spotdl-local`
 - *(Optional)* Lidarr instance for torrent-based downloads
-- *(Optional)* Navidrome instance for library detection
+- *(Optional)* Navidrome instance for library detection and playlist sync
+- *(Optional)* [AcoustID API key](https://acoustid.org/my-applications) for fingerprint-based recognition fallback
 
 ## Quick Start
 
@@ -64,10 +66,16 @@ Edit `.env` with your credentials:
 # Required
 SPOTIFY_CLIENT_ID=your_client_id
 SPOTIFY_CLIENT_SECRET=your_client_secret
-SPOTIFY_REFRESH_TOKEN=your_refresh_token
 HOST_MUSIC_DIR=/path/to/your/music
+
+# Optional (for Spotify playlist browsing)
+SPOTIFY_REFRESH_TOKEN=your_refresh_token
+
 ADMIN_USER=admin
 ADMIN_PASS=your_secure_password
+
+# Optional (for AcoustID recognition fallback)
+ACOUSTID_API_KEY=your_acoustid_key
 
 # Optional (for Lidarr integration)
 LIDARR_URL=http://lidarr:8686
@@ -96,7 +104,7 @@ Use the admin credentials you set in `.env`. You can create additional users fro
 
 ## Getting a Spotify Refresh Token
 
-MusicSeeker needs a long-lived Spotify refresh token to access the API. Here's how to get one:
+Search and downloads work with just Client ID + Client Secret (Client Credentials flow). A refresh token is only needed if you want to browse your personal Spotify playlists. Here's how to get one:
 
 1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and create an app
 2. Set the Redirect URI to `http://localhost:8888/callback`
@@ -170,7 +178,7 @@ services:
 │ spotify.py  │ Spotify Web API│
 │ downloader.py │ Docker API   │
 │ library.py  │ Subsonic API   │
-│ recognize.py│ shazamio       │
+│ recognize.py│ shazamio+acoustid│
 │ auth.py     │ HMAC tokens    │
 │ jobs.py     │ Job queue      │
 └──────┬───────────────────────┘
@@ -188,10 +196,11 @@ services:
 
 ## API Reference
 
-All endpoints (except login) require `Authorization: Bearer <token>` header.
+All endpoints (except login and version) require `Authorization: Bearer <token>` header.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| `GET` | `/api/version` | Get app version (public) |
 | `POST` | `/api/auth/login` | Login, returns JWT token |
 | `GET` | `/api/auth/me` | Get current user info |
 | `GET` | `/api/search?q=...&type=track` | Search Spotify |
@@ -218,7 +227,7 @@ All endpoints (except login) require `Authorization: Bearer <token>` header.
 |----------|----------|---------|-------------|
 | `SPOTIFY_CLIENT_ID` | Yes | — | Spotify app Client ID |
 | `SPOTIFY_CLIENT_SECRET` | Yes | — | Spotify app Client Secret |
-| `SPOTIFY_REFRESH_TOKEN` | Yes | — | Spotify OAuth refresh token |
+| `SPOTIFY_REFRESH_TOKEN` | No | — | Spotify OAuth refresh token (only needed for playlist browsing) |
 | `ADMIN_USER` | Yes | `admin` | Initial admin username |
 | `ADMIN_PASS` | Yes | — | Initial admin password |
 | `HOST_MUSIC_DIR` | Yes | — | Absolute path to music dir on the host |
@@ -229,6 +238,7 @@ All endpoints (except login) require `Authorization: Bearer <token>` header.
 | `NAVIDROME_USER` | No | `lucas` | Navidrome username |
 | `NAVIDROME_PASSWORD` | No | — | Navidrome password |
 | `DOCKER_NETWORK` | No | — | Docker network for spotDL containers |
+| `ACOUSTID_API_KEY` | No | — | AcoustID API key for fingerprint recognition fallback |
 | `JWT_SECRET` | No | auto-generated | Secret for signing auth tokens |
 
 ## License
