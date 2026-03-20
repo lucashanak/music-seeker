@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MusicSeeker</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<style>
+:root {
+  --bg: #0a0a0f;
+  --bg-card: #14141f;
+  --bg-elevated: #1a1a2e;
+  --bg-input: #1e1e32;
+  --border: #2a2a40;
+  --text: #e8e8f0;
+  --text-muted: #8888a0;
+  --accent: #A2E640;
+  --accent-dim: rgba(162, 230, 64, 0.15);
+  --red: #e64040;
+  --radius: 12px;
+  --radius-sm: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Login ── */
+.login-screen {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 20px;
+}
+.login-box {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 16px; padding: 40px; width: 100%; max-width: 380px;
+  text-align: center;
+}
+.login-box .logo { font-size: 28px; margin-bottom: 8px; display: block; }
+.login-box p { color: var(--text-muted); margin-bottom: 24px; font-size: 14px; }
+.login-box input {
+  width: 100%; padding: 12px 16px; margin-bottom: 12px; font-size: 14px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); outline: none;
+}
+.login-box input:focus { border-color: var(--accent); }
+.login-box .btn-login {
+  width: 100%; padding: 12px; background: var(--accent); color: #000;
+  border: none; border-radius: var(--radius-sm); font-size: 15px;
+  font-weight: 700; cursor: pointer; margin-top: 4px;
+}
+.login-box .btn-login:hover { opacity: .85; }
+.login-box .btn-login:disabled { opacity: .4; }
+.login-error { color: var(--red); font-size: 13px; margin-top: 12px; }
+
+/* ── Nav ── */
+nav {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(10,10,15,0.85);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  display: flex; align-items: center; height: 60px; gap: 8px;
+}
+
+.logo {
+  font-size: 20px; font-weight: 700; color: var(--accent);
+  margin-right: 24px; white-space: nowrap;
+}
+
+.nav-btn {
+  background: none; border: none; color: var(--text-muted);
+  padding: 8px 16px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 14px; font-weight: 500; transition: all .2s;
+}
+.nav-btn:hover { color: var(--text); background: var(--bg-elevated); }
+.nav-btn.active { color: var(--accent); background: var(--accent-dim); }
+
+.nav-spacer { flex: 1; }
+
+.nav-user {
+  font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 8px;
+}
+.btn-logout {
+  background: none; border: 1px solid var(--border); color: var(--text-muted);
+  padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12px;
+}
+.btn-logout:hover { border-color: var(--red); color: var(--red); }
+
+.downloads-btn {
+  position: relative; background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--text); padding: 8px 14px; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px;
+}
+.downloads-btn:hover { border-color: var(--accent); }
+.badge {
+  background: var(--accent); color: #000; font-size: 11px; font-weight: 700;
+  padding: 1px 6px; border-radius: 10px; min-width: 18px; text-align: center;
+}
+.badge:empty { display: none; }
+
+/* ── Main ── */
+main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+/* ── Search ── */
+.search-container {
+  display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items: center;
+}
+.search-input {
+  flex: 1; min-width: 200px; padding: 14px 20px; font-size: 16px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text); outline: none;
+  transition: border-color .2s;
+}
+.search-input:focus { border-color: var(--accent); }
+.search-input::placeholder { color: var(--text-muted); }
+
+.btn-mic {
+  width: 48px; height: 48px; border-radius: 50%;
+  background: var(--bg-elevated); border: 2px solid var(--border);
+  color: var(--text-muted); cursor: pointer; display: flex;
+  align-items: center; justify-content: center; transition: all .3s;
+  flex-shrink: 0;
+}
+.btn-mic:hover { border-color: var(--accent); color: var(--accent); }
+.btn-mic.recording {
+  border-color: var(--red); color: var(--red);
+  animation: pulse 1.5s ease infinite;
+  box-shadow: 0 0 20px rgba(230, 64, 64, 0.3);
+}
+.btn-mic.identifying { border-color: var(--accent); color: var(--accent); animation: pulse 1s ease infinite; }
+@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+
+.type-toggle {
+  display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+}
+.type-btn {
+  background: var(--bg-input); border: none; color: var(--text-muted);
+  padding: 10px 18px; cursor: pointer; font-size: 14px; transition: all .2s;
+}
+.type-btn:not(:last-child) { border-right: 1px solid var(--border); }
+.type-btn.active { background: var(--accent); color: #000; font-weight: 600; }
+
+/* ── Recognize Result ── */
+.recognize-result {
+  background: var(--bg-card); border: 2px solid var(--accent); border-radius: var(--radius);
+  padding: 20px; margin-bottom: 24px; display: none;
+  animation: badgeFadeIn .3s ease;
+}
+.recognize-result .rr-header { display: flex; gap: 16px; align-items: center; }
+.recognize-result .rr-img { width: 64px; height: 64px; border-radius: var(--radius-sm); object-fit: cover; }
+.recognize-result .rr-info { flex: 1; min-width: 0; }
+.recognize-result .rr-title { font-size: 16px; font-weight: 700; }
+.recognize-result .rr-artist { font-size: 14px; color: var(--text-muted); margin-top: 2px; }
+.recognize-result .rr-label { font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+.recognize-result .rr-actions { display: flex; gap: 8px; margin-left: auto; }
+.recognize-result .rr-btn {
+  padding: 8px 16px; border-radius: var(--radius-sm); border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.rr-btn-download { background: var(--accent); color: #000; }
+.rr-btn-search { background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border) !important; }
+.rr-btn-close { background: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border: none; padding: 4px 8px; }
+
+/* ── Grid ── */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 20px;
+}
+
+.card {
+  background: var(--bg-card); border-radius: var(--radius);
+  overflow: hidden; cursor: pointer; transition: transform .2s, box-shadow .2s;
+  border: 1px solid transparent; position: relative;
+}
+.card:hover { transform: translateY(-4px); box-shadow: 0 8px 30px rgba(0,0,0,.4); border-color: var(--border); }
+
+.card-img {
+  width: 100%; aspect-ratio: 1; object-fit: cover;
+  background: var(--bg-elevated);
+}
+
+.card-body { padding: 12px; }
+.card-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; display: flex; justify-content: space-between; }
+
+/* ── In Library Badge ── */
+.in-library-badge {
+  position: absolute; top: 8px; right: 8px;
+  background: var(--accent); color: #000;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 6px;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  z-index: 2;
+  animation: badgeFadeIn .3s ease;
+}
+@keyframes badgeFadeIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
+
+.card.in-library { border-color: rgba(162, 230, 64, 0.3); }
+
+/* ── Skeleton ── */
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-elevated) 25%, var(--bg-card) 50%, var(--bg-elevated) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius);
+}
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+.skeleton-card { height: 260px; }
+
+/* ── Modal ── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,.7); backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none; transition: opacity .25s;
+}
+.modal-overlay.open { opacity: 1; pointer-events: auto; }
+
+.modal {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 16px; padding: 28px; width: 90%; max-width: 440px;
+  transform: scale(0.95); transition: transform .25s;
+}
+.modal-overlay.open .modal { transform: scale(1); }
+
+.modal-header { display: flex; gap: 16px; margin-bottom: 20px; }
+.modal-img { width: 80px; height: 80px; border-radius: var(--radius-sm); object-fit: cover; }
+.modal-info { flex: 1; min-width: 0; }
+.modal-title { font-size: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.modal-artist { font-size: 14px; color: var(--text-muted); margin-top: 4px; }
+
+.modal-section { margin-bottom: 16px; }
+.modal-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+
+.option-group { display: flex; gap: 8px; }
+.option-btn {
+  flex: 1; padding: 10px; text-align: center; background: var(--bg-input);
+  border: 2px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text); cursor: pointer; font-size: 13px; transition: all .2s;
+}
+.option-btn:hover { border-color: var(--text-muted); }
+.option-btn.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.option-btn small { display: block; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+.btn-download {
+  width: 100%; padding: 14px; background: var(--accent); color: #000;
+  border: none; border-radius: var(--radius-sm); font-size: 15px;
+  font-weight: 700; cursor: pointer; transition: opacity .2s;
+}
+.btn-download:hover { opacity: .85; }
+.btn-download:disabled { opacity: .4; cursor: not-allowed; }
+
+.btn-close {
+  position: absolute; top: 12px; right: 16px; background: none; border: none;
+  color: var(--text-muted); font-size: 24px; cursor: pointer; line-height: 1;
+}
+
+/* ── Downloads Panel ── */
+.downloads-panel {
+  position: fixed; right: 0; top: 60px; bottom: 0; width: 380px; z-index: 150;
+  background: var(--bg-card); border-left: 1px solid var(--border);
+  transform: translateX(100%); transition: transform .3s ease;
+  display: flex; flex-direction: column;
+}
+.downloads-panel.open { transform: translateX(0); }
+
+.panel-header {
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+  font-size: 16px; font-weight: 700; display: flex; justify-content: space-between; align-items: center;
+}
+.panel-close {
+  background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer;
+}
+
+.jobs-list { flex: 1; overflow-y: auto; padding: 12px; }
+
+.job-item {
+  padding: 12px; background: var(--bg-elevated); border-radius: var(--radius-sm);
+  margin-bottom: 8px; border: 1px solid var(--border);
+}
+.job-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; display: flex; justify-content: space-between; }
+.job-progress-bar { height: 4px; background: var(--bg-input); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+.job-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .5s; }
+.job-progress-text { font-size: 11px; color: var(--text-muted); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-status { font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.job-status.done { color: var(--accent); }
+.job-status.failed { color: var(--red); }
+.job-status.running { color: #40a0e6; }
+.job-status.queued, .job-status.cancelled { color: var(--text-muted); }
+
+.job-cancel {
+  background: none; border: none; color: var(--text-muted); cursor: pointer;
+  font-size: 11px; text-decoration: underline;
+}
+.job-cancel:hover { color: var(--red); }
+
+.job-retry {
+  background: none; border: 1px solid var(--accent); color: var(--accent); cursor: pointer;
+  font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-left: 4px;
+}
+.job-retry:hover { background: var(--accent); color: #000; }
+
+/* ── Settings ── */
+.settings-form { max-width: 500px; }
+.setting-group { margin-bottom: 20px; }
+.setting-label {
+  display: block; font-size: 13px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+}
+.setting-input, .setting-select {
+  width: 100%; padding: 10px 14px; background: var(--bg-input);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text); font-size: 14px; outline: none; transition: border-color .2s;
+}
+.setting-select { appearance: none; cursor: pointer; }
+.setting-input:focus, .setting-select:focus { border-color: var(--accent); }
+.btn-save {
+  padding: 12px 32px; background: var(--accent); color: #000;
+  border: none; border-radius: var(--radius-sm); font-size: 14px;
+  font-weight: 700; cursor: pointer; transition: opacity .2s;
+}
+.btn-save:hover { opacity: .85; }
+.btn-save:disabled { opacity: .4; cursor: not-allowed; }
+.save-status { display: inline-block; margin-left: 12px; font-size: 13px; color: var(--accent); }
+
+/* ── User Management ── */
+.users-section { margin-top: 40px; max-width: 500px; }
+.users-section h3 { font-size: 16px; margin-bottom: 16px; }
+.user-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+  background: var(--bg-input); border-radius: var(--radius-sm); margin-bottom: 8px;
+}
+.user-row .user-name { flex: 1; font-size: 14px; }
+.user-row .user-badge {
+  font-size: 10px; text-transform: uppercase; color: var(--accent);
+  background: var(--accent-dim); padding: 2px 8px; border-radius: 4px; font-weight: 700;
+}
+.user-row .btn-delete-user {
+  background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px;
+}
+.user-row .btn-delete-user:hover { color: var(--red); }
+.add-user-form { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.add-user-form input {
+  padding: 8px 12px; background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font-size: 13px; outline: none; flex: 1; min-width: 120px;
+}
+.add-user-form input:focus { border-color: var(--accent); }
+.btn-add-user {
+  padding: 8px 16px; background: var(--accent); color: #000;
+  border: none; border-radius: var(--radius-sm); font-size: 13px;
+  font-weight: 600; cursor: pointer;
+}
+
+/* ── Empty state ── */
+.empty-state {
+  text-align: center; padding: 60px 20px; color: var(--text-muted);
+}
+.empty-state p { font-size: 16px; }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  main { padding: 16px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+  .downloads-panel { width: 100%; }
+  nav { padding: 0 12px; }
+  .logo { margin-right: 12px; font-size: 17px; }
+  .nav-btn { padding: 6px 10px; font-size: 13px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── Login Screen ── -->
+<div class="login-screen" id="loginScreen">
+  <div class="login-box">
+    <span class="logo">MusicSeeker</span>
+    <p>Sign in to continue</p>
+    <input id="loginUser" type="text" placeholder="Username" autocomplete="username">
+    <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password">
+    <button class="btn-login" id="loginBtn">Sign In</button>
+    <div class="login-error" id="loginError"></div>
+  </div>
+</div>
+
+<!-- ── App (hidden until logged in) ── -->
+<div id="appContainer" style="display:none;">
+
+<nav>
+  <div class="logo">MusicSeeker</div>
+  <button class="nav-btn active" data-page="search">Search</button>
+  <button class="nav-btn" data-page="playlists">Playlists</button>
+  <button class="nav-btn" data-page="settings">Settings</button>
+  <div class="nav-spacer"></div>
+  <button class="downloads-btn" id="downloadsToggle">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    Downloads
+    <span class="badge" id="jobsBadge"></span>
+  </button>
+  <div class="nav-user">
+    <span id="navUsername"></span>
+    <button class="btn-logout" id="logoutBtn">Logout</button>
+  </div>
+</nav>
+
+<!-- ── Search Page ── -->
+<main id="pageSearch">
+  <div class="search-container">
+    <input class="search-input" id="searchInput" type="text" placeholder="Search for music...">
+    <button class="btn-mic" id="micBtn" title="Identify song with microphone">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+    </button>
+    <div class="type-toggle">
+      <button class="type-btn active" data-type="track">Tracks</button>
+      <button class="type-btn" data-type="album">Albums</button>
+      <button class="type-btn" data-type="artist">Artists</button>
+    </div>
+  </div>
+  <div class="recognize-result" id="recognizeResult">
+    <div class="rr-label">Shazam identified</div>
+    <div class="rr-header">
+      <img class="rr-img" id="rrImg" src="">
+      <div class="rr-info">
+        <div class="rr-title" id="rrTitle"></div>
+        <div class="rr-artist" id="rrArtist"></div>
+      </div>
+      <div class="rr-actions">
+        <button class="rr-btn rr-btn-download" id="rrDownload">Download</button>
+        <button class="rr-btn rr-btn-search" id="rrSearch">Search</button>
+        <button class="rr-btn-close" id="rrClose">&times;</button>
+      </div>
+    </div>
+  </div>
+  <div id="searchResults" class="grid"></div>
+</main>
+
+<!-- ── Playlists Page ── -->
+<main id="pagePlaylists" style="display:none">
+  <h2 style="margin-bottom:20px; font-size:22px;">My Spotify Playlists</h2>
+  <div id="playlistsGrid" class="grid"></div>
+  <div id="playlistDetail" style="display:none; margin-top:24px;">
+    <button id="backToPlaylists" class="nav-btn" style="margin-bottom:16px;">&larr; Back to Playlists</button>
+    <div style="display:flex; gap:16px; align-items:center; margin-bottom:20px;">
+      <img id="plDetailImg" style="width:80px; height:80px; border-radius:8px; object-fit:cover;">
+      <div>
+        <h2 id="plDetailName" style="font-size:20px;"></h2>
+        <p id="plDetailCount" style="color:var(--text-muted); font-size:14px; margin-top:4px;"></p>
+      </div>
+      <button class="btn-download" id="downloadPlaylist" style="width:auto; padding:10px 24px; margin-left:auto;">Download All</button>
+    </div>
+    <div id="playlistTracks" class="grid"></div>
+  </div>
+</main>
+
+<!-- ── Settings Page ── -->
+<main id="pageSettings" style="display:none">
+  <h2 style="margin-bottom:24px; font-size:22px;">Settings</h2>
+  <div class="settings-form">
+    <div class="setting-group">
+      <label class="setting-label">Default Download Method</label>
+      <select class="setting-select" id="settingMethod">
+        <option value="spotdl">spotDL (Direct, FLAC/MP3)</option>
+        <option value="lidarr">Lidarr (Torrent, monitors)</option>
+      </select>
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">Default Format</label>
+      <select class="setting-select" id="settingFormat">
+        <option value="flac">FLAC</option>
+        <option value="mp3">MP3 320k</option>
+      </select>
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">Max Concurrent Downloads</label>
+      <input class="setting-input" id="settingMaxConcurrent" type="number" min="1" max="20" value="10">
+    </div>
+    <div class="setting-group" id="settingNavidromeGroup">
+      <label class="setting-label">Navidrome Password</label>
+      <input class="setting-input" id="settingNavidromePass" type="password" placeholder="Enter password for library scan...">
+    </div>
+    <div>
+      <button class="btn-save" id="saveSettings">Save Settings</button>
+      <span class="save-status" id="saveStatus"></span>
+    </div>
+  </div>
+
+  <div class="users-section" id="usersSection" style="display:none;">
+    <h3>User Management</h3>
+    <div id="usersList"></div>
+    <div class="add-user-form">
+      <input id="newUsername" type="text" placeholder="Username">
+      <input id="newPassword" type="password" placeholder="Password">
+      <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:var(--text-muted);"><input type="checkbox" id="newIsAdmin"> Admin</label>
+      <button class="btn-add-user" id="addUserBtn">Add User</button>
+    </div>
+  </div>
+</main>
+
+</div><!-- /appContainer -->
+
+<!-- ── Download Modal ── -->
+<div class="modal-overlay" id="downloadModal">
+  <div class="modal" style="position:relative;">
+    <button class="btn-close" id="modalClose">&times;</button>
+    <div class="modal-header">
+      <img class="modal-img" id="modalImg" src="">
+      <div class="modal-info">
+        <div class="modal-title" id="modalTitle"></div>
+        <div class="modal-artist" id="modalArtist"></div>
+      </div>
+    </div>
+    <div id="modalLibraryNotice" style="display:none; background:var(--accent-dim); border:1px solid rgba(162,230,64,0.3); border-radius:8px; padding:10px 14px; margin-bottom:16px; font-size:13px; color:var(--accent);">
+      Already in your library
+    </div>
+    <div class="modal-section">
+      <div class="modal-label">Method</div>
+      <div class="option-group" id="methodGroup">
+        <button class="option-btn selected" data-value="spotdl">spotDL<small>Direct, FLAC/MP3</small></button>
+        <button class="option-btn" data-value="lidarr">Lidarr<small>Torrent, monitors</small></button>
+      </div>
+    </div>
+    <div class="modal-section" id="formatSection">
+      <div class="modal-label">Format</div>
+      <div class="option-group" id="formatGroup">
+        <button class="option-btn selected" data-value="flac">FLAC</button>
+        <button class="option-btn" data-value="mp3">MP3 320k</button>
+      </div>
+    </div>
+    <button class="btn-download" id="modalDownload">Download</button>
+  </div>
+</div>
+
+<!-- ── Downloads Panel ── -->
+<div class="downloads-panel" id="downloadsPanel">
+  <div class="panel-header">
+    Downloads
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button class="btn-logout" id="clearHistory" style="font-size:11px;">Clear History</button>
+      <button class="panel-close" id="panelClose">&times;</button>
+    </div>
+  </div>
+  <div class="jobs-list" id="jobsList">
+    <div class="empty-state"><p>No downloads yet</p></div>
+  </div>
+</div>
+
+<script>
+const $ = (s, p) => (p || document).querySelector(s);
+const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
+
+// ── Auth ──
+let authToken = localStorage.getItem('ms_token') || '';
+let currentUser = null;
+
+function authHeaders() {
+  return authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+}
+
+async function apiFetch(url, opts = {}) {
+  opts.headers = { ...authHeaders(), ...(opts.headers || {}) };
+  const res = await fetch(url, opts);
+  if (res.status === 401) { logout(); throw new Error('Session expired'); }
+  return res;
+}
+
+async function apiJson(url, opts = {}) {
+  if (opts.body && typeof opts.body === 'object' && !(opts.body instanceof FormData)) {
+    opts.body = JSON.stringify(opts.body);
+    opts.headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  }
+  const res = await apiFetch(url, opts);
+  return res.json();
+}
+
+function logout() {
+  authToken = '';
+  currentUser = null;
+  localStorage.removeItem('ms_token');
+  $('#appContainer').style.display = 'none';
+  $('#loginScreen').style.display = '';
+  if (jobsInterval) clearInterval(jobsInterval);
+}
+
+$('#logoutBtn').addEventListener('click', logout);
+
+// ── Login ──
+async function doLogin() {
+  const u = $('#loginUser').value.trim();
+  const p = $('#loginPass').value;
+  if (!u || !p) return;
+
+  $('#loginBtn').disabled = true;
+  $('#loginError').textContent = '';
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Login failed');
+    authToken = data.token;
+    localStorage.setItem('ms_token', authToken);
+    await initApp();
+  } catch (e) {
+    $('#loginError').textContent = e.message;
+  } finally {
+    $('#loginBtn').disabled = false;
+  }
+}
+
+$('#loginBtn').addEventListener('click', doLogin);
+$('#loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+$('#loginUser').addEventListener('keydown', e => { if (e.key === 'Enter') $('#loginPass').focus(); });
+
+// ── App Init ──
+let jobsInterval = null;
+
+async function initApp() {
+  try {
+    const me = await apiJson('/api/auth/me');
+    currentUser = me;
+    $('#navUsername').textContent = me.username;
+    $('#loginScreen').style.display = 'none';
+    $('#appContainer').style.display = '';
+
+    // Show user management only for admins
+    $('#usersSection').style.display = me.is_admin ? '' : 'none';
+    // Show settings save only for admins (others can view)
+    $('#saveSettings').style.display = me.is_admin ? '' : 'none';
+    $('#settingNavidromeGroup').style.display = me.is_admin ? '' : 'none';
+
+    // Load defaults
+    try {
+      const s = await apiJson('/api/settings');
+      appSettings = s;
+    } catch {}
+
+    // Start jobs polling
+    refreshJobs();
+    jobsInterval = setInterval(refreshJobs, 2000);
+
+    $('#searchInput').focus();
+    requestNotificationPermission();
+  } catch {
+    logout();
+  }
+}
+
+// Auto-login if token exists
+if (authToken) {
+  initApp();
+} else {
+  $('#loginScreen').style.display = '';
+}
+
+// ── State ──
+let currentPage = 'search';
+let searchType = 'track';
+let searchTimeout = null;
+let modalItem = null;
+let selectedMethod = 'spotdl';
+let selectedFormat = 'flac';
+let panelOpen = false;
+let currentPlaylistId = null;
+let currentPlaylistUrl = null;
+let appSettings = { default_format: 'flac', default_method: 'spotdl', max_concurrent: 10 };
+
+// ── Navigation ──
+$$('.nav-btn[data-page]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const page = btn.dataset.page;
+    if (page === currentPage) return;
+    $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentPage = page;
+    $('#pageSearch').style.display = page === 'search' ? '' : 'none';
+    $('#pagePlaylists').style.display = page === 'playlists' ? '' : 'none';
+    $('#pageSettings').style.display = page === 'settings' ? '' : 'none';
+    if (page === 'playlists') loadPlaylists();
+    if (page === 'settings') loadSettings();
+  });
+});
+
+// ── Search ──
+$('#searchInput').addEventListener('input', () => {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(doSearch, 400);
+});
+$('#searchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { clearTimeout(searchTimeout); doSearch(); }
+});
+
+$$('.type-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $$('.type-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    searchType = btn.dataset.type;
+    doSearch();
+  });
+});
+
+async function doSearch() {
+  const q = $('#searchInput').value.trim();
+  if (!q) { $('#searchResults').innerHTML = ''; return; }
+  $('#searchResults').innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  try {
+    const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=${searchType}&limit=20`);
+    renderResults(data.results, '#searchResults');
+  } catch (e) {
+    $('#searchResults').innerHTML = `<div class="empty-state"><p>Search failed: ${e.message}</p></div>`;
+  }
+}
+
+function renderResults(items, container) {
+  const el = $(container);
+  if (!items.length) {
+    el.innerHTML = '<div class="empty-state"><p>No results found</p></div>';
+    return;
+  }
+  el.innerHTML = items.map(item => `
+    <div class="card" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
+      <img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      <div class="card-body">
+        <div class="card-title">${esc(item.name)}</div>
+        <div class="card-sub">${esc(item.artist || '')}</div>
+        <div class="card-meta">
+          ${item.year ? `<span>${item.year}</span>` : ''}
+          ${item.total_tracks ? `<span>${item.total_tracks} tracks</span>` : ''}
+          ${item.duration_ms ? `<span>${formatDuration(item.duration_ms)}</span>` : ''}
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  $$('.card', el).forEach(card => {
+    card.addEventListener('click', () => openModal(JSON.parse(card.dataset.item)));
+  });
+  checkLibrary(items, el);
+}
+
+// ── Library Check ──
+async function checkLibrary(items, containerEl) {
+  try {
+    const checkItems = items.map(item => ({ name: item.name, artist: item.artist || '', type: item.type || 'track' }));
+    const data = await apiJson('/api/library/check', {
+      method: 'POST', body: { items: checkItems },
+    });
+    const cards = $$('.card', containerEl);
+    data.results.forEach((inLib, i) => {
+      if (inLib && cards[i]) {
+        cards[i].classList.add('in-library');
+        const badge = document.createElement('div');
+        badge.className = 'in-library-badge';
+        badge.textContent = 'In Library';
+        cards[i].appendChild(badge);
+        const item = JSON.parse(cards[i].dataset.item);
+        item.inLibrary = true;
+        cards[i].dataset.item = JSON.stringify(item).replace(/'/g, "&#39;");
+      }
+    });
+  } catch { }
+}
+
+// ── Microphone Recognition ──
+let mediaRecorder = null;
+let micState = 'idle'; // idle | recording | identifying
+
+$('#micBtn').addEventListener('click', async () => {
+  if (micState === 'recording') {
+    // Stop recording
+    if (mediaRecorder) mediaRecorder.stop();
+    return;
+  }
+  if (micState === 'identifying') return;
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const chunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      micState = 'identifying';
+      $('#micBtn').classList.remove('recording');
+      $('#micBtn').classList.add('identifying');
+      $('#micBtn').title = 'Identifying...';
+
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const form = new FormData();
+      form.append('audio', blob, 'recording.webm');
+
+      try {
+        const res = await apiFetch('/api/recognize', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Not recognized');
+        showRecognizeResult(data);
+      } catch (e) {
+        alert('Could not identify the song: ' + e.message);
+      } finally {
+        micState = 'idle';
+        $('#micBtn').classList.remove('identifying');
+        $('#micBtn').title = 'Identify song with microphone';
+      }
+    };
+
+    mediaRecorder.start();
+    micState = 'recording';
+    $('#micBtn').classList.add('recording');
+    $('#micBtn').title = 'Listening... Click to stop';
+
+    // Auto-stop after 8 seconds
+    setTimeout(() => { if (micState === 'recording' && mediaRecorder) mediaRecorder.stop(); }, 8000);
+  } catch (e) {
+    alert('Microphone access denied: ' + e.message);
+  }
+});
+
+let recognizedItem = null;
+
+function showRecognizeResult(data) {
+  recognizedItem = data;
+  $('#rrImg').src = data.image || '';
+  $('#rrTitle').textContent = data.name || 'Unknown';
+  $('#rrArtist').textContent = data.artist || '';
+  $('#recognizeResult').style.display = '';
+}
+
+$('#rrClose').addEventListener('click', () => { $('#recognizeResult').style.display = 'none'; });
+
+$('#rrDownload').addEventListener('click', () => {
+  if (!recognizedItem) return;
+  openModal({
+    name: recognizedItem.name,
+    artist: recognizedItem.artist,
+    image: recognizedItem.image,
+    url: recognizedItem.url || recognizedItem.spotify_url || '',
+    type: 'track',
+  });
+});
+
+$('#rrSearch').addEventListener('click', () => {
+  if (!recognizedItem) return;
+  $('#searchInput').value = `${recognizedItem.artist} ${recognizedItem.name}`;
+  $('#recognizeResult').style.display = 'none';
+  doSearch();
+});
+
+// ── Playlists ──
+async function loadPlaylists() {
+  $('#playlistDetail').style.display = 'none';
+  const grid = $('#playlistsGrid');
+  grid.style.display = '';
+  grid.innerHTML = Array(6).fill('<div class="skeleton skeleton-card"></div>').join('');
+  try {
+    const data = await apiJson('/api/spotify/playlists');
+    grid.innerHTML = data.playlists.map(pl => `
+      <div class="card" data-playlist-id="${pl.id}" data-playlist-url="${pl.url}">
+        <img class="card-img" src="${pl.image || ''}" alt="" loading="lazy">
+        <div class="card-body">
+          <div class="card-title">${esc(pl.name)}</div>
+          <div class="card-sub">${pl.tracks_total} tracks</div>
+        </div>
+      </div>
+    `).join('');
+    $$('.card', grid).forEach(card => {
+      card.addEventListener('click', () => loadPlaylistDetail(card.dataset.playlistId, card.dataset.playlistUrl));
+    });
+  } catch (e) {
+    grid.innerHTML = `<div class="empty-state"><p>Failed to load playlists</p></div>`;
+  }
+}
+
+async function loadPlaylistDetail(id, url) {
+  currentPlaylistId = id;
+  currentPlaylistUrl = url;
+  $('#playlistsGrid').style.display = 'none';
+  $('#playlistDetail').style.display = '';
+  const tracksEl = $('#playlistTracks');
+  tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  try {
+    const data = await apiJson(`/api/spotify/playlist/${id}/tracks`);
+    $('#plDetailImg').src = data.image || '';
+    $('#plDetailName').textContent = data.name;
+    $('#plDetailCount').textContent = `${data.tracks.length} tracks`;
+    renderResults(data.tracks, '#playlistTracks');
+  } catch (e) {
+    tracksEl.innerHTML = `<div class="empty-state"><p>Failed to load tracks</p></div>`;
+  }
+}
+
+$('#backToPlaylists').addEventListener('click', () => {
+  $('#playlistDetail').style.display = 'none';
+  $('#playlistsGrid').style.display = '';
+});
+
+$('#downloadPlaylist').addEventListener('click', () => {
+  if (!currentPlaylistUrl) return;
+  openModal({
+    name: $('#plDetailName').textContent,
+    artist: 'Playlist',
+    image: $('#plDetailImg').src,
+    url: `https://open.spotify.com/playlist/${currentPlaylistId}`,
+    type: 'playlist',
+  });
+});
+
+// ── Download Modal ──
+function openModal(item) {
+  modalItem = item;
+  $('#modalImg').src = item.image || '';
+  $('#modalTitle').textContent = item.name;
+  $('#modalArtist').textContent = item.artist || '';
+  selectedMethod = appSettings.default_method || 'spotdl';
+  selectedFormat = appSettings.default_format || 'flac';
+  updateOptionGroups();
+  $('#modalLibraryNotice').style.display = item.inLibrary ? '' : 'none';
+  $('#downloadModal').classList.add('open');
+}
+
+function closeModal() { $('#downloadModal').classList.remove('open'); modalItem = null; }
+
+$('#modalClose').addEventListener('click', closeModal);
+$('#downloadModal').addEventListener('click', e => { if (e.target === $('#downloadModal')) closeModal(); });
+
+$$('#methodGroup .option-btn').forEach(btn => {
+  btn.addEventListener('click', () => { selectedMethod = btn.dataset.value; updateOptionGroups(); });
+});
+$$('#formatGroup .option-btn').forEach(btn => {
+  btn.addEventListener('click', () => { selectedFormat = btn.dataset.value; updateOptionGroups(); });
+});
+
+function updateOptionGroups() {
+  $$('#methodGroup .option-btn').forEach(b => b.classList.toggle('selected', b.dataset.value === selectedMethod));
+  $$('#formatGroup .option-btn').forEach(b => b.classList.toggle('selected', b.dataset.value === selectedFormat));
+  $('#formatSection').style.display = selectedMethod === 'spotdl' ? '' : 'none';
+}
+
+$('#modalDownload').addEventListener('click', async () => {
+  if (!modalItem) return;
+  const btn = $('#modalDownload');
+  btn.disabled = true; btn.textContent = 'Starting...';
+  try {
+    await apiJson('/api/download', {
+      method: 'POST',
+      body: { url: modalItem.url, title: `${modalItem.artist} - ${modalItem.name}`, method: selectedMethod, format: selectedFormat, type: modalItem.type || 'track' },
+    });
+    closeModal();
+    openPanel();
+  } catch (e) {
+    alert('Download failed: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Download';
+  }
+});
+
+// ── Downloads Panel ──
+function openPanel() { panelOpen = true; $('#downloadsPanel').classList.add('open'); }
+function closePanel() { panelOpen = false; $('#downloadsPanel').classList.remove('open'); }
+
+$('#downloadsToggle').addEventListener('click', () => panelOpen ? closePanel() : openPanel());
+$('#panelClose').addEventListener('click', closePanel);
+
+$('#clearHistory').addEventListener('click', async () => {
+  try { await apiFetch('/api/jobs', { method: 'DELETE' }); refreshJobs(); } catch {}
+});
+
+async function refreshJobs() {
+  try {
+    const data = await apiJson('/api/jobs');
+    const jobs = data.jobs || [];
+    checkJobCompletions(jobs);
+    const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
+    $('#jobsBadge').textContent = active || '';
+    if (!jobs.length) { $('#jobsList').innerHTML = '<div class="empty-state"><p>No downloads yet</p></div>'; return; }
+    $('#jobsList').innerHTML = jobs.map(j => `
+      <div class="job-item">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div class="job-title" style="flex:1; min-width:0;">${esc(j.title)}</div>
+          <span class="job-status ${j.status}">${j.status}</span>
+        </div>
+        <div class="job-meta">
+          <span>${j.method} / ${j.format}</span>
+          ${(j.status === 'running' || j.status === 'queued') ? `<button class="job-cancel" onclick="cancelJob('${j.id}')">Cancel</button>` : ''}
+          ${(j.status === 'failed' || j.status === 'cancelled') ? `<button class="job-retry" onclick="retryJob('${j.id}')">Retry</button>` : ''}
+        </div>
+        ${(j.status === 'running' || j.status === 'queued') ? `<div class="job-progress-bar"><div class="job-progress-fill" style="width:${j.progress}%"></div></div>` : ''}
+        ${j.progress_text ? `<div class="job-progress-text">${esc(j.progress_text)}</div>` : ''}
+        ${j.error ? `<div class="job-progress-text" style="color:var(--red)">${esc(j.error)}</div>` : ''}
+      </div>
+    `).join('');
+  } catch { }
+}
+
+async function cancelJob(id) {
+  try { await apiFetch(`/api/jobs/${id}`, { method: 'DELETE' }); } catch { }
+  refreshJobs();
+}
+
+// ── Retry Job ──
+async function retryJob(id) {
+  try {
+    await apiJson(`/api/jobs/${id}/retry`, { method: 'POST' });
+    refreshJobs();
+  } catch (e) { alert('Retry failed: ' + e.message); }
+}
+
+// ── Browser Notifications ──
+let notificationsEnabled = false;
+let previousJobStates = {};
+
+function requestNotificationPermission() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'granted') {
+    notificationsEnabled = true;
+  } else if (Notification.permission !== 'denied') {
+    Notification.requestPermission().then(p => { notificationsEnabled = p === 'granted'; });
+  }
+}
+
+function checkJobCompletions(jobs) {
+  if (!notificationsEnabled) return;
+  for (const j of jobs) {
+    const prev = previousJobStates[j.id];
+    if (prev && (prev === 'running' || prev === 'queued')) {
+      if (j.status === 'done') {
+        new Notification('MusicSeeker - Download Complete', {
+          body: j.title,
+          icon: '/static/icon.png',
+          tag: 'ms-' + j.id,
+        });
+      } else if (j.status === 'failed') {
+        new Notification('MusicSeeker - Download Failed', {
+          body: j.title + (j.error ? ': ' + j.error : ''),
+          icon: '/static/icon.png',
+          tag: 'ms-' + j.id,
+        });
+      }
+    }
+    previousJobStates[j.id] = j.status;
+  }
+}
+
+// __ Settings __
+async function loadSettings() {
+  try {
+    const data = await apiJson('/api/settings');
+    appSettings = data;
+    $('#settingMethod').value = data.default_method || 'spotdl';
+    $('#settingFormat').value = data.default_format || 'flac';
+    $('#settingMaxConcurrent').value = data.max_concurrent || 10;
+    $('#settingNavidromePass').value = '';
+    $('#settingNavidromePass').placeholder = data.navidrome_password ? '(set) Enter new password...' : 'Enter password...';
+  } catch { }
+  if (currentUser && currentUser.is_admin) loadUsers();
+}
+
+$('#saveSettings').addEventListener('click', async () => {
+  const btn = $('#saveSettings');
+  btn.disabled = true; $('#saveStatus').textContent = '';
+  const payload = {
+    default_method: $('#settingMethod').value,
+    default_format: $('#settingFormat').value,
+    max_concurrent: parseInt($('#settingMaxConcurrent').value) || 10,
+  };
+  const pass = $('#settingNavidromePass').value;
+  if (pass) payload.navidrome_password = pass;
+  try {
+    appSettings = await apiJson('/api/settings', { method: 'PUT', body: payload });
+    $('#saveStatus').textContent = 'Saved!';
+    setTimeout(() => { $('#saveStatus').textContent = ''; }, 2000);
+  } catch (e) {
+    $('#saveStatus').textContent = 'Failed to save';
+    $('#saveStatus').style.color = 'var(--red)';
+  } finally { btn.disabled = false; }
+});
+
+// ── User Management ──
+async function loadUsers() {
+  try {
+    const data = await apiJson('/api/users');
+    $('#usersList').innerHTML = data.users.map(u => `
+      <div class="user-row">
+        <span class="user-name">${esc(u.username)}</span>
+        ${u.is_admin ? '<span class="user-badge">Admin</span>' : ''}
+        ${u.username !== currentUser.username ? `<button class="btn-delete-user" onclick="deleteUser('${u.username}')">&times;</button>` : ''}
+      </div>
+    `).join('');
+  } catch { }
+}
+
+async function deleteUser(username) {
+  if (!confirm(`Delete user "${username}"?`)) return;
+  try {
+    await apiJson(`/api/users/${username}`, { method: 'DELETE' });
+    loadUsers();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+$('#addUserBtn').addEventListener('click', async () => {
+  const u = $('#newUsername').value.trim();
+  const p = $('#newPassword').value;
+  const admin = $('#newIsAdmin').checked;
+  if (!u || !p) return;
+  try {
+    await apiJson('/api/users', { method: 'POST', body: { username: u, password: p, is_admin: admin } });
+    $('#newUsername').value = ''; $('#newPassword').value = ''; $('#newIsAdmin').checked = false;
+    loadUsers();
+  } catch (e) { alert('Failed: ' + e.message); }
+});
+
+// ── Keyboard shortcuts ──
+document.addEventListener('keydown', e => {
+  if (e.key === '/' && !$('#loginScreen').style.display !== 'none' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
+    $('.nav-btn[data-page="search"]').classList.add('active');
+    currentPage = 'search';
+    $('#pageSearch').style.display = '';
+    $('#pagePlaylists').style.display = 'none';
+    $('#pageSettings').style.display = 'none';
+    $('#searchInput').focus();
+    requestNotificationPermission();
+  }
+  if (e.key === 'Escape') { closeModal(); closePanel(); }
+});
+
+// ── Helpers ──
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function formatDuration(ms) { const m = Math.floor(ms / 60000); const s = Math.floor((ms % 60000) / 1000); return `${m}:${s.toString().padStart(2, '0')}`; }
+</script>
+</body>
+</html>
