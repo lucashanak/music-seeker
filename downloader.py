@@ -6,7 +6,7 @@ import time
 import httpx
 
 from jobs import Job, JobStatus, get_semaphore, save_if_finished
-from spotify import get_access_token, SPOTIFY_CLIENT_ID
+from spotify import get_app_token, SPOTIFY_CLIENT_ID
 
 LIDARR_URL = os.environ.get("LIDARR_URL", "http://lidarr:8686")
 LIDARR_API_KEY = os.environ.get("LIDARR_API_KEY", "")
@@ -90,7 +90,7 @@ async def _docker_stream_logs(container_id: str, job: Job):
 
 
 async def _run_spotdl(job: Job):
-    token = await get_access_token()
+    token = await get_app_token()
 
     cmd = [
         "spotdl", "download", job.url,

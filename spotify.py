@@ -6,12 +6,41 @@ SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 SPOTIFY_REFRESH_TOKEN = os.environ.get("SPOTIFY_REFRESH_TOKEN", "")
 
-_token_cache = {"access_token": None, "expires_at": 0}
+# Separate token caches: app-level (client credentials) vs user-level (refresh token)
+_app_token = {"access_token": None, "expires_at": 0}
+_user_token = {"access_token": None, "expires_at": 0}
 
 
-async def get_access_token() -> str:
-    if _token_cache["access_token"] and time.time() < _token_cache["expires_at"] - 60:
-        return _token_cache["access_token"]
+async def get_app_token() -> str:
+    """Client Credentials token — no user account, safe for search/browse."""
+    if _app_token["access_token"] and time.time() < _app_token["expires_at"] - 60:
+        return _app_token["access_token"]
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://accounts.spotify.com/api/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": SPOTIFY_CLIENT_ID,
+                "client_secret": SPOTIFY_CLIENT_SECRET,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    _app_token["access_token"] = data["access_token"]
+    _app_token["expires_at"] = time.time() + data.get("expires_in", 3600)
+    return data["access_token"]
+
+
+async def get_user_token() -> str:
+    """User token via refresh_token — needed for user-specific endpoints (playlists)."""
+    if _user_token["access_token"] and time.time() < _user_token["expires_at"] - 60:
+        return _user_token["access_token"]
+
+    if not SPOTIFY_REFRESH_TOKEN:
+        raise RuntimeError("SPOTIFY_REFRESH_TOKEN not configured — cannot access user data")
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -27,13 +56,13 @@ async def get_access_token() -> str:
         resp.raise_for_status()
         data = resp.json()
 
-    _token_cache["access_token"] = data["access_token"]
-    _token_cache["expires_at"] = time.time() + data.get("expires_in", 3600)
+    _user_token["access_token"] = data["access_token"]
+    _user_token["expires_at"] = time.time() + data.get("expires_in", 3600)
     return data["access_token"]
 
 
-async def spotify_get(endpoint: str, params: dict | None = None) -> dict:
-    token = await get_access_token()
+async def spotify_get(endpoint: str, params: dict | None = None, user: bool = False) -> dict:
+    token = await (get_user_token() if user else get_app_token())
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"https://api.spotify.com/v1/{endpoint}",
@@ -88,7 +117,7 @@ async def search(query: str, search_type: str = "track", limit: int = 20) -> lis
 
 
 async def get_user_playlists() -> list[dict]:
-    data = await spotify_get("me/playlists", {"limit": 50})
+    data = await spotify_get("me/playlists", {"limit": 50}, user=True)
     playlists = []
     for item in data.get("items", []):
         playlists.append({
@@ -103,7 +132,11 @@ async def get_user_playlists() -> list[dict]:
 
 
 async def get_playlist_tracks(playlist_id: str) -> dict:
-    playlist = await spotify_get(f"playlists/{playlist_id}")
+    # Public playlists work with app token, private ones need user token
+    try:
+        playlist = await spotify_get(f"playlists/{playlist_id}")
+    except httpx.HTTPStatusError:
+        playlist = await spotify_get(f"playlists/{playlist_id}", user=True)
     tracks = []
     for item in playlist.get("tracks", {}).get("items", []):
         t = item.get("track")
