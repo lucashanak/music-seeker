@@ -559,7 +559,7 @@ const $ = (s, p) => (p || document).querySelector(s);
 const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
 
 // ── Version ──
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 (async function checkVersion() {
   try {
@@ -798,8 +798,7 @@ let micState = 'idle'; // idle | recording | identifying
 
 $('#micBtn').addEventListener('click', async () => {
   if (micState === 'recording') {
-    // Stop recording
-    if (mediaRecorder) mediaRecorder.stop();
+    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
     return;
   }
   if (micState === 'identifying') return;
@@ -807,28 +806,56 @@ $('#micBtn').addEventListener('click', async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const chunks = [];
-    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+
+    // Pick a supported mime type
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : '';
+    mediaRecorder = mimeType
+      ? new MediaRecorder(stream, { mimeType })
+      : new MediaRecorder(stream);
 
     mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
+
+      if (!chunks.length) {
+        alert('No audio was captured. Please try again.');
+        micState = 'idle';
+        $('#micBtn').classList.remove('recording', 'identifying');
+        return;
+      }
+
       micState = 'identifying';
       $('#micBtn').classList.remove('recording');
       $('#micBtn').classList.add('identifying');
       $('#micBtn').title = 'Identifying...';
 
-      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
       const form = new FormData();
       form.append('audio', blob, 'recording.webm');
 
       try {
-        const res = await apiFetch('/api/recognize', { method: 'POST', body: form });
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+        const res = await apiFetch('/api/recognize', {
+          method: 'POST',
+          body: form,
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Not recognized');
         showRecognizeResult(data);
       } catch (e) {
-        alert('Could not identify the song: ' + e.message);
+        if (e.name === 'AbortError') {
+          alert('Recognition timed out. Try recording in a quieter environment.');
+        } else {
+          alert('Could not identify the song: ' + e.message);
+        }
       } finally {
         micState = 'idle';
         $('#micBtn').classList.remove('identifying');
@@ -836,14 +863,21 @@ $('#micBtn').addEventListener('click', async () => {
       }
     };
 
-    mediaRecorder.start();
+    // Request data every second to ensure chunks are captured
+    mediaRecorder.start(1000);
     micState = 'recording';
     $('#micBtn').classList.add('recording');
-    $('#micBtn').title = 'Listening... Click to stop';
+    $('#micBtn').title = 'Listening... Click to stop (12s)';
 
-    // Auto-stop after 8 seconds
-    setTimeout(() => { if (micState === 'recording' && mediaRecorder) mediaRecorder.stop(); }, 12000);
+    // Auto-stop after 12 seconds
+    setTimeout(() => {
+      if (micState === 'recording' && mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+      }
+    }, 12000);
   } catch (e) {
+    micState = 'idle';
+    $('#micBtn').classList.remove('recording', 'identifying');
     alert('Microphone access denied: ' + e.message);
   }
 });
