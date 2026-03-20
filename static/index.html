@@ -558,6 +558,25 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 const $ = (s, p) => (p || document).querySelector(s);
 const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
 
+// ── Version ──
+const APP_VERSION = '1.1.0';
+
+(async function checkVersion() {
+  try {
+    const r = await fetch('/api/version');
+    const d = await r.json();
+    const stored = localStorage.getItem('ms_version');
+    if (stored && stored !== d.version) {
+      // Server upgraded — clear stale data and reload
+      localStorage.removeItem('ms_token');
+      localStorage.setItem('ms_version', d.version);
+      location.reload();
+      return;
+    }
+    localStorage.setItem('ms_version', d.version);
+  } catch {}
+})();
+
 // ── Auth ──
 let authToken = localStorage.getItem('ms_token') || '';
 let currentUser = null;

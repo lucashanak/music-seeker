@@ -13,7 +13,9 @@ import settings as app_settings
 import auth
 import recognize
 
-app = FastAPI(title="MusicSeeker", version="1.0.0")
+APP_VERSION = "1.1.0"
+
+app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
@@ -26,6 +28,13 @@ async def startup():
         print("WARNING: ADMIN_PASS not set! Set it via environment variable.", file=sys.stderr)
         return
     auth.init_admin(ADMIN_USER, ADMIN_PASS)
+
+
+# --- Version (public) ---
+
+@app.get("/api/version")
+async def get_version():
+    return {"version": APP_VERSION}
 
 
 # --- Auth (public) ---
@@ -251,4 +260,7 @@ async def favicon():
 
 @app.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    return FileResponse(
+        "static/index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
