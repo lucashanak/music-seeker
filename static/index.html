@@ -427,7 +427,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
     </div>
   </div>
   <div class="recognize-result" id="recognizeResult">
-    <div class="rr-label">Shazam identified</div>
+    <div class="rr-label" id="rrLabel">Song identified</div>
     <div class="rr-header">
       <img class="rr-img" id="rrImg" src="">
       <div class="rr-info">
@@ -823,7 +823,7 @@ $('#micBtn').addEventListener('click', async () => {
     $('#micBtn').title = 'Listening... Click to stop';
 
     // Auto-stop after 8 seconds
-    setTimeout(() => { if (micState === 'recording' && mediaRecorder) mediaRecorder.stop(); }, 8000);
+    setTimeout(() => { if (micState === 'recording' && mediaRecorder) mediaRecorder.stop(); }, 12000);
   } catch (e) {
     alert('Microphone access denied: ' + e.message);
   }
@@ -832,6 +832,7 @@ $('#micBtn').addEventListener('click', async () => {
 let recognizedItem = null;
 
 function showRecognizeResult(data) {
+  $('#rrLabel').textContent = (data.recognized_by || 'Shazam') + ' identified';
   recognizedItem = data;
   $('#rrImg').src = data.image || '';
   $('#rrTitle').textContent = data.name || 'Unknown';
