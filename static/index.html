@@ -559,7 +559,7 @@ const $ = (s, p) => (p || document).querySelector(s);
 const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
 
 // ── Version ──
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 (async function checkVersion() {
   try {
@@ -796,12 +796,22 @@ async function checkLibrary(items, containerEl) {
 let mediaRecorder = null;
 let micState = 'idle'; // idle | recording | identifying
 
+function resetMic() {
+  micState = 'idle';
+  $('#micBtn').classList.remove('recording', 'identifying');
+  $('#micBtn').title = 'Identify song with microphone';
+}
+
 $('#micBtn').addEventListener('click', async () => {
   if (micState === 'recording') {
     if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
     return;
   }
-  if (micState === 'identifying') return;
+  // Allow clicking when stuck in identifying to reset
+  if (micState === 'identifying') {
+    resetMic();
+    return;
+  }
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     alert('Microphone access requires HTTPS. Please access the app via https://');
@@ -824,20 +834,25 @@ $('#micBtn').addEventListener('click', async () => {
 
     mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
+    mediaRecorder.onerror = () => {
+      stream.getTracks().forEach(t => t.stop());
+      resetMic();
+      alert('Recording failed. Please try again.');
+    };
+
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
 
       if (!chunks.length) {
         alert('No audio was captured. Please try again.');
-        micState = 'idle';
-        $('#micBtn').classList.remove('recording', 'identifying');
+        resetMic();
         return;
       }
 
       micState = 'identifying';
       $('#micBtn').classList.remove('recording');
       $('#micBtn').classList.add('identifying');
-      $('#micBtn').title = 'Identifying...';
+      $('#micBtn').title = 'Identifying... (click to cancel)';
 
       const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
       const form = new FormData();
@@ -858,13 +873,11 @@ $('#micBtn').addEventListener('click', async () => {
       } catch (e) {
         if (e.name === 'AbortError') {
           alert('Recognition timed out. Try recording in a quieter environment.');
-        } else {
+        } else if (e.message !== 'Session expired') {
           alert('Could not identify the song: ' + e.message);
         }
       } finally {
-        micState = 'idle';
-        $('#micBtn').classList.remove('identifying');
-        $('#micBtn').title = 'Identify song with microphone';
+        resetMic();
       }
     };
 
@@ -881,8 +894,7 @@ $('#micBtn').addEventListener('click', async () => {
       }
     }, 12000);
   } catch (e) {
-    micState = 'idle';
-    $('#micBtn').classList.remove('recording', 'identifying');
+    resetMic();
     alert('Microphone access denied: ' + e.message);
   }
 });
