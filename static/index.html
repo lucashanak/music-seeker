@@ -569,7 +569,7 @@ function authHeaders() {
 async function apiFetch(url, opts = {}) {
   opts.headers = { ...authHeaders(), ...(opts.headers || {}) };
   const res = await fetch(url, opts);
-  if (res.status === 401) { logout(); throw new Error('Session expired'); }
+  if (res.status === 401) { if (authToken) logout(); throw new Error('Session expired'); }
   return res;
 }
 
@@ -980,6 +980,7 @@ $('#clearHistory').addEventListener('click', async () => {
 });
 
 async function refreshJobs() {
+  if (!authToken) return;
   try {
     const data = await apiJson('/api/jobs');
     const jobs = data.jobs || [];
