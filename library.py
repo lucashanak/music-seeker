@@ -4,20 +4,18 @@ import unicodedata
 import httpx
 
 NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://navidrome:4533")
-NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "")
-
 NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "lucas")
-
-_SUBSONIC_PARAMS = {
-    "v": "1.16.1",
-    "c": "music-seeker",
-    "u": NAVIDROME_USER,
-    "f": "json",
-}
+NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "")
 
 
 def _params(**extra) -> dict:
-    p = {**_SUBSONIC_PARAMS, "p": NAVIDROME_PASSWORD}
+    p = {
+        "v": "1.16.1",
+        "c": "music-seeker",
+        "u": NAVIDROME_USER,
+        "p": NAVIDROME_PASSWORD,
+        "f": "json",
+    }
     p.update(extra)
     return p
 

@@ -490,9 +490,24 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
       <label class="setting-label">Max Concurrent Downloads</label>
       <input class="setting-input" id="settingMaxConcurrent" type="number" min="1" max="20" value="10">
     </div>
-    <div class="setting-group" id="settingNavidromeGroup">
+    <div class="setting-group">
+      <label class="setting-label" style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+        <input type="checkbox" id="settingSpotdlOwn" style="width:18px; height:18px;">
+        spotDL uses own Spotify credentials
+      </label>
+      <div style="font-size:12px; color:#888; margin-top:4px;">When enabled, spotDL uses its built-in credentials (separate rate limit). When disabled, it shares your app token.</div>
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">Navidrome URL</label>
+      <input class="setting-input" id="settingNavidromeUrl" type="text" placeholder="http://navidrome:4533">
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">Navidrome User</label>
+      <input class="setting-input" id="settingNavidromeUser" type="text" placeholder="lucas">
+    </div>
+    <div class="setting-group">
       <label class="setting-label">Navidrome Password</label>
-      <input class="setting-input" id="settingNavidromePass" type="password" placeholder="Enter password for library scan...">
+      <input class="setting-input" id="settingNavidromePass" type="password" placeholder="Enter password...">
     </div>
     <div>
       <button class="btn-save" id="saveSettings">Save Settings</button>
@@ -664,7 +679,7 @@ async function initApp() {
     $('#usersSection').style.display = me.is_admin ? '' : 'none';
     // Show settings save only for admins (others can view)
     $('#saveSettings').style.display = me.is_admin ? '' : 'none';
-    $('#settingNavidromeGroup').style.display = me.is_admin ? '' : 'none';
+    // Navidrome fields visible to all (removed admin-only restriction)
 
     // Load defaults
     try {
@@ -1204,8 +1219,11 @@ async function loadSettings() {
     $('#settingMethod').value = data.default_method || 'spotdl';
     $('#settingFormat').value = data.default_format || 'flac';
     $('#settingMaxConcurrent').value = data.max_concurrent || 10;
+    $('#settingSpotdlOwn').checked = data.spotdl_own_credentials !== false;
+    $('#settingNavidromeUrl').value = data.navidrome_url || '';
+    $('#settingNavidromeUser').value = data.navidrome_user || '';
     $('#settingNavidromePass').value = '';
-    $('#settingNavidromePass').placeholder = data.navidrome_password ? '(set) Enter new password...' : 'Enter password...';
+    $('#settingNavidromePass').placeholder = data.navidrome_password ? '(set) Enter new...' : 'Enter password...';
   } catch { }
   if (currentUser && currentUser.is_admin) loadUsers();
 }
@@ -1217,6 +1235,9 @@ $('#saveSettings').addEventListener('click', async () => {
     default_method: $('#settingMethod').value,
     default_format: $('#settingFormat').value,
     max_concurrent: parseInt($('#settingMaxConcurrent').value) || 10,
+    spotdl_own_credentials: $('#settingSpotdlOwn').checked,
+    navidrome_url: $('#settingNavidromeUrl').value,
+    navidrome_user: $('#settingNavidromeUser').value,
   };
   const pass = $('#settingNavidromePass').value;
   if (pass) payload.navidrome_password = pass;

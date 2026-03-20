@@ -6,7 +6,6 @@ import time
 import httpx
 
 from jobs import Job, JobStatus, get_semaphore, save_if_finished
-from spotify import get_app_token, SPOTIFY_CLIENT_ID
 import library
 
 LIDARR_URL = os.environ.get("LIDARR_URL", "http://lidarr:8686")
@@ -96,8 +95,7 @@ async def _docker_stream_logs(container_id: str, job: Job):
 
 
 async def _run_spotdl(job: Job):
-    token = await get_app_token()
-
+    import settings
     # For playlists with track data: check library and only download missing tracks
     download_urls = [job.url]
     if job.type == "playlist" and job.playlist_tracks:
@@ -124,12 +122,16 @@ async def _run_spotdl(job: Job):
 
     cmd = [
         "spotdl", "download", *download_urls,
-        "--client-id", SPOTIFY_CLIENT_ID,
-        "--auth-token", token,
         "--output", "/music/{artist}/{album}/{title}.{output-ext}",
         "--format", job.format,
         "--threads", "4",
     ]
+
+    # Optionally pass our app token to spotDL instead of its built-in credentials
+    if not settings.get_all().get("spotdl_own_credentials", True):
+        from spotify import get_app_token, SPOTIFY_CLIENT_ID
+        token = await get_app_token()
+        cmd.extend(["--client-id", SPOTIFY_CLIENT_ID, "--auth-token", token])
 
     create_config = {
         "Image": "spotdl-local",
