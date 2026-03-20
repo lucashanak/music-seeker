@@ -1,4 +1,6 @@
 import os
+import re
+import unicodedata
 import httpx
 
 NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://navidrome:4533")
@@ -21,7 +23,18 @@ def _params(**extra) -> dict:
 
 
 def _normalize(s: str) -> str:
-    return s.lower().strip()
+    """Normalize for fuzzy comparison: lowercase, strip accents, remove punctuation and extras."""
+    s = s.lower().strip()
+    # Normalize unicode (curly quotes, accents, etc.)
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("ascii", "ignore").decode("ascii")
+    # Remove common suffixes: (feat. ...), (Remaster ...), [Deluxe], etc.
+    s = re.sub(r'\s*[\(\[].*?[\)\]]', '', s)
+    # Remove punctuation
+    s = re.sub(r'[^\w\s]', '', s)
+    # Collapse whitespace
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
 
 
 async def check_items(items: list[dict]) -> list[bool]:
@@ -57,7 +70,7 @@ async def check_items(items: list[dict]) -> list[bool]:
 async def _search_navidrome(client: httpx.AsyncClient, name: str, artist: str, item_type: str) -> bool:
     # Search by track/album name — more specific queries yield better matches
     query = name
-    params = _params(query=query, songCount=20, albumCount=20, artistCount=20)
+    params = _params(query=query, songCount=50, albumCount=20, artistCount=20)
     resp = await client.get("/rest/search3", params=params)
     resp.raise_for_status()
     data = resp.json()
@@ -83,7 +96,11 @@ async def _search_navidrome(client: httpx.AsyncClient, name: str, artist: str, i
 
 
 def _matches(a: str, b: str) -> bool:
-    return _normalize(a) == _normalize(b)
+    na, nb = _normalize(a), _normalize(b)
+    if not na or not nb:
+        return False
+    # Exact match or one contains the other (handles remaster tags, feat. etc.)
+    return na == nb or na in nb or nb in na
 
 
 def _artist_matches(lib_artist: str, search_artist: str) -> bool:
@@ -100,7 +117,7 @@ async def find_song_id(name: str, artist: str) -> str | None:
     if not NAVIDROME_PASSWORD:
         return None
     async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
-        params = _params(query=name, songCount=20, albumCount=0, artistCount=0)
+        params = _params(query=name, songCount=50, albumCount=0, artistCount=0)
         resp = await client.get("/rest/search3", params=params)
         resp.raise_for_status()
         sr = resp.json().get("subsonic-response", {}).get("searchResult3", {})

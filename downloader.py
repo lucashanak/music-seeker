@@ -25,8 +25,9 @@ async def run_download(job: Job):
     async with sem:
         job.status = JobStatus.RUNNING
         try:
+            downloaded = True
             if job.method == "spotdl":
-                await _run_spotdl(job)
+                downloaded = await _run_spotdl(job)
             elif job.method == "lidarr":
                 await _run_lidarr(job)
             else:
@@ -35,10 +36,11 @@ async def run_download(job: Job):
             if job.status == JobStatus.RUNNING:
                 job.status = JobStatus.DONE
                 job.progress = 100
-                await _trigger_navidrome_scan()
+                if downloaded:
+                    await _trigger_navidrome_scan()
                 # Create playlist in Navidrome after downloading a Spotify playlist
                 if job.type == "playlist" and job.playlist_name and job.playlist_tracks:
-                    await _create_navidrome_playlist(job)
+                    await _create_navidrome_playlist(job, needs_scan=downloaded is True)
         except asyncio.CancelledError:
             job.status = JobStatus.CANCELLED
         except Exception as e:
@@ -96,8 +98,32 @@ async def _docker_stream_logs(container_id: str, job: Job):
 async def _run_spotdl(job: Job):
     token = await get_app_token()
 
+    # For playlists with track data: check library and only download missing tracks
+    download_urls = [job.url]
+    if job.type == "playlist" and job.playlist_tracks:
+        job.progress_text = "Checking library for existing tracks..."
+        missing_urls = []
+        already_have = 0
+        for track in job.playlist_tracks:
+            name = track.get("name", "")
+            artist = track.get("artist", "")
+            url = track.get("url", "")
+            if not url:
+                continue
+            sid = await library.find_song_id(name, artist)
+            if sid:
+                already_have += 1
+            else:
+                missing_urls.append(url)
+        if already_have > 0:
+            job.progress_text = f"Skipping {already_have} tracks already in library, downloading {len(missing_urls)}..."
+        if not missing_urls:
+            job.progress_text = f"All {already_have} tracks already in library, skipping download"
+            return False
+        download_urls = missing_urls
+
     cmd = [
-        "spotdl", "download", job.url,
+        "spotdl", "download", *download_urls,
         "--client-id", SPOTIFY_CLIENT_ID,
         "--auth-token", token,
         "--output", "/music/{artist}/{album}/{title}.{output-ext}",
@@ -167,6 +193,8 @@ async def _run_spotdl(job: Job):
         except Exception:
             pass
         raise
+
+    return True
 
 
 async def _run_lidarr(job: Job):
@@ -246,7 +274,7 @@ async def _trigger_navidrome_scan():
         pass
 
 
-async def _create_navidrome_playlist(job: Job):
+async def _create_navidrome_playlist(job: Job, needs_scan: bool = True):
     """After playlist download, wait for scan and create playlist in Navidrome."""
     if not NAVIDROME_PASSWORD:
         return
@@ -254,14 +282,13 @@ async def _create_navidrome_playlist(job: Job):
         import logging
         log = logging.getLogger("musicseeker")
 
-        log.info(f"Playlist creation: name='{job.playlist_name}', tracks={len(job.playlist_tracks)}")
-        if job.playlist_tracks:
-            log.info(f"First track: {job.playlist_tracks[0]}")
+        log.info(f"Playlist creation: name='{job.playlist_name}', tracks={len(job.playlist_tracks)}, needs_scan={needs_scan}")
 
-        job.progress_text = "Waiting for Navidrome to index new tracks..."
-        await asyncio.sleep(15)
-        await _trigger_navidrome_scan()
-        await asyncio.sleep(15)
+        if needs_scan:
+            job.progress_text = "Waiting for Navidrome to index new tracks..."
+            await asyncio.sleep(15)
+            await _trigger_navidrome_scan()
+            await asyncio.sleep(15)
 
         job.progress_text = "Creating playlist in Navidrome..."
         song_ids = []

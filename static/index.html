@@ -1031,7 +1031,7 @@ async function loadPlaylistDetail(id, url) {
   tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
     const data = await apiJson(`/api/spotify/playlist/${id}/tracks`);
-    currentPlaylistTracks = data.tracks.map(t => ({ name: t.name, artist: t.artist }));
+    currentPlaylistTracks = data.tracks.map(t => ({ name: t.name, artist: t.artist, url: t.url }));
     $('#plDetailImg').src = data.image || '';
     $('#plDetailName').textContent = data.name;
     $('#plDetailCount').textContent = `${data.tracks.length} tracks`;

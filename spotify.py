@@ -132,26 +132,49 @@ async def get_user_playlists() -> list[dict]:
 
 
 async def get_playlist_tracks(playlist_id: str) -> dict:
-    # Public playlists work with app token, private ones need user token
+    # Get playlist metadata first
     try:
-        playlist = await spotify_get(f"playlists/{playlist_id}")
+        playlist = await spotify_get(f"playlists/{playlist_id}", {"fields": "name,images"})
     except httpx.HTTPStatusError:
-        playlist = await spotify_get(f"playlists/{playlist_id}", user=True)
+        playlist = await spotify_get(f"playlists/{playlist_id}", {"fields": "name,images"}, user=True)
+
+    # Paginate through all tracks (Spotify returns max 100 per request)
     tracks = []
-    for item in playlist.get("tracks", {}).get("items", []):
-        t = item.get("track")
-        if not t:
-            continue
-        tracks.append({
-            "id": t["id"],
-            "name": t["name"],
-            "artist": ", ".join(a["name"] for a in t.get("artists", [])),
-            "album": t.get("album", {}).get("name", ""),
-            "image": _best_image(t.get("album", {}).get("images", [])),
-            "url": t["external_urls"].get("spotify", ""),
-            "duration_ms": t.get("duration_ms", 0),
-            "type": "track",
-        })
+    offset = 0
+    use_user = False
+    while True:
+        try:
+            if use_user:
+                data = await spotify_get(f"playlists/{playlist_id}/tracks",
+                    {"limit": 100, "offset": offset}, user=True)
+            else:
+                data = await spotify_get(f"playlists/{playlist_id}/tracks",
+                    {"limit": 100, "offset": offset})
+        except httpx.HTTPStatusError:
+            if not use_user:
+                use_user = True
+                continue
+            raise
+
+        for item in data.get("items", []):
+            t = item.get("track")
+            if not t or not t.get("id"):
+                continue
+            tracks.append({
+                "id": t["id"],
+                "name": t["name"],
+                "artist": ", ".join(a["name"] for a in t.get("artists", [])),
+                "album": t.get("album", {}).get("name", ""),
+                "image": _best_image(t.get("album", {}).get("images", [])),
+                "url": t["external_urls"].get("spotify", ""),
+                "duration_ms": t.get("duration_ms", 0),
+                "type": "track",
+            })
+
+        if not data.get("next"):
+            break
+        offset += 100
+
     return {
         "name": playlist.get("name", ""),
         "image": _best_image(playlist.get("images", [])),
