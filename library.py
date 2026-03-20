@@ -93,3 +93,33 @@ def _artist_matches(lib_artist: str, search_artist: str) -> bool:
     if not la or not sa:
         return True  # skip artist check if either is empty
     return la in sa or sa in la
+
+
+async def find_song_id(name: str, artist: str) -> str | None:
+    """Find a song's Navidrome ID by name and artist."""
+    if not NAVIDROME_PASSWORD:
+        return None
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
+        params = _params(query=name, songCount=20, albumCount=0, artistCount=0)
+        resp = await client.get("/rest/search3", params=params)
+        resp.raise_for_status()
+        sr = resp.json().get("subsonic-response", {}).get("searchResult3", {})
+        for song in sr.get("song", []):
+            if _matches(song.get("title", ""), name) and _artist_matches(song.get("artist", ""), artist):
+                return song.get("id")
+    return None
+
+
+async def create_playlist(name: str, song_ids: list[str]) -> bool:
+    """Create a playlist in Navidrome via Subsonic API."""
+    if not NAVIDROME_PASSWORD or not song_ids:
+        return False
+    # Build params as list of tuples to support repeated songId
+    param_list = list(_params(name=name).items())
+    for sid in song_ids:
+        param_list.append(("songId", sid))
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=30) as client:
+        resp = await client.get("/rest/createPlaylist", params=param_list)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("subsonic-response", {}).get("status") == "ok"

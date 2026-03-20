@@ -65,6 +65,8 @@ class DownloadRequest(BaseModel):
     method: str = "spotdl"
     format: str = "flac"
     type: str = "track"
+    playlist_name: str = ""
+    playlist_tracks: list[dict] = []
 
 
 # --- Protected Routes ---
@@ -100,6 +102,8 @@ async def start_download(req: DownloadRequest, user: dict = Depends(auth.get_cur
         url=req.url,
         method=req.method,
         fmt=req.format,
+        playlist_name=req.playlist_name,
+        playlist_tracks=req.playlist_tracks,
     )
     task = asyncio.create_task(downloader.run_download(job))
     jobs.register_task(job.id, task)

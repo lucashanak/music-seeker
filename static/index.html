@@ -700,6 +700,7 @@ let selectedFormat = 'flac';
 let panelOpen = false;
 let currentPlaylistId = null;
 let currentPlaylistUrl = null;
+let currentPlaylistTracks = [];
 let appSettings = { default_format: 'flac', default_method: 'spotdl', max_concurrent: 10 };
 
 // ── Navigation ──
@@ -1030,6 +1031,7 @@ async function loadPlaylistDetail(id, url) {
   tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
     const data = await apiJson(`/api/spotify/playlist/${id}/tracks`);
+    currentPlaylistTracks = data.tracks.map(t => ({ name: t.name, artist: t.artist }));
     $('#plDetailImg').src = data.image || '';
     $('#plDetailName').textContent = data.name;
     $('#plDetailCount').textContent = `${data.tracks.length} tracks`;
@@ -1091,10 +1093,12 @@ $('#modalDownload').addEventListener('click', async () => {
   const btn = $('#modalDownload');
   btn.disabled = true; btn.textContent = 'Starting...';
   try {
-    await apiJson('/api/download', {
-      method: 'POST',
-      body: { url: modalItem.url, title: `${modalItem.artist} - ${modalItem.name}`, method: selectedMethod, format: selectedFormat, type: modalItem.type || 'track' },
-    });
+    const dlBody = { url: modalItem.url, title: `${modalItem.artist} - ${modalItem.name}`, method: selectedMethod, format: selectedFormat, type: modalItem.type || 'track' };
+    if (modalItem.type === 'playlist' && currentPlaylistTracks.length) {
+      dlBody.playlist_name = modalItem.name;
+      dlBody.playlist_tracks = currentPlaylistTracks;
+    }
+    await apiJson('/api/download', { method: 'POST', body: dlBody });
     closeModal();
     openPanel();
   } catch (e) {

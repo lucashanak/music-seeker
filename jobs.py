@@ -30,10 +30,13 @@ class Job:
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     error: str | None = None
+    playlist_name: str = ""
+    playlist_tracks: list = field(default_factory=list)  # [{name, artist}]
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["status"] = self.status.value
+        d.pop("playlist_tracks", None)  # don't expose large track list in API
         return d
 
 
@@ -84,9 +87,11 @@ def save_if_finished(job: Job):
 _load_history()
 
 
-def create_job(type_: str, title: str, url: str, method: str, fmt: str) -> Job:
+def create_job(type_: str, title: str, url: str, method: str, fmt: str,
+               playlist_name: str = "", playlist_tracks: list | None = None) -> Job:
     job_id = str(uuid.uuid4())[:8]
-    job = Job(id=job_id, type=type_, title=title, url=url, method=method, format=fmt)
+    job = Job(id=job_id, type=type_, title=title, url=url, method=method, format=fmt,
+              playlist_name=playlist_name, playlist_tracks=playlist_tracks or [])
     _jobs[job_id] = job
     return job
 

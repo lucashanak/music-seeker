@@ -7,6 +7,7 @@ import httpx
 
 from jobs import Job, JobStatus, get_semaphore, save_if_finished
 from spotify import get_app_token, SPOTIFY_CLIENT_ID
+import library
 
 LIDARR_URL = os.environ.get("LIDARR_URL", "http://lidarr:8686")
 LIDARR_API_KEY = os.environ.get("LIDARR_API_KEY", "")
@@ -35,6 +36,9 @@ async def run_download(job: Job):
                 job.status = JobStatus.DONE
                 job.progress = 100
                 await _trigger_navidrome_scan()
+                # Create playlist in Navidrome after downloading a Spotify playlist
+                if job.type == "playlist" and job.playlist_name and job.playlist_tracks:
+                    await _create_navidrome_playlist(job)
         except asyncio.CancelledError:
             job.status = JobStatus.CANCELLED
         except Exception as e:
@@ -233,10 +237,55 @@ async def _trigger_navidrome_scan():
                 params={
                     "v": "1.16.1",
                     "c": "music-seeker",
-                    "u": "lucas",
+                    "u": library.NAVIDROME_USER,
                     "p": NAVIDROME_PASSWORD,
                 },
                 timeout=10,
             )
     except Exception:
         pass
+
+
+async def _create_navidrome_playlist(job: Job):
+    """After playlist download, wait for scan and create playlist in Navidrome."""
+    if not NAVIDROME_PASSWORD:
+        return
+    try:
+        import logging
+        log = logging.getLogger("musicseeker")
+
+        log.info(f"Playlist creation: name='{job.playlist_name}', tracks={len(job.playlist_tracks)}")
+        if job.playlist_tracks:
+            log.info(f"First track: {job.playlist_tracks[0]}")
+
+        job.progress_text = "Waiting for Navidrome to index new tracks..."
+        await asyncio.sleep(15)
+        await _trigger_navidrome_scan()
+        await asyncio.sleep(15)
+
+        job.progress_text = "Creating playlist in Navidrome..."
+        song_ids = []
+        not_found = []
+        for track in job.playlist_tracks:
+            name = track.get("name", "")
+            artist = track.get("artist", "")
+            sid = await library.find_song_id(name, artist)
+            if sid:
+                song_ids.append(sid)
+            else:
+                not_found.append(f"{artist} - {name}")
+
+        log.info(f"Playlist '{job.playlist_name}': found {len(song_ids)}/{len(job.playlist_tracks)} tracks")
+        if not_found:
+            log.info(f"Not found in Navidrome: {not_found[:5]}")
+
+        if song_ids:
+            ok = await library.create_playlist(job.playlist_name, song_ids)
+            log.info(f"createPlaylist result: {ok}")
+            job.progress_text = f"Playlist created in Navidrome ({len(song_ids)}/{len(job.playlist_tracks)} tracks)"
+        else:
+            job.progress_text = "Download complete (could not find tracks in Navidrome for playlist)"
+    except Exception as e:
+        import traceback
+        logging.getLogger("musicseeker").error(f"Playlist creation error: {traceback.format_exc()}")
+        job.progress_text = f"Download complete (playlist creation failed: {e})"
