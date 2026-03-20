@@ -11,7 +11,7 @@ ACOUSTID_API_KEY = os.environ.get("ACOUSTID_API_KEY", "")
 
 def _convert_to_wav(audio_data: bytes) -> bytes:
     """Convert any audio format (WebM/Opus, etc.) to WAV via ffmpeg."""
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as inp:
+    with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as inp:
         inp.write(audio_data)
         inp_path = inp.name
 

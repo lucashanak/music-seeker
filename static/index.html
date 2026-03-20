@@ -136,6 +136,11 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 .btn-mic.identifying { border-color: var(--accent); color: var(--accent); animation: pulse 1s ease infinite; }
 @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
 
+.mic-status {
+  font-size: 12px; color: var(--text-muted); margin-top: 4px;
+  text-align: center; min-height: 16px; width: 100%;
+}
+
 .type-toggle {
   display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
 }
@@ -420,6 +425,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
     <button class="btn-mic" id="micBtn" title="Identify song with microphone">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
     </button>
+    <div class="mic-status" id="micStatus"></div>
     <div class="type-toggle">
       <button class="type-btn active" data-type="track">Tracks</button>
       <button class="type-btn" data-type="album">Albums</button>
@@ -559,7 +565,7 @@ const $ = (s, p) => (p || document).querySelector(s);
 const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
 
 // ── Version ──
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 
 (async function checkVersion() {
   try {
@@ -795,57 +801,95 @@ async function checkLibrary(items, containerEl) {
 // ── Microphone Recognition ──
 let mediaRecorder = null;
 let micState = 'idle'; // idle | recording | identifying
+let micStream = null; // Global stream ref — must be cleaned up to unblock Firefox
+
+function micLog(msg) {
+  $('#micStatus').textContent = msg;
+}
+
+function stopMicStream() {
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+  }
+}
 
 function resetMic() {
   micState = 'idle';
+  stopMicStream();
+  if (micTimer) { clearInterval(micTimer); micTimer = null; }
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    try { mediaRecorder.stop(); } catch (_) {}
+  }
+  mediaRecorder = null;
   $('#micBtn').classList.remove('recording', 'identifying');
   $('#micBtn').title = 'Identify song with microphone';
 }
 
+let micTimer = null;
+
 $('#micBtn').addEventListener('click', async () => {
   if (micState === 'recording') {
     if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+    if (micTimer) clearInterval(micTimer);
     return;
   }
-  // Allow clicking when stuck in identifying to reset
   if (micState === 'identifying') {
     resetMic();
+    micLog('Cancelled');
     return;
   }
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    alert('Microphone access requires HTTPS. Please access the app via https://');
+    micLog('Error: Microphone requires HTTPS');
     return;
   }
 
+  // Clean up any previous stream
+  stopMicStream();
+
+  // getUserMedia MUST be the first async call after user click — Firefox expires
+  // user activation if anything is awaited before it
+  micLog('Requesting microphone...');
+
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await Promise.race([
+      navigator.mediaDevices.getUserMedia({ audio: true }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(
+        'Mic timed out (10s). Firefox: tap lock icon in URL bar → Clear site data, then reload and try again.'
+      )), 10000)),
+    ]);
+
+    micStream = stream;
     const chunks = [];
 
-    // Pick a supported mime type
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : MediaRecorder.isTypeSupported('audio/webm')
-        ? 'audio/webm'
-        : '';
+    micLog('Mic active. Recording...');
+
+    // Pick a supported mime type — Firefox prefers audio/ogg;codecs=opus
+    let mimeType = '';
+    for (const type of ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm', 'audio/ogg']) {
+      if (MediaRecorder.isTypeSupported(type)) { mimeType = type; break; }
+    }
     mediaRecorder = mimeType
       ? new MediaRecorder(stream, { mimeType })
       : new MediaRecorder(stream);
 
     mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
-    mediaRecorder.onerror = () => {
-      stream.getTracks().forEach(t => t.stop());
+    mediaRecorder.onerror = (ev) => {
       resetMic();
-      alert('Recording failed. Please try again.');
+      micLog('Recording error: ' + (ev.error?.message || 'unknown'));
     };
 
     mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop());
+      stopMicStream();
+      if (micTimer) { clearInterval(micTimer); micTimer = null; }
+
+      micLog('Captured ' + chunks.length + ' chunks (' + chunks.reduce((a, c) => a + c.size, 0) + ' bytes)');
 
       if (!chunks.length) {
-        alert('No audio was captured. Please try again.');
         resetMic();
+        micLog('No audio captured. Try again.');
         return;
       }
 
@@ -854,9 +898,13 @@ $('#micBtn').addEventListener('click', async () => {
       $('#micBtn').classList.add('identifying');
       $('#micBtn').title = 'Identifying... (click to cancel)';
 
-      const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      const recMime = mediaRecorder.mimeType || 'audio/webm';
+      const ext = recMime.includes('ogg') ? 'recording.ogg' : 'recording.webm';
+      const blob = new Blob(chunks, { type: recMime });
+      micLog('Sending ' + (blob.size / 1024).toFixed(0) + ' KB to server...');
+
       const form = new FormData();
-      form.append('audio', blob, 'recording.webm');
+      form.append('audio', blob, ext);
 
       try {
         const controller = new AbortController();
@@ -867,14 +915,18 @@ $('#micBtn').addEventListener('click', async () => {
           signal: controller.signal,
         });
         clearTimeout(timeout);
+        micLog('Server responded: ' + res.status);
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Not recognized');
+        micLog('Found: ' + data.artist + ' - ' + data.name);
         showRecognizeResult(data);
       } catch (e) {
         if (e.name === 'AbortError') {
-          alert('Recognition timed out. Try recording in a quieter environment.');
-        } else if (e.message !== 'Session expired') {
-          alert('Could not identify the song: ' + e.message);
+          micLog('Timed out after 30s');
+        } else if (e.message === 'Session expired') {
+          micLog('Session expired, please log in again');
+        } else {
+          micLog('Error: ' + e.message);
         }
       } finally {
         resetMic();
@@ -885,7 +937,17 @@ $('#micBtn').addEventListener('click', async () => {
     mediaRecorder.start(1000);
     micState = 'recording';
     $('#micBtn').classList.add('recording');
-    $('#micBtn').title = 'Listening... Click to stop (12s)';
+    $('#micBtn').title = 'Listening... Click to stop';
+
+    // Countdown timer
+    let remaining = 12;
+    micLog('Recording... ' + remaining + 's');
+    micTimer = setInterval(() => {
+      remaining--;
+      if (remaining > 0) {
+        micLog('Recording... ' + remaining + 's (' + chunks.length + ' chunks)');
+      }
+    }, 1000);
 
     // Auto-stop after 12 seconds
     setTimeout(() => {
@@ -895,7 +957,7 @@ $('#micBtn').addEventListener('click', async () => {
     }, 12000);
   } catch (e) {
     resetMic();
-    alert('Microphone access denied: ' + e.message);
+    micLog('Mic error: ' + e.message);
   }
 });
 
@@ -908,6 +970,10 @@ function showRecognizeResult(data) {
   $('#rrTitle').textContent = data.name || 'Unknown';
   $('#rrArtist').textContent = data.artist || '';
   $('#recognizeResult').style.display = '';
+  // Auto-search on Spotify and scroll into view
+  $('#searchInput').value = `${data.artist || ''} ${data.name || ''}`.trim();
+  doSearch();
+  $('#recognizeResult').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 $('#rrClose').addEventListener('click', () => { $('#recognizeResult').style.display = 'none'; });
@@ -1050,7 +1116,7 @@ $('#clearHistory').addEventListener('click', async () => {
 });
 
 async function refreshJobs() {
-  if (!authToken) return;
+  if (!authToken) { if (jobsInterval) { clearInterval(jobsInterval); jobsInterval = null; } return; }
   try {
     const data = await apiJson('/api/jobs');
     const jobs = data.jobs || [];

@@ -13,7 +13,7 @@ import settings as app_settings
 import auth
 import recognize
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
