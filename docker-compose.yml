@@ -7,7 +7,24 @@ services:
       - "8090:8090"
     env_file:
       - .env
+    environment:
+      - NAVIDROME_URL=http://navidrome:4533
     volumes:
-      - ${HOST_MUSIC_DIR:-./music}:/music
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${MUSIC_DIR:-./music}:/music
       - ./data:/app/data
+    depends_on:
+      - navidrome
+
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+    ports:
+      - "4533:4533"
+    environment:
+      ND_SCANSCHEDULE: 1m
+      ND_LOGLEVEL: info
+      ND_BASEURL: ""
+    volumes:
+      - ${MUSIC_DIR:-./music}:/music:ro
+      - ./navidrome-data:/data
