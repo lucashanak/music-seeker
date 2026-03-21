@@ -14,7 +14,7 @@ import auth
 import recognize
 import lastfm
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 
 app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
@@ -35,7 +35,11 @@ async def startup():
 
 @app.get("/api/version")
 async def get_version():
-    return {"version": APP_VERSION}
+    return {
+        "version": APP_VERSION,
+        "spotify_search": bool(spotify.SPOTIFY_CLIENT_ID and spotify.SPOTIFY_CLIENT_SECRET),
+        "spotify_user": bool(spotify.SPOTIFY_REFRESH_TOKEN),
+    }
 
 
 # --- Auth (public) ---
@@ -61,7 +65,7 @@ async def get_me(user: dict = Depends(auth.get_current_user)):
 # --- API Models ---
 
 class DownloadRequest(BaseModel):
-    url: str
+    url: str = ""
     title: str = ""
     method: str = "yt-dlp"
     format: str = "flac"
@@ -88,6 +92,12 @@ async def search(
 async def get_playlists(user: dict = Depends(auth.get_current_user)):
     playlists = await spotify.get_user_playlists()
     return {"playlists": playlists}
+
+
+@app.get("/api/spotify/liked")
+async def get_liked_tracks(user: dict = Depends(auth.get_current_user)):
+    data = await spotify.get_liked_tracks()
+    return data
 
 
 @app.get("/api/spotify/playlist/{playlist_id}/tracks")

@@ -640,14 +640,17 @@ const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
 
 // ── Version ──
 const APP_VERSION = '1.5.0';
+let spotifySearch = true;
+let spotifyUser = true;
 
 (async function checkVersion() {
   try {
     const r = await fetch('/api/version');
     const d = await r.json();
+    spotifySearch = d.spotify_search !== false;
+    spotifyUser = d.spotify_user !== false;
     const stored = localStorage.getItem('ms_version');
     if (stored && stored !== d.version) {
-      // Server upgraded — clear stale data and reload
       localStorage.removeItem('ms_token');
       localStorage.setItem('ms_version', d.version);
       location.reload();
@@ -745,6 +748,17 @@ async function initApp() {
       const s = await apiJson('/api/settings');
       appSettings = s;
     } catch {}
+
+    // Grey out features when Spotify not configured
+    const playlistsBtn = $('.nav-btn[data-page="playlists"]');
+    if (!spotifyUser) {
+      playlistsBtn.style.opacity = '0.4';
+      playlistsBtn.title = 'Spotify user token not configured';
+    }
+    if (!spotifySearch) {
+      $('#searchInput').placeholder = 'Spotify API not configured...';
+      $('#searchInput').disabled = true;
+    }
 
     // Start jobs polling
     refreshJobs();
@@ -1157,10 +1171,22 @@ async function loadPlaylists() {
   $('#playlistDetail').style.display = 'none';
   const grid = $('#playlistsGrid');
   grid.style.display = '';
+  if (!spotifyUser) {
+    grid.innerHTML = `<div class="empty-state" style="opacity:.5;"><p>Spotify user token not configured.<br>Set SPOTIFY_REFRESH_TOKEN to access playlists and liked songs.</p></div>`;
+    return;
+  }
   grid.innerHTML = Array(6).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
     const data = await apiJson('/api/spotify/playlists');
-    grid.innerHTML = data.playlists.map(pl => `
+    const likedCard = `
+      <div class="card" data-playlist-id="liked" data-playlist-url="">
+        <div class="card-img" style="background:linear-gradient(135deg,#604be8,#1db954);display:flex;align-items:center;justify-content:center;font-size:32px;">&#9829;</div>
+        <div class="card-body">
+          <div class="card-title">Liked Songs</div>
+          <div class="card-sub">Your saved tracks</div>
+        </div>
+      </div>`;
+    grid.innerHTML = likedCard + data.playlists.map(pl => `
       <div class="card" data-playlist-id="${pl.id}" data-playlist-url="${pl.url}">
         <img class="card-img" src="${pl.image || ''}" alt="" loading="lazy">
         <div class="card-body">
@@ -1185,9 +1211,17 @@ async function loadPlaylistDetail(id, url) {
   const tracksEl = $('#playlistTracks');
   tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
-    const data = await apiJson(`/api/spotify/playlist/${id}/tracks`);
-    currentPlaylistTracks = data.tracks.map(t => ({ name: t.name, artist: t.artist, url: t.url }));
-    $('#plDetailImg').src = data.image || '';
+    const data = id === 'liked'
+      ? await apiJson('/api/spotify/liked')
+      : await apiJson(`/api/spotify/playlist/${id}/tracks`);
+    currentPlaylistTracks = data.tracks.map(t => ({ name: t.name, artist: t.artist, album: t.album || '', image: t.image || '', url: t.url }));
+    if (id === 'liked') {
+      $('#plDetailImg').style.background = 'linear-gradient(135deg,#604be8,#1db954)';
+      $('#plDetailImg').src = '';
+    } else {
+      $('#plDetailImg').style.background = '';
+      $('#plDetailImg').src = data.image || '';
+    }
     $('#plDetailName').textContent = data.name;
     $('#plDetailCount').textContent = `${data.tracks.length} tracks`;
     renderResults(data.tracks, '#playlistTracks');
@@ -1202,12 +1236,12 @@ $('#backToPlaylists').addEventListener('click', () => {
 });
 
 $('#downloadPlaylist').addEventListener('click', () => {
-  if (!currentPlaylistUrl) return;
+  if (!currentPlaylistId) return;
   openModal({
     name: $('#plDetailName').textContent,
     artist: 'Playlist',
-    image: $('#plDetailImg').src,
-    url: `https://open.spotify.com/playlist/${currentPlaylistId}`,
+    image: currentPlaylistId === 'liked' ? '' : $('#plDetailImg').src,
+    url: currentPlaylistId === 'liked' ? '' : `https://open.spotify.com/playlist/${currentPlaylistId}`,
     type: 'playlist',
   });
 });
@@ -1227,8 +1261,8 @@ function openModal(item) {
   dlBtn.textContent = 'Download';
   $('#downloadModal').classList.add('open');
 
-  // Last.fm items have no Spotify URL — resolve it
-  if (!item.url) {
+  // Last.fm items have no Spotify URL — resolve it (skip for playlists, they use playlist_tracks)
+  if (!item.url && item.type !== 'playlist') {
     dlBtn.disabled = true;
     dlBtn.textContent = 'Resolving...';
     apiJson('/api/discover/resolve', {

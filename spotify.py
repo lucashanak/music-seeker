@@ -201,6 +201,36 @@ async def get_playlist_tracks(playlist_id: str) -> dict:
     }
 
 
+async def get_liked_tracks() -> dict:
+    """Fetch user's Liked Songs (saved tracks) with pagination."""
+    tracks = []
+    offset = 0
+    while True:
+        data = await spotify_get("me/tracks", {"limit": 50, "offset": offset}, user=True)
+        for item in data.get("items", []):
+            t = item.get("track")
+            if not t or not t.get("id"):
+                continue
+            tracks.append({
+                "id": t["id"],
+                "name": t["name"],
+                "artist": ", ".join(a["name"] for a in t.get("artists", [])),
+                "album": t.get("album", {}).get("name", ""),
+                "image": _best_image(t.get("album", {}).get("images", [])),
+                "url": t["external_urls"].get("spotify", ""),
+                "duration_ms": t.get("duration_ms", 0),
+                "type": "track",
+            })
+        if not data.get("next"):
+            break
+        offset += 50
+    return {
+        "name": "Liked Songs",
+        "image": "",
+        "tracks": tracks,
+    }
+
+
 def parse_spotify_url(url: str) -> tuple[str, str] | None:
     """Extract (type, id) from a Spotify URL. Returns None if not a valid Spotify URL."""
     m = re.search(r"open\.spotify\.com/(track|album|playlist|artist)/([a-zA-Z0-9]+)", url)

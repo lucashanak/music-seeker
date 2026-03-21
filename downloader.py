@@ -67,13 +67,19 @@ async def _resolve_tracks(job: Job) -> list[dict]:
     if job.type == "album":
         parsed = parse_spotify_url(job.url)
         if parsed and parsed[0] == "album":
-            return await get_album_tracks(parsed[1])
+            try:
+                return await get_album_tracks(parsed[1])
+            except Exception:
+                pass  # Spotify API unavailable
 
     # Single track: resolve metadata from Spotify URL if available
     parsed = parse_spotify_url(job.url)
     if parsed and parsed[0] == "track":
-        meta = await get_track_metadata(parsed[1])
-        return [meta]
+        try:
+            meta = await get_track_metadata(parsed[1])
+            return [meta]
+        except Exception:
+            pass  # Spotify API unavailable, fall through to title parsing
 
     if " - " in job.title:
         artist, title = job.title.split(" - ", 1)
