@@ -3665,6 +3665,15 @@ async function loadQueueState() {
         $('#playerImg').src = item.image || '';
         $('#playerTitle').textContent = item.name || '';
         $('#playerArtist').textContent = item.artist || '';
+        // Pre-set audio source so play button works immediately
+        const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: authToken });
+        audio.src = `/api/player/stream?${params}`;
+        audio.preload = 'none';
+        if (data.position_seconds > 0) {
+          audio.addEventListener('loadedmetadata', () => { audio.currentTime = data.position_seconds; }, { once: true });
+        }
+        syncFullPlayer();
+        updateDownloadButtons(item);
         showPlayerBar();
       }
     }
