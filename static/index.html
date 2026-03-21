@@ -438,7 +438,10 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 <!-- ── Search Page ── -->
 <main id="pageSearch">
   <div class="search-container">
-    <input class="search-input" id="searchInput" type="text" placeholder="Search for music...">
+    <div style="position:relative; flex:1;">
+      <input class="search-input" id="searchInput" type="text" placeholder="Search for music..." style="width:100%; padding-right:36px;">
+      <button id="searchClear" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:none; color:var(--text-muted); font-size:18px; cursor:pointer; display:none; padding:4px 8px;" title="Clear">&times;</button>
+    </div>
     <button class="btn-mic" id="micBtn" title="Identify song with microphone">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
     </button>
@@ -447,6 +450,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
       <button class="type-btn active" data-type="track">Tracks</button>
       <button class="type-btn" data-type="album">Albums</button>
       <button class="type-btn" data-type="artist">Artists</button>
+      <button class="type-btn" data-type="playlist">Playlists</button>
     </div>
   </div>
   <div class="recognize-result" id="recognizeResult">
@@ -465,6 +469,9 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
     </div>
   </div>
   <div id="searchResults" class="grid"></div>
+  <div id="searchLoadMore" style="text-align:center; padding:20px; display:none;">
+    <div class="skeleton" style="height:40px; width:200px; margin:0 auto;"></div>
+  </div>
 </main>
 
 <!-- ── Discover Page ── -->
@@ -505,7 +512,13 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
         <h2 id="plDetailName" style="font-size:20px;"></h2>
         <p id="plDetailCount" style="color:var(--text-muted); font-size:14px; margin-top:4px;"></p>
       </div>
-      <button class="btn-download" id="downloadPlaylist" style="width:auto; padding:10px 24px; margin-left:auto;">Download All</button>
+      <div style="margin-left:auto; display:flex; flex-direction:column; align-items:flex-end; gap:8px;">
+        <button class="btn-download" id="downloadPlaylist" style="width:auto; padding:10px 24px;">Download All</button>
+        <label style="font-size:12px; color:var(--text-muted); cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" id="createPlaylistCheck" checked style="width:14px; height:14px;">
+          Create playlist in Navidrome
+        </label>
+      </div>
     </div>
     <div id="playlistTracks" class="grid"></div>
   </div>
@@ -760,6 +773,10 @@ let currentPlaylistId = null;
 let currentPlaylistUrl = null;
 let currentTag = null;
 let discoverTagType = 'track';
+let searchOffset = 0;
+let searchLoading = false;
+let searchHasMore = true;
+let searchQuery = '';
 let currentPlaylistTracks = [];
 let appSettings = { default_format: 'flac', default_method: 'spotdl', max_concurrent: 10 };
 
@@ -784,10 +801,19 @@ $$('.nav-btn[data-page]').forEach(btn => {
 // ── Search ──
 $('#searchInput').addEventListener('input', () => {
   clearTimeout(searchTimeout);
+  $('#searchClear').style.display = $('#searchInput').value ? '' : 'none';
   searchTimeout = setTimeout(doSearch, 400);
 });
 $('#searchInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') { clearTimeout(searchTimeout); doSearch(); }
+});
+$('#searchClear').addEventListener('click', () => {
+  $('#searchInput').value = '';
+  $('#searchClear').style.display = 'none';
+  $('#searchResults').innerHTML = '';
+  searchQuery = '';
+  searchHasMore = false;
+  $('#searchInput').focus();
 });
 
 $$('.type-btn').forEach(btn => {
@@ -799,16 +825,65 @@ $$('.type-btn').forEach(btn => {
   });
 });
 
-async function doSearch() {
+async function doSearch(append) {
   const q = $('#searchInput').value.trim();
   if (!q) { $('#searchResults').innerHTML = ''; return; }
-  $('#searchResults').innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
-  try {
-    const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=${searchType}&limit=20`);
-    renderResults(data.results, '#searchResults');
-  } catch (e) {
-    $('#searchResults').innerHTML = `<div class="empty-state"><p>Search failed: ${e.message}</p></div>`;
+  if (!append) {
+    searchOffset = 0;
+    searchHasMore = true;
+    searchQuery = q;
+    $('#searchResults').innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   }
+  searchLoading = true;
+  $('#searchLoadMore').style.display = '';
+  try {
+    const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=${searchType}&limit=20&offset=${searchOffset}`);
+    if (data.results.length < 20) searchHasMore = false;
+    if (!append) {
+      renderResults(data.results, '#searchResults');
+    } else {
+      const grid = $('#searchResults');
+      const fragment = document.createElement('div');
+      fragment.innerHTML = data.results.map(item => `
+        <div class="card" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
+          <img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+          <div class="card-body">
+            <div class="card-title">${esc(item.name)}</div>
+            <div class="card-sub">${esc(item.artist || '')}</div>
+            <div class="card-meta">
+              ${item.year ? `<span>${item.year}</span>` : ''}
+              ${item.total_tracks ? `<span>${item.total_tracks} tracks</span>` : ''}
+              ${item.duration_ms ? `<span>${formatDuration(item.duration_ms)}</span>` : ''}
+            </div>
+          </div>
+        </div>
+      `).join('');
+      Array.from(fragment.children).forEach(card => {
+        card.addEventListener('click', () => {
+          const item = JSON.parse(card.dataset.item);
+          if (item.type === 'playlist' && item.id) {
+            $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
+            $('.nav-btn[data-page="playlists"]').classList.add('active');
+            currentPage = 'playlists';
+            $('#pageSearch').style.display = 'none';
+            $('#pageDiscover').style.display = 'none';
+            $('#pagePlaylists').style.display = '';
+            $('#pageSettings').style.display = 'none';
+            loadPlaylistDetail(item.id, item.url);
+          } else {
+            openModal(item);
+          }
+        });
+        grid.appendChild(card);
+      });
+      checkLibrary(data.results, grid);
+    }
+    searchOffset += data.results.length;
+  } catch (e) {
+    if (!append) $('#searchResults').innerHTML = `<div class="empty-state"><p>Search failed: ${e.message}</p></div>`;
+  }
+  searchLoading = false;
+  $('#searchLoadMore').style.display = 'none';
 }
 
 function renderResults(items, container) {
@@ -833,7 +908,22 @@ function renderResults(items, container) {
   `).join('');
 
   $$('.card', el).forEach(card => {
-    card.addEventListener('click', () => openModal(JSON.parse(card.dataset.item)));
+    card.addEventListener('click', () => {
+      const item = JSON.parse(card.dataset.item);
+      if (item.type === 'playlist' && item.id) {
+        // Switch to Playlists page and load detail
+        $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
+        $('.nav-btn[data-page="playlists"]').classList.add('active');
+        currentPage = 'playlists';
+        $('#pageSearch').style.display = 'none';
+        $('#pageDiscover').style.display = 'none';
+        $('#pagePlaylists').style.display = '';
+        $('#pageSettings').style.display = 'none';
+        loadPlaylistDetail(item.id, item.url);
+      } else {
+        openModal(item);
+      }
+    });
   });
   checkLibrary(items, el);
 }
@@ -1180,8 +1270,10 @@ $('#modalDownload').addEventListener('click', async () => {
   try {
     const dlBody = { url: modalItem.url, title: `${modalItem.artist} - ${modalItem.name}`, method: selectedMethod, format: selectedFormat, type: modalItem.type || 'track' };
     if (modalItem.type === 'playlist' && currentPlaylistTracks.length) {
-      dlBody.playlist_name = modalItem.name;
       dlBody.playlist_tracks = currentPlaylistTracks;
+      if ($('#createPlaylistCheck').checked) {
+        dlBody.playlist_name = modalItem.name;
+      }
     }
     await apiJson('/api/download', { method: 'POST', body: dlBody });
     closeModal();
@@ -1370,10 +1462,13 @@ $('#tagFilter').addEventListener('input', applyTagFilter);
 
 // Infinite scroll
 window.addEventListener('scroll', () => {
-  if (currentPage !== 'discover' || !currentTag || tagLoading || !tagHasMore) return;
-  if ($('#tagDetailView').style.display === 'none') return;
   const scrollBottom = window.innerHeight + window.scrollY;
-  if (scrollBottom >= document.body.offsetHeight - 300) {
+  if (scrollBottom < document.body.offsetHeight - 300) return;
+
+  if (currentPage === 'search' && !searchLoading && searchHasMore && searchQuery) {
+    doSearch(true);
+  }
+  if (currentPage === 'discover' && currentTag && !tagLoading && tagHasMore && $('#tagDetailView').style.display !== 'none') {
     tagPage++;
     loadTagResults(currentTag, discoverTagType, true);
   }

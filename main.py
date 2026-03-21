@@ -75,11 +75,12 @@ class DownloadRequest(BaseModel):
 @app.get("/api/search")
 async def search(
     q: str = Query(..., min_length=1),
-    type: str = Query("track", pattern="^(track|album|artist)$"),
+    type: str = Query("track", pattern="^(track|album|artist|playlist)$"),
     limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0),
     user: dict = Depends(auth.get_current_user),
 ):
-    results = await spotify.search(q, type, limit)
+    results = await spotify.search(q, type, limit, offset)
     return {"results": results, "query": q, "type": type}
 
 
@@ -111,7 +112,7 @@ async def discover_tags(
 @app.get("/api/discover/tag/{tag_name}")
 async def discover_tag(
     tag_name: str,
-    type: str = Query("track", pattern="^(track|album|artist)$"),
+    type: str = Query("track", pattern="^(track|album|artist|playlist)$"),
     limit: int = Query(20, ge=1, le=50),
     page: int = Query(1, ge=1),
     user: dict = Depends(auth.get_current_user),

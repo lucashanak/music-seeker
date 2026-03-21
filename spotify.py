@@ -73,12 +73,14 @@ async def spotify_get(endpoint: str, params: dict | None = None, user: bool = Fa
         return resp.json()
 
 
-async def search(query: str, search_type: str = "track", limit: int = 20) -> list[dict]:
-    data = await spotify_get("search", {"q": query, "type": search_type, "limit": limit})
+async def search(query: str, search_type: str = "track", limit: int = 20, offset: int = 0) -> list[dict]:
+    data = await spotify_get("search", {"q": query, "type": search_type, "limit": limit, "offset": offset})
 
     results = []
     items_key = f"{search_type}s"
     for item in data.get(items_key, {}).get("items", []):
+        if not item or not item.get("id"):
+            continue
         if search_type == "track":
             results.append({
                 "id": item["id"],
@@ -111,6 +113,16 @@ async def search(query: str, search_type: str = "track", limit: int = 20) -> lis
                 "url": item["external_urls"].get("spotify", ""),
                 "genres": item.get("genres", []),
                 "type": "artist",
+            })
+        elif search_type == "playlist":
+            results.append({
+                "id": item["id"],
+                "name": item["name"],
+                "artist": item.get("owner", {}).get("display_name", ""),
+                "image": _best_image(item.get("images", [])),
+                "url": item["external_urls"].get("spotify", ""),
+                "total_tracks": item.get("tracks", {}).get("total", 0),
+                "type": "playlist",
             })
 
     return results
