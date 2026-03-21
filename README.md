@@ -8,7 +8,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 
 ## Features
 
-- **Spotify Search** — Search tracks, albums, artists, and playlists via Spotify's catalog with infinite scroll pagination
+- **Multi-Provider Search** — Search tracks, albums, artists, and playlists via Deezer (default, no API key needed), YouTube Music, or Spotify — configurable in Settings with automatic fallback
 - **Discover** — Browse music by genre tags (rock, jazz, electronic, etc.) powered by Last.fm, with infinite scroll and filtering
 - **Three download methods:**
   - **yt-dlp** — Download from YouTube in FLAC or MP3 with Spotify metadata (artist, title, album) and album art embedded
@@ -39,12 +39,14 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 ## Requirements
 
 - Docker & Docker Compose
-- [Spotify Developer App](https://developer.spotify.com/dashboard) (Client ID + Client Secret required; Refresh Token only needed for browsing your own playlists)
+- *(Optional)* [Spotify Developer App](https://developer.spotify.com/dashboard) (needed for Spotify search provider, personal playlists, Liked Songs, and podcasts)
 - *(Optional)* [slskd](https://github.com/slskd/slskd) instance for Soulseek P2P downloads (included in docker-compose)
 - *(Optional)* Lidarr instance for torrent-based downloads
 - *(Optional)* Navidrome instance for library detection and playlist sync
 - *(Optional)* [Last.fm API key](https://www.last.fm/api/account/create) for genre-based discovery (Discover tab)
 - *(Optional)* [AcoustID API key](https://acoustid.org/my-applications) for fingerprint-based recognition fallback
+
+> **Note:** Search works out of the box with Deezer (default) or YouTube Music — no API keys required. Spotify credentials are only needed if you want to use Spotify as your search provider, browse your personal playlists/Liked Songs, or search podcasts.
 
 ## Quick Start
 
@@ -65,13 +67,16 @@ Edit `.env` with your credentials:
 
 ```env
 # Required
-SPOTIFY_CLIENT_ID=your_client_id
-SPOTIFY_CLIENT_SECRET=your_client_secret
 MUSIC_DIR=/music
 ADMIN_USER=admin
 ADMIN_PASS=your_secure_password
 
-# Optional (for browsing your own Spotify playlists)
+# Search provider (default: deezer). Options: deezer, ytmusic, spotify
+SEARCH_PROVIDER=deezer
+
+# Optional — Spotify (needed for Spotify search, playlists, Liked Songs, podcasts)
+SPOTIFY_CLIENT_ID=your_client_id
+SPOTIFY_CLIENT_SECRET=your_client_secret
 SPOTIFY_REFRESH_TOKEN=your_refresh_token
 
 # Optional (for Last.fm Discover tab)
@@ -112,7 +117,7 @@ Use the admin credentials you set in `.env`. You can create additional users fro
 ## Download Methods
 
 ### yt-dlp (default)
-Searches YouTube for the track and downloads the audio. Metadata (artist, title, album) and album art are sourced from Spotify and embedded into the file. Supports FLAC and MP3 output formats.
+Searches YouTube for the track and downloads the audio. Metadata (artist, title, album) and album art are sourced from the search provider (Deezer/Spotify) and embedded into the file. Supports FLAC and MP3 output formats.
 
 ### Soulseek (slskd)
 Downloads from the Soulseek peer-to-peer network via a self-hosted [slskd](https://github.com/slskd/slskd) instance. Auto-selects the best quality file (prefers FLAC, higher bitrate). Requires a Soulseek account — see [Setting up slskd](#setting-up-slskd) below.
@@ -122,7 +127,7 @@ Adds the artist to Lidarr and triggers a search. Lidarr handles the actual downl
 
 ## Getting a Spotify Refresh Token
 
-Search and downloads work with just Client ID + Client Secret (Client Credentials flow). A refresh token is only needed if you want to browse your personal Spotify playlists and Liked Songs. Public playlists can be searched and downloaded without one. When Spotify credentials are missing, dependent features are gracefully greyed out.
+Search works without Spotify credentials using Deezer (default) or YouTube Music. Spotify credentials are only needed if you want to use Spotify as your search provider, browse your personal playlists/Liked Songs, or search podcasts. A refresh token is additionally needed for browsing your personal playlists and Liked Songs. When Spotify credentials are missing, dependent features are gracefully greyed out.
 
 1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and create an app
 2. Set the Redirect URI to `http://localhost:8888/callback`
@@ -238,6 +243,7 @@ services:
 │  Recognition, Discover,      │
 │  Settings                    │
 ├──────────────────────────────┤
+│ search_providers.py │ Deezer + YTMusic│
 │ spotify.py  │ Spotify Web API│
 │ lastfm.py   │ Last.fm API   │
 │ downloader.py │ yt-dlp / slskd / Lidarr│
@@ -263,7 +269,7 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `GET` | `/api/version` | Get app version (public) |
 | `POST` | `/api/auth/login` | Login, returns JWT token |
 | `GET` | `/api/auth/me` | Get current user info |
-| `GET` | `/api/search?q=...&type=track&offset=0` | Search Spotify (track/album/artist/playlist) |
+| `GET` | `/api/search?q=...&type=track&offset=0` | Search music (via configured provider) |
 | `POST` | `/api/download` | Start a download job |
 | `GET` | `/api/jobs` | List all jobs |
 | `GET` | `/api/jobs/:id` | Get job status |
@@ -277,7 +283,7 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `GET` | `/api/spotify/playlist/:id/tracks` | Get playlist tracks |
 | `GET` | `/api/discover/tags` | Get popular Last.fm genre tags |
 | `GET` | `/api/discover/tag/:tag?type=track` | Get top items for a tag |
-| `POST` | `/api/discover/resolve` | Resolve Last.fm item to Spotify URL |
+| `POST` | `/api/discover/resolve` | Resolve Last.fm item via search provider |
 | `GET` | `/api/podcasts` | List downloaded podcast shows |
 | `GET` | `/api/podcasts/:show` | List episodes for a show |
 | `DELETE` | `/api/podcasts/:show` | Delete entire show |
@@ -300,8 +306,9 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `SPOTIFY_CLIENT_ID` | Yes | — | Spotify app Client ID |
-| `SPOTIFY_CLIENT_SECRET` | Yes | — | Spotify app Client Secret |
+| `SEARCH_PROVIDER` | No | `deezer` | Search provider: `deezer`, `ytmusic`, or `spotify` |
+| `SPOTIFY_CLIENT_ID` | No | — | Spotify app Client ID (needed for Spotify search, playlists, podcasts) |
+| `SPOTIFY_CLIENT_SECRET` | No | — | Spotify app Client Secret |
 | `SPOTIFY_REFRESH_TOKEN` | No | — | Spotify OAuth refresh token (only needed for your own playlists) |
 | `ADMIN_USER` | Yes | `admin` | Initial admin username |
 | `ADMIN_PASS` | Yes | — | Initial admin password |

@@ -37,3 +37,18 @@
 - Dev Mode now requires Premium account, max 1 Client ID per developer, max 5 authorized users
 - Our setup is compliant: own Client ID, single user
 - Some endpoints were removed/restricted — monitor for future changes
+
+## Alternative search providers (added March 2026)
+
+Due to Spotify requiring Premium for Developer API access, MusicSeeker now supports multiple search providers:
+
+| Provider | Auth Required | Fallback | Notes |
+|----------|--------------|----------|-------|
+| **Deezer** (default) | None | YouTube Music | Free public API, no key needed, good catalog |
+| **YouTube Music** | None | Deezer | Uses `ytmusicapi` library, no key needed |
+| **Spotify** | Client ID + Secret | None | Requires Premium for Dev API access |
+
+- Search provider is configurable in **Settings → Downloads → Search Provider**
+- Podcast search (shows/episodes) always uses Spotify regardless of chosen provider
+- Discover resolve uses the configured search provider
+- Deezer URL parsing supported for download metadata resolution
