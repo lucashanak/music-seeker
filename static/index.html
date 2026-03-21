@@ -734,8 +734,12 @@ body.player-active .player-bar { display: flex; }
 .fp-header button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
 .fp-header button:hover { color: var(--text); background: rgba(255,255,255,.05); }
 .fp-header .fp-source { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
-.fp-art-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 32px; min-height: 0; }
-.fp-art { width: 100%; max-width: 340px; aspect-ratio: 1; border-radius: 14px; object-fit: cover; box-shadow: 0 12px 48px rgba(0,0,0,.6); background: var(--bg-elevated); }
+.fp-art-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 32px; min-height: 0; overflow: hidden; }
+.fp-art { width: 100%; max-width: 340px; aspect-ratio: 1; border-radius: 14px; object-fit: cover; box-shadow: 0 12px 48px rgba(0,0,0,.6); background: var(--bg-elevated); user-select: none; -webkit-user-drag: none; }
+.fp-art.swiping { transition: none; }
+.fp-art.swipe-out-left { transition: transform .25s ease, opacity .25s ease; transform: translateX(-120%) scale(.9); opacity: 0; }
+.fp-art.swipe-out-right { transition: transform .25s ease, opacity .25s ease; transform: translateX(120%) scale(.9); opacity: 0; }
+.fp-art.swipe-in { transition: transform .3s ease, opacity .3s ease; transform: translateX(0); opacity: 1; }
 .fp-info { width: 100%; padding: 24px 32px 0; text-align: center; flex-shrink: 0; }
 .fp-title { font-size: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
 .fp-artist { font-size: 14px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -3820,6 +3824,86 @@ $('#fpVolume').addEventListener('input', (e) => {
   audio.volume = playerVolume;
   $('#playerVolume').value = e.target.value;
 });
+
+// Full player swipe on album art for next/prev
+(function() {
+  const artWrap = document.querySelector('.fp-art-wrap');
+  const art = document.getElementById('fpImg');
+  if (!artWrap || !art) return;
+  let startX = 0, startY = 0, dx = 0, tracking = false;
+  const THRESHOLD = 50;
+
+  artWrap.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    dx = 0;
+    tracking = true;
+    art.classList.add('swiping');
+  }, { passive: true });
+
+  artWrap.addEventListener('touchmove', (e) => {
+    if (!tracking) return;
+    const moveX = e.touches[0].clientX;
+    const moveY = e.touches[0].clientY;
+    // If vertical scroll is dominant, cancel swipe tracking
+    if (Math.abs(moveY - startY) > Math.abs(moveX - startX) * 1.5) {
+      tracking = false;
+      art.classList.remove('swiping');
+      art.style.transform = '';
+      art.style.opacity = '';
+      return;
+    }
+    dx = moveX - startX;
+    const pct = Math.min(Math.abs(dx) / 200, 1);
+    art.style.transform = `translateX(${dx}px) scale(${1 - pct * 0.1})`;
+    art.style.opacity = 1 - pct * 0.4;
+  }, { passive: true });
+
+  artWrap.addEventListener('touchend', () => {
+    if (!tracking) return;
+    tracking = false;
+    art.classList.remove('swiping');
+    if (Math.abs(dx) >= THRESHOLD) {
+      // Swipe out animation
+      art.classList.add(dx < 0 ? 'swipe-out-left' : 'swipe-out-right');
+      art.style.transform = '';
+      art.style.opacity = '';
+      const goNext = dx < 0;
+      setTimeout(() => {
+        if (goNext) {
+          nextTrack();
+        } else if (playerIndex > 0) {
+          playerIndex--;
+          loadAndPlay();
+        }
+        // Reset and animate new art in
+        art.classList.remove('swipe-out-left', 'swipe-out-right');
+        art.style.transform = `translateX(${dx < 0 ? '80px' : '-80px'})`;
+        art.style.opacity = '0';
+        requestAnimationFrame(() => {
+          art.classList.add('swipe-in');
+          art.style.transform = '';
+          art.style.opacity = '';
+          setTimeout(() => art.classList.remove('swipe-in'), 300);
+        });
+      }, 250);
+    } else {
+      // Snap back
+      art.style.transition = 'transform .2s ease, opacity .2s ease';
+      art.style.transform = '';
+      art.style.opacity = '';
+      setTimeout(() => { art.style.transition = ''; }, 200);
+    }
+  }, { passive: true });
+
+  artWrap.addEventListener('touchcancel', () => {
+    tracking = false;
+    art.classList.remove('swiping');
+    art.style.transform = '';
+    art.style.opacity = '';
+  }, { passive: true });
+})();
 
 // Full player download
 $('#fpDownload').addEventListener('click', async () => {
