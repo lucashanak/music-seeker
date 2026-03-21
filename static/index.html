@@ -2128,7 +2128,7 @@ function closePlaylistDetail(fromPopstate) {
   if (src) {
     switchPage(src, true);
   }
-  if (!fromPopstate) history.back();
+  if (!fromPopstate) historyBack();
 }
 
 $('#downloadPlaylist').addEventListener('click', () => {
@@ -2191,7 +2191,7 @@ function closeShowDetail(fromPopstate) {
   const src = showDetailSource;
   showDetailSource = null;
   if (src) switchPage(src, true);
-  if (!fromPopstate) history.back();
+  if (!fromPopstate) historyBack();
 }
 
 $('#downloadShow').addEventListener('click', () => {
@@ -2380,7 +2380,7 @@ function closePodcastShow(fromPopstate) {
   $('#podcastEpisodes').style.display = 'none';
   $('#podcastMissing').innerHTML = '';
   $('#podcastsList').style.display = '';
-  if (!fromPopstate) history.back();
+  if (!fromPopstate) historyBack();
 }
 
 // Filter episodes
@@ -2610,7 +2610,7 @@ function openModal(item) {
 function closeModal(fromPopstate) {
   if (!modalItem) return;
   $('#downloadModal').classList.remove('open'); modalItem = null;
-  if (!fromPopstate) history.back();
+  if (!fromPopstate) historyBack();
 }
 
 $('#modalClose').addEventListener('click', closeModal);
@@ -2670,7 +2670,7 @@ function openPanel() {
 function closePanel(fromPopstate) {
   if (!panelOpen) return;
   panelOpen = false; $('#downloadsPanel').classList.remove('open');
-  if (!fromPopstate) history.back();
+  if (!fromPopstate) historyBack();
 }
 
 $('#downloadsToggle').addEventListener('click', () => panelOpen ? closePanel() : openPanel());
@@ -2870,7 +2870,7 @@ function closeTagDetail(fromPopstate) {
   $('#tagCloudView').style.display = '';
   $('#tagDetailView').style.display = 'none';
   currentTag = null;
-  if (!fromPopstate) history.back();
+  if (!fromPopstate) historyBack();
 }
 
 $$('[data-tagtype]').forEach(btn => {
@@ -3292,7 +3292,12 @@ $('#addUserBtn').addEventListener('click', async () => {
 
 // ── Back button / Android gesture ──
 history.replaceState({page: 'search'}, '');
+// Flag to prevent popstate cascading when close functions call history.back()
+let _ignorePopstate = false;
+function historyBack() { _ignorePopstate = true; history.back(); }
+
 window.addEventListener('popstate', e => {
+  if (_ignorePopstate) { _ignorePopstate = false; return; }
   const state = e.state;
   // Close overlays first (highest priority)
   if (fullPlayerOpen) { closeFullPlayer(true); return; }
@@ -3589,7 +3594,7 @@ function closeQueuePanel(fromPopstate) {
   queuePanelOpen = false;
   const returnToFP = queueOpenedFromFullPlayer;
   queueOpenedFromFullPlayer = false;
-  if (!fromPopstate) history.back();
+  if (!fromPopstate) historyBack();
   if (returnToFP) setTimeout(() => openFullPlayer(), 50);
 }
 
@@ -3789,7 +3794,7 @@ function closeFullPlayer(fromPopstate) {
   $('#fullPlayerBackdrop').classList.remove('open');
   $('#fullPlayer').classList.remove('open');
   fullPlayerOpen = false;
-  if (!fromPopstate) history.back();
+  if (!fromPopstate) historyBack();
 }
 
 // Open full player by clicking mini player img/text
