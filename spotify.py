@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import httpx
 
@@ -198,6 +199,53 @@ async def get_playlist_tracks(playlist_id: str) -> dict:
         "image": _best_image(playlist.get("images", [])),
         "tracks": tracks,
     }
+
+
+def parse_spotify_url(url: str) -> tuple[str, str] | None:
+    """Extract (type, id) from a Spotify URL. Returns None if not a valid Spotify URL."""
+    m = re.search(r"open\.spotify\.com/(track|album|playlist|artist)/([a-zA-Z0-9]+)", url)
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
+async def get_track_metadata(track_id: str) -> dict:
+    """Get basic metadata for a single track."""
+    data = await spotify_get(f"tracks/{track_id}")
+    return {
+        "name": data["name"],
+        "artist": ", ".join(a["name"] for a in data.get("artists", [])),
+        "album": data.get("album", {}).get("name", ""),
+        "image": _best_image(data.get("album", {}).get("images", [])),
+    }
+
+
+async def get_album_tracks(album_id: str) -> list[dict]:
+    """Get all tracks from an album with metadata."""
+    album = await spotify_get(f"albums/{album_id}")
+    album_name = album.get("name", "")
+    album_artist = ", ".join(a["name"] for a in album.get("artists", []))
+    album_image = _best_image(album.get("images", []))
+
+    tracks = []
+    offset = 0
+    while True:
+        data = await spotify_get(f"albums/{album_id}/tracks", {"limit": 50, "offset": offset})
+        for item in data.get("items", []):
+            if not item or not item.get("id"):
+                continue
+            tracks.append({
+                "name": item["name"],
+                "artist": ", ".join(a["name"] for a in item.get("artists", [])),
+                "album": album_name,
+                "image": album_image,
+                "url": item["external_urls"].get("spotify", ""),
+            })
+        if not data.get("next"):
+            break
+        offset += 50
+
+    return tracks
 
 
 def _best_image(images: list[dict]) -> str:

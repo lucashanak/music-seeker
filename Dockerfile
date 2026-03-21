@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libchromaprint-tools     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libchromaprint-tools flac     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install fastapi uvicorn httpx shazamio python-multipart pyacoustid spotdl --quiet
+RUN pip install fastapi uvicorn httpx shazamio python-multipart pyacoustid yt-dlp --quiet
 
 WORKDIR /app
 COPY . .

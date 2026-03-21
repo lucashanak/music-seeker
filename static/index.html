@@ -531,7 +531,8 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
     <div class="setting-group">
       <label class="setting-label">Default Download Method</label>
       <select class="setting-select" id="settingMethod">
-        <option value="spotdl">spotDL (Direct, FLAC/MP3)</option>
+        <option value="yt-dlp">yt-dlp (YouTube, FLAC/MP3)</option>
+        <option value="slskd">Soulseek (P2P, lossless)</option>
         <option value="lidarr">Lidarr (Torrent, monitors)</option>
       </select>
     </div>
@@ -547,11 +548,12 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
       <input class="setting-input" id="settingMaxConcurrent" type="number" min="1" max="20" value="10">
     </div>
     <div class="setting-group">
-      <label class="setting-label" style="display:flex; align-items:center; gap:10px; cursor:pointer;">
-        <input type="checkbox" id="settingSpotdlOwn" style="width:18px; height:18px;">
-        spotDL uses own Spotify credentials
-      </label>
-      <div style="font-size:12px; color:#888; margin-top:4px;">When enabled, spotDL uses its built-in credentials (separate rate limit). When disabled, it shares your app token.</div>
+      <label class="setting-label">slskd URL</label>
+      <input class="setting-input" id="settingSlskdUrl" type="text" placeholder="http://slskd:5030">
+    </div>
+    <div class="setting-group">
+      <label class="setting-label">slskd API Key</label>
+      <input class="setting-input" id="settingSlskdKey" type="password" placeholder="Enter API key...">
     </div>
     <div class="setting-group">
       <label class="setting-label">Navidrome URL</label>
@@ -602,7 +604,8 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
     <div class="modal-section">
       <div class="modal-label">Method</div>
       <div class="option-group" id="methodGroup">
-        <button class="option-btn selected" data-value="spotdl">spotDL<small>Direct, FLAC/MP3</small></button>
+        <button class="option-btn selected" data-value="yt-dlp">yt-dlp<small>YouTube, FLAC/MP3</small></button>
+        <button class="option-btn" data-value="slskd">Soulseek<small>P2P, lossless</small></button>
         <button class="option-btn" data-value="lidarr">Lidarr<small>Torrent, monitors</small></button>
       </div>
     </div>
@@ -766,7 +769,7 @@ let currentPage = 'search';
 let searchType = 'track';
 let searchTimeout = null;
 let modalItem = null;
-let selectedMethod = 'spotdl';
+let selectedMethod = 'yt-dlp';
 let selectedFormat = 'flac';
 let panelOpen = false;
 let currentPlaylistId = null;
@@ -778,7 +781,7 @@ let searchLoading = false;
 let searchHasMore = true;
 let searchQuery = '';
 let currentPlaylistTracks = [];
-let appSettings = { default_format: 'flac', default_method: 'spotdl', max_concurrent: 10 };
+let appSettings = { default_format: 'flac', default_method: 'yt-dlp', max_concurrent: 10 };
 
 // ── Navigation ──
 $$('.nav-btn[data-page]').forEach(btn => {
@@ -1215,7 +1218,7 @@ function openModal(item) {
   $('#modalImg').src = item.image || '';
   $('#modalTitle').textContent = item.name;
   $('#modalArtist').textContent = item.artist || '';
-  selectedMethod = appSettings.default_method || 'spotdl';
+  selectedMethod = appSettings.default_method || 'yt-dlp';
   selectedFormat = appSettings.default_format || 'flac';
   updateOptionGroups();
   $('#modalLibraryNotice').style.display = item.inLibrary ? '' : 'none';
@@ -1260,7 +1263,7 @@ $$('#formatGroup .option-btn').forEach(btn => {
 function updateOptionGroups() {
   $$('#methodGroup .option-btn').forEach(b => b.classList.toggle('selected', b.dataset.value === selectedMethod));
   $$('#formatGroup .option-btn').forEach(b => b.classList.toggle('selected', b.dataset.value === selectedFormat));
-  $('#formatSection').style.display = selectedMethod === 'spotdl' ? '' : 'none';
+  $('#formatSection').style.display = selectedMethod === 'yt-dlp' ? '' : 'none';
 }
 
 $('#modalDownload').addEventListener('click', async () => {
@@ -1491,10 +1494,12 @@ async function loadSettings() {
   try {
     const data = await apiJson('/api/settings');
     appSettings = data;
-    $('#settingMethod').value = data.default_method || 'spotdl';
+    $('#settingMethod').value = data.default_method || 'yt-dlp';
     $('#settingFormat').value = data.default_format || 'flac';
     $('#settingMaxConcurrent').value = data.max_concurrent || 10;
-    $('#settingSpotdlOwn').checked = data.spotdl_own_credentials === true;
+    $('#settingSlskdUrl').value = data.slskd_url || '';
+    $('#settingSlskdKey').value = '';
+    $('#settingSlskdKey').placeholder = data.slskd_api_key ? '(set) Enter new...' : 'Enter API key...';
     $('#settingNavidromeUrl').value = data.navidrome_url || '';
     $('#settingNavidromeUser').value = data.navidrome_user || '';
     $('#settingNavidromePass').value = '';
@@ -1510,10 +1515,12 @@ $('#saveSettings').addEventListener('click', async () => {
     default_method: $('#settingMethod').value,
     default_format: $('#settingFormat').value,
     max_concurrent: parseInt($('#settingMaxConcurrent').value) || 10,
-    spotdl_own_credentials: $('#settingSpotdlOwn').checked,
+    slskd_url: $('#settingSlskdUrl').value,
     navidrome_url: $('#settingNavidromeUrl').value,
     navidrome_user: $('#settingNavidromeUser').value,
   };
+  const slskdKey = $('#settingSlskdKey').value;
+  if (slskdKey) payload.slskd_api_key = slskdKey;
   const pass = $('#settingNavidromePass').value;
   if (pass) payload.navidrome_password = pass;
   try {

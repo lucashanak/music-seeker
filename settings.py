@@ -7,12 +7,13 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
 _defaults = {
     "default_format": os.environ.get("DEFAULT_FORMAT", "flac"),
-    "default_method": os.environ.get("DEFAULT_METHOD", "spotdl"),
+    "default_method": os.environ.get("DEFAULT_METHOD", "yt-dlp"),
     "max_concurrent": int(os.environ.get("MAX_CONCURRENT", "10")),
     "navidrome_url": os.environ.get("NAVIDROME_URL", "http://navidrome:4533"),
     "navidrome_user": os.environ.get("NAVIDROME_USER", "lucas"),
     "navidrome_password": os.environ.get("NAVIDROME_PASSWORD", ""),
-    "spotdl_own_credentials": True,
+    "slskd_url": os.environ.get("SLSKD_URL", "http://slskd:5030"),
+    "slskd_api_key": os.environ.get("SLSKD_API_KEY", ""),
 }
 
 _settings = {**_defaults}
@@ -28,6 +29,9 @@ def _load():
             for key, value in saved.items():
                 if key in _settings:
                     _settings[key] = value
+            # Migrate old spotdl method to yt-dlp
+            if _settings.get("default_method") == "spotdl":
+                _settings["default_method"] = "yt-dlp"
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -43,7 +47,11 @@ _load()
 
 
 def get_all() -> dict:
-    return {**_settings, "navidrome_password": bool(_settings["navidrome_password"])}
+    return {
+        **_settings,
+        "navidrome_password": bool(_settings["navidrome_password"]),
+        "slskd_api_key": bool(_settings["slskd_api_key"]),
+    }
 
 
 def update(data: dict) -> dict:
@@ -69,5 +77,13 @@ def update(data: dict) -> dict:
         if "navidrome_password" in data:
             library.NAVIDROME_PASSWORD = data["navidrome_password"]
             downloader.NAVIDROME_PASSWORD = data["navidrome_password"]
+
+    # Apply slskd config changes
+    if any(k in data for k in ("slskd_url", "slskd_api_key")):
+        import downloader
+        if "slskd_url" in data:
+            downloader.SLSKD_URL = data["slskd_url"]
+        if "slskd_api_key" in data:
+            downloader.SLSKD_API_KEY = data["slskd_api_key"]
 
     return get_all()

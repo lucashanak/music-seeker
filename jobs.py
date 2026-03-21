@@ -22,7 +22,7 @@ class Job:
     type: str  # track, album, playlist
     title: str
     url: str
-    method: str  # spotdl, lidarr
+    method: str  # yt-dlp, slskd, lidarr
     format: str  # flac, mp3
     status: JobStatus = JobStatus.QUEUED
     progress: int = 0

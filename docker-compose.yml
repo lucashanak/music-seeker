@@ -9,6 +9,7 @@ services:
       - .env
     environment:
       - NAVIDROME_URL=http://navidrome:4533
+      - SLSKD_URL=http://slskd:5030
     volumes:
       - ${MUSIC_DIR:-./music}:/music
       - ./data:/app/data
@@ -28,3 +29,15 @@ services:
     volumes:
       - ${MUSIC_DIR:-./music}:/music:ro
       - ./navidrome-data:/data
+
+  slskd:
+    image: slskd/slskd:latest
+    container_name: slskd
+    restart: unless-stopped
+    ports:
+      - "5030:5030"
+    environment:
+      SLSKD_REMOTE_CONFIGURATION: "true"
+    volumes:
+      - ${MUSIC_DIR:-./music}:/music
+      - ./slskd-data:/app

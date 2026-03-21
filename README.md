@@ -10,8 +10,9 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 
 - **Spotify Search** — Search tracks, albums, artists, and playlists via Spotify's catalog with infinite scroll pagination
 - **Discover** — Browse music by genre tags (rock, jazz, electronic, etc.) powered by Last.fm, with infinite scroll and filtering
-- **Two download methods:**
-  - **spotDL** — Direct download in FLAC or MP3 (runs as subprocess inside the container)
+- **Three download methods:**
+  - **yt-dlp** — Download from YouTube in FLAC or MP3 with Spotify metadata (artist, title, album) and album art embedded
+  - **Soulseek (slskd)** — P2P downloads via Soulseek network, auto-selects best quality (prefers FLAC)
   - **Lidarr** — Torrent-based downloads with automatic artist monitoring
 - **Song Recognition** — Identify songs via your microphone using Shazam, with AcoustID fingerprinting as fallback, then download them instantly
 - **Spotify Playlists** — Browse your own or search public Spotify playlists and download individual tracks or full playlists with optional Navidrome playlist creation
@@ -32,6 +33,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 
 - Docker & Docker Compose
 - [Spotify Developer App](https://developer.spotify.com/dashboard) (Client ID + Client Secret required; Refresh Token only needed for browsing your own playlists)
+- *(Optional)* [slskd](https://github.com/slskd/slskd) instance for Soulseek P2P downloads (included in docker-compose)
 - *(Optional)* Lidarr instance for torrent-based downloads
 - *(Optional)* Navidrome instance for library detection and playlist sync
 - *(Optional)* [Last.fm API key](https://www.last.fm/api/account/create) for genre-based discovery (Discover tab)
@@ -79,6 +81,10 @@ LIDARR_API_KEY=your_api_key
 NAVIDROME_URL=http://navidrome:4533
 NAVIDROME_USER=your_user
 NAVIDROME_PASSWORD=your_password
+
+# Optional (for Soulseek downloads via slskd)
+SLSKD_URL=http://slskd:5030
+SLSKD_API_KEY=your_slskd_api_key
 ```
 
 ### 3. Start the app
@@ -87,11 +93,25 @@ NAVIDROME_PASSWORD=your_password
 docker compose up -d --build
 ```
 
-The app will be available at `http://localhost:8090`.
+This starts MusicSeeker, Navidrome, and slskd. The app will be available at `http://localhost:8090`.
+
+- Navidrome: `http://localhost:4533` (configure on first access)
+- slskd: `http://localhost:5030` (configure Soulseek credentials via its web UI)
 
 ### 4. Log in
 
 Use the admin credentials you set in `.env`. You can create additional users from the Settings page.
+
+## Download Methods
+
+### yt-dlp (default)
+Searches YouTube for the track and downloads the audio. Metadata (artist, title, album) and album art are sourced from Spotify and embedded into the file. Supports FLAC and MP3 output formats.
+
+### Soulseek (slskd)
+Downloads from the Soulseek peer-to-peer network via a self-hosted [slskd](https://github.com/slskd/slskd) instance. Auto-selects the best quality file (prefers FLAC, higher bitrate). Requires a Soulseek account — configure it through slskd's web UI at port 5030.
+
+### Lidarr
+Adds the artist to Lidarr and triggers a search. Lidarr handles the actual download via torrent indexers in the background. Good for monitoring entire discographies.
 
 ## Getting a Spotify Refresh Token
 
@@ -144,6 +164,8 @@ services:
       - NAVIDROME_USER=your_user
       - NAVIDROME_PASSWORD=${NAVIDROME_PASSWORD}
       - LASTFM_API_KEY=${LASTFM_API_KEY}
+      - SLSKD_URL=http://slskd:5030
+      - SLSKD_API_KEY=${SLSKD_API_KEY}
       - ADMIN_USER=admin
       - ADMIN_PASS=${ADMIN_PASS}
     volumes:
@@ -167,7 +189,7 @@ services:
 ├──────────────────────────────┤
 │ spotify.py  │ Spotify Web API│
 │ lastfm.py   │ Last.fm API   │
-│ downloader.py │ spotDL subprocess│
+│ downloader.py │ yt-dlp / slskd / Lidarr│
 │ library.py  │ Subsonic API   │
 │ recognize.py│ shazamio+acoustid│
 │ auth.py     │ HMAC tokens    │
@@ -177,7 +199,8 @@ services:
 
 - **No database** — users and settings stored as JSON files in `/app/data`
 - **No build step** — frontend is a single HTML file served by FastAPI
-- **spotDL runs in-process** — downloads run as subprocesses, no Docker-in-Docker needed
+- **yt-dlp runs in-process** — downloads run as subprocesses with Spotify metadata post-processing
+- **slskd integration** — REST API calls to self-hosted Soulseek client
 
 ## API Reference
 
@@ -224,6 +247,8 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `NAVIDROME_URL` | No | `http://navidrome:4533` | Navidrome URL |
 | `NAVIDROME_USER` | No | `lucas` | Navidrome username |
 | `NAVIDROME_PASSWORD` | No | — | Navidrome password |
+| `SLSKD_URL` | No | `http://slskd:5030` | slskd REST API URL |
+| `SLSKD_API_KEY` | No | — | slskd API key (generate in slskd settings) |
 | `LASTFM_API_KEY` | No | — | Last.fm API key for Discover tab |
 | `ACOUSTID_API_KEY` | No | — | AcoustID API key for fingerprint recognition fallback |
 | `JWT_SECRET` | No | auto-generated | Secret for signing auth tokens |

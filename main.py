@@ -63,7 +63,7 @@ async def get_me(user: dict = Depends(auth.get_current_user)):
 class DownloadRequest(BaseModel):
     url: str
     title: str = ""
-    method: str = "spotdl"
+    method: str = "yt-dlp"
     format: str = "flac"
     type: str = "track"
     playlist_name: str = ""
@@ -248,10 +248,11 @@ class SettingsUpdate(BaseModel):
     default_format: str | None = None
     default_method: str | None = None
     max_concurrent: int | None = None
-    spotdl_own_credentials: bool | None = None
     navidrome_url: str | None = None
     navidrome_user: str | None = None
     navidrome_password: str | None = None
+    slskd_url: str | None = None
+    slskd_api_key: str | None = None
 
 
 @app.put("/api/settings")
