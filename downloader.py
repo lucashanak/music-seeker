@@ -292,7 +292,9 @@ def _pick_best_slskd_file(responses: list, preferred_format: str = "flac") -> tu
 
 async def _download_track_slskd(artist: str, title: str, album: str) -> bool:
     """Search and download a single track via slskd. Returns True if successful."""
-    query = f"{artist} {title}" if artist else title
+    # Use only primary artist for search (avoid "Artist1, Artist2" cluttering results)
+    search_artist = artist.split(",")[0].strip() if artist else ""
+    query = f"{search_artist} {title}" if search_artist else title
 
     # Start search
     search_result = await _slskd_api("POST", "searches", {"searchText": query})
@@ -304,9 +306,10 @@ async def _download_track_slskd(artist: str, title: str, album: str) -> bool:
     for _ in range(30):  # 60s timeout
         await asyncio.sleep(2)
         status = await _slskd_api("GET", f"searches/{search_id}")
-        if status.get("state") == "Completed":
+        state = status.get("state", "")
+        if "Completed" in state:
             break
-        if status.get("state") in ("Errored", "Cancelled"):
+        if any(s in state for s in ("Errored", "Cancelled")):
             return False
     else:
         return False
@@ -329,27 +332,36 @@ async def _download_track_slskd(artist: str, title: str, album: str) -> bool:
     filename = file_info.get("filename", "")
     for _ in range(300):  # 10min timeout (P2P can be slow)
         await asyncio.sleep(2)
-        downloads = await _slskd_api("GET", f"transfers/downloads/{username}")
-        if not downloads:
+        data = await _slskd_api("GET", f"transfers/downloads/{username}")
+        if not data:
             continue
-        # Find our file in the download list
-        for dl in downloads if isinstance(downloads, list) else downloads.get("files", []):
-            if dl.get("filename") == filename:
-                state = dl.get("state", "").lower()
-                if "completed" in state or "succeeded" in state:
-                    # Move file to music directory
+        # Navigate directories[].files[] structure
+        directories = data.get("directories", []) if isinstance(data, dict) else []
+        for dir_entry in directories:
+            for dl in dir_entry.get("files", []):
+                if dl.get("filename") != filename:
+                    continue
+                state = dl.get("state", "")
+                if "Succeeded" in state or "Completed" in state:
+                    # Move file from slskd download dir to music library
                     safe_artist = _sanitize(artist) or "Unknown Artist"
                     safe_album = _sanitize(album) or "Unknown Album"
                     dest_dir = f"{MUSIC_DIR}/{safe_artist}/{safe_album}"
                     os.makedirs(dest_dir, exist_ok=True)
-                    # slskd downloads to its configured directory
-                    # The file path from the transfer shows where it ended up
-                    local_path = dl.get("filename", "")
-                    if local_path and os.path.exists(local_path):
-                        dest = os.path.join(dest_dir, os.path.basename(local_path))
-                        shutil.move(local_path, dest)
+                    # slskd saves to {downloads_dir}/{remote_dir}/{filename}
+                    # Find the file in slskd downloads directory
+                    slskd_dl_dir = f"{MUSIC_DIR}/.slskd-downloads"
+                    basename = filename.rsplit("\\", 1)[-1] if "\\" in filename else os.path.basename(filename)
+                    found = None
+                    for root, _, files in os.walk(slskd_dl_dir):
+                        if basename in files:
+                            found = os.path.join(root, basename)
+                            break
+                    if found:
+                        dest = os.path.join(dest_dir, f"{_sanitize(title)}.{basename.rsplit('.', 1)[-1]}")
+                        shutil.move(found, dest)
                     return True
-                if "failed" in state or "cancelled" in state or "errored" in state:
+                if any(s in state for s in ("Failed", "Cancelled", "Errored")):
                     return False
     return False
 

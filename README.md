@@ -108,7 +108,7 @@ Use the admin credentials you set in `.env`. You can create additional users fro
 Searches YouTube for the track and downloads the audio. Metadata (artist, title, album) and album art are sourced from Spotify and embedded into the file. Supports FLAC and MP3 output formats.
 
 ### Soulseek (slskd)
-Downloads from the Soulseek peer-to-peer network via a self-hosted [slskd](https://github.com/slskd/slskd) instance. Auto-selects the best quality file (prefers FLAC, higher bitrate). Requires a Soulseek account — configure it through slskd's web UI at port 5030.
+Downloads from the Soulseek peer-to-peer network via a self-hosted [slskd](https://github.com/slskd/slskd) instance. Auto-selects the best quality file (prefers FLAC, higher bitrate). Requires a Soulseek account — see [Setting up slskd](#setting-up-slskd) below.
 
 ### Lidarr
 Adds the artist to Lidarr and triggers a search. Lidarr handles the actual download via torrent indexers in the background. Good for monitoring entire discographies.
@@ -140,6 +140,50 @@ curl -X POST https://accounts.spotify.com/api/token \
 ```
 
 7. The response will contain a `refresh_token` — put it in your `.env` file.
+
+## Setting up slskd
+
+slskd is a self-hosted Soulseek client included in the docker-compose file. To enable Soulseek downloads:
+
+### 1. Configure Soulseek credentials
+
+Create `slskd-data/slskd.yml` with your Soulseek username and password (slskd will register the account automatically if it doesn't exist):
+
+```yaml
+soulseek:
+  username: your_soulseek_username
+  password: your_soulseek_password
+
+directories:
+  incomplete: /music/.slskd-incomplete
+  downloads: /music/.slskd-downloads
+
+web:
+  authentication:
+    api_keys:
+      - key: your-api-key-here
+        role: administrator
+```
+
+See `slskd.yml.example` for a full example.
+
+### 2. Create download directories
+
+```bash
+mkdir -p music/.slskd-incomplete music/.slskd-downloads
+```
+
+### 3. Start slskd
+
+```bash
+docker compose up -d slskd
+```
+
+### 4. Set the API key in MusicSeeker
+
+Go to MusicSeeker **Settings** and paste your slskd API key (the `key` value from `slskd.yml`).
+
+That's it — slskd will connect to the Soulseek network and MusicSeeker can now search and download via Soulseek.
 
 ## Integration with YAMS
 
@@ -248,7 +292,7 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `NAVIDROME_USER` | No | `lucas` | Navidrome username |
 | `NAVIDROME_PASSWORD` | No | — | Navidrome password |
 | `SLSKD_URL` | No | `http://slskd:5030` | slskd REST API URL |
-| `SLSKD_API_KEY` | No | — | slskd API key (generate in slskd settings) |
+| `SLSKD_API_KEY` | No | — | slskd API key (set in `slskd-data/slskd.yml`) |
 | `LASTFM_API_KEY` | No | — | Last.fm API key for Discover tab |
 | `ACOUSTID_API_KEY` | No | — | AcoustID API key for fingerprint recognition fallback |
 | `JWT_SECRET` | No | auto-generated | Secret for signing auth tokens |

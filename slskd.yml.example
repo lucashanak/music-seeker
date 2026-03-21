@@ -1,0 +1,19 @@
+# slskd configuration
+# Copy this file to slskd-data/slskd.yml and fill in your credentials.
+# slskd will auto-register a new Soulseek account if it doesn't exist.
+
+soulseek:
+  username: your_soulseek_username
+  password: your_soulseek_password
+
+directories:
+  incomplete: /music/.slskd-incomplete
+  downloads: /music/.slskd-downloads
+
+web:
+  authentication:
+    api_keys:
+      # This key is used by MusicSeeker to communicate with slskd.
+      # Set the same value in MusicSeeker Settings → slskd API Key.
+      - key: change-me-to-a-random-string
+        role: administrator

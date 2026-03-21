@@ -40,4 +40,4 @@ services:
       SLSKD_REMOTE_CONFIGURATION: "true"
     volumes:
       - ${MUSIC_DIR:-./music}:/music
-      - ./slskd-data:/app
+      - ./slskd-data:/app  # put slskd.yml here (see slskd.yml.example)
