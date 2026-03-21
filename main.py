@@ -151,21 +151,35 @@ async def search(
     return {"results": results, "query": q, "type": search_type}
 
 
+def _user_spotify_creds(user: dict) -> dict | None:
+    """Get Spotify credentials for a user (per-user first, then global fallback)."""
+    raw = auth.get_user_spotify_raw(user["username"])
+    if raw.get("refresh_token"):
+        return raw
+    # Fall back to global env credentials
+    if spotify.SPOTIFY_REFRESH_TOKEN:
+        return None  # None = use global defaults in spotify.py
+    return None
+
+
 @app.get("/api/spotify/playlists")
 async def get_playlists(user: dict = Depends(auth.get_current_user)):
-    playlists = await spotify.get_user_playlists()
+    creds = _user_spotify_creds(user)
+    playlists = await spotify.get_user_playlists(creds=creds)
     return {"playlists": playlists}
 
 
 @app.get("/api/spotify/liked")
 async def get_liked_tracks(user: dict = Depends(auth.get_current_user)):
-    data = await spotify.get_liked_tracks()
+    creds = _user_spotify_creds(user)
+    data = await spotify.get_liked_tracks(creds=creds)
     return data
 
 
 @app.get("/api/spotify/playlist/{playlist_id}/tracks")
 async def get_playlist_tracks(playlist_id: str, user: dict = Depends(auth.get_current_user)):
-    data = await spotify.get_playlist_tracks(playlist_id)
+    creds = _user_spotify_creds(user)
+    data = await spotify.get_playlist_tracks(playlist_id, creds=creds)
     return data
 
 
@@ -441,6 +455,49 @@ async def change_password(username: str, req: ChangePasswordRequest, user: dict 
     if not auth.change_password(username, req.new_password):
         raise HTTPException(404, "User not found")
     return {"status": "updated"}
+
+
+# --- User Spotify Settings ---
+
+@app.get("/api/user/spotify")
+async def get_user_spotify(user: dict = Depends(auth.get_current_user)):
+    return auth.get_user_spotify(user["username"])
+
+
+class SpotifyConnectRequest(BaseModel):
+    client_id: str
+    client_secret: str
+    refresh_token: str
+
+
+@app.put("/api/user/spotify")
+async def connect_user_spotify(req: SpotifyConnectRequest, user: dict = Depends(auth.get_current_user)):
+    # Validate credentials by trying to get a token
+    try:
+        creds = {"client_id": req.client_id, "client_secret": req.client_secret, "refresh_token": req.refresh_token}
+        await spotify.get_user_token(creds)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid Spotify credentials: {e}")
+    auth.update_user_spotify(user["username"], req.client_id, req.client_secret, req.refresh_token)
+    return {"status": "connected"}
+
+
+@app.delete("/api/user/spotify")
+async def disconnect_user_spotify(user: dict = Depends(auth.get_current_user)):
+    auth.clear_user_spotify(user["username"])
+    return {"status": "disconnected"}
+
+
+class UserSettingRequest(BaseModel):
+    hide_spotify: bool | None = None
+
+
+@app.put("/api/user/settings")
+async def update_user_settings(req: UserSettingRequest, user: dict = Depends(auth.get_current_user)):
+    data = req.model_dump(exclude_none=True)
+    for key, value in data.items():
+        auth.update_user_setting(user["username"], key, value)
+    return {"status": "updated", **data}
 
 
 # --- Podcasts (file browser) ---

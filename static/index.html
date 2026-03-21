@@ -1088,6 +1088,38 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
     </div>
   </div>
 
+  <details class="setting-section" id="spotifySection">
+    <summary class="setting-section-title">Spotify Account</summary>
+    <div class="setting-section-body">
+      <div id="spotifyStatus" style="font-size:13px;margin-bottom:12px;"></div>
+      <div id="spotifyConnectForm">
+        <div class="setting-group">
+          <label class="setting-label">Client ID</label>
+          <input class="setting-input" id="spotifyClientId" type="text" placeholder="Enter Spotify Client ID...">
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Client Secret</label>
+          <input class="setting-input" id="spotifyClientSecret" type="password" placeholder="Enter Client Secret...">
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Refresh Token</label>
+          <input class="setting-input" id="spotifyRefreshToken" type="password" placeholder="Enter Refresh Token...">
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button class="btn-save" id="spotifyConnect">Connect Spotify</button>
+          <button class="btn-save" id="spotifyDisconnect" style="background:var(--border);display:none;">Disconnect</button>
+          <span class="save-status" id="spotifyConnStatus"></span>
+        </div>
+      </div>
+      <div class="setting-group" style="margin-top:12px;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);cursor:pointer;">
+          <input type="checkbox" id="settingHideSpotify" style="accent-color:var(--accent);">
+          Hide "My Spotify" from navigation
+        </label>
+      </div>
+    </div>
+  </details>
+
   <details class="setting-section" id="usersSection" style="display:none;">
     <summary class="setting-section-title">User Management</summary>
     <div class="setting-section-body">
@@ -1292,15 +1324,28 @@ async function initApp() {
       appSettings = s;
     } catch {}
 
-    // Grey out features when Spotify not configured
+    // Show/hide Spotify nav based on per-user settings
+    const userHasSpotify = me.has_spotify || spotifyUser;
     const playlistsBtn = $('.nav-btn[data-page="playlists"]');
     const playlistsBnavBtn = $('.bnav-btn[data-page="playlists"]');
-    if (!spotifyUser) {
+    if (me.hide_spotify) {
+      playlistsBtn.style.display = 'none';
+      if (playlistsBnavBtn) playlistsBnavBtn.style.display = 'none';
+    } else if (!userHasSpotify) {
       playlistsBtn.style.opacity = '0.4';
-      playlistsBtn.title = 'Spotify user token not configured';
+      playlistsBtn.title = 'Spotify not connected — connect in Settings';
       if (playlistsBnavBtn) {
         playlistsBnavBtn.style.opacity = '0.4';
-        playlistsBnavBtn.title = 'Spotify user token not configured';
+        playlistsBnavBtn.title = 'Spotify not connected';
+      }
+    } else {
+      playlistsBtn.style.display = '';
+      playlistsBtn.style.opacity = '';
+      playlistsBtn.title = '';
+      if (playlistsBnavBtn) {
+        playlistsBnavBtn.style.display = '';
+        playlistsBnavBtn.style.opacity = '';
+        playlistsBnavBtn.title = '';
       }
     }
     // Search is always available (Deezer/YTMusic don't need credentials)
@@ -2544,6 +2589,12 @@ async function loadSettings() {
   try {
     const data = await apiJson('/api/settings');
     appSettings = data;
+    // Show/hide Spotify option based on whether any creds exist
+    const hasAnyCreds = spotifyAvailable || (currentUser && currentUser.has_spotify);
+    $$('#settingSearchProvider option[value="spotify"], #settingSearchFallback option[value="spotify"], #settingPodcastProvider option[value="spotify"]').forEach(opt => {
+      opt.disabled = !hasAnyCreds;
+      if (!hasAnyCreds && opt.textContent.indexOf('no creds') === -1) opt.textContent += ' (no creds)';
+    });
     $('#settingSearchProvider').value = data.search_provider || 'deezer';
     $('#settingSearchFallback').value = data.search_fallback || '';
     $('#settingPodcastProvider').value = data.podcast_provider || 'itunes';
@@ -2562,6 +2613,28 @@ async function loadSettings() {
     $('#settingNavidromeUser').value = data.navidrome_user || '';
     $('#settingNavidromePass').value = '';
     $('#settingNavidromePass').placeholder = data.navidrome_password ? '(set) Enter new...' : 'Enter password...';
+  } catch { }
+  // Load per-user Spotify status
+  try {
+    const sp = await apiJson('/api/user/spotify');
+    const statusEl = $('#spotifyStatus');
+    if (sp.connected) {
+      statusEl.innerHTML = '<span style="color:var(--accent);">&#x2713; Connected</span> — Your Spotify account is linked.';
+      $('#spotifyClientId').value = sp.spotify_client_id || '';
+      $('#spotifyClientId').placeholder = '(set)';
+      $('#spotifyClientSecret').value = '';
+      $('#spotifyClientSecret').placeholder = '(set) Enter new...';
+      $('#spotifyRefreshToken').value = '';
+      $('#spotifyRefreshToken').placeholder = '(set) Enter new...';
+      $('#spotifyDisconnect').style.display = '';
+    } else {
+      statusEl.innerHTML = 'Not connected. Enter your <a href="https://developer.spotify.com/dashboard" target="_blank" style="color:var(--accent)">Spotify API</a> credentials to access your playlists and Liked Songs.';
+      $('#spotifyClientId').value = '';
+      $('#spotifyClientSecret').value = '';
+      $('#spotifyRefreshToken').value = '';
+      $('#spotifyDisconnect').style.display = 'none';
+    }
+    $('#settingHideSpotify').checked = currentUser.hide_spotify || false;
   } catch { }
   if (currentUser && currentUser.is_admin) loadUsers();
 }
@@ -2606,6 +2679,59 @@ $('#saveSettings').addEventListener('click', async () => {
     $('#saveStatus').textContent = 'Failed to save';
     $('#saveStatus').style.color = 'var(--red)';
   } finally { btn.disabled = false; }
+});
+
+// ── Spotify Connect/Disconnect ──
+$('#spotifyConnect').addEventListener('click', async () => {
+  const btn = $('#spotifyConnect');
+  const status = $('#spotifyConnStatus');
+  btn.disabled = true; status.textContent = '';
+  const cid = $('#spotifyClientId').value.trim();
+  const csecret = $('#spotifyClientSecret').value.trim();
+  const rt = $('#spotifyRefreshToken').value.trim();
+  if (!cid || !csecret || !rt) {
+    status.textContent = 'All three fields required';
+    status.style.color = 'var(--red)';
+    btn.disabled = false;
+    return;
+  }
+  try {
+    await apiJson('/api/user/spotify', { method: 'PUT', body: { client_id: cid, client_secret: csecret, refresh_token: rt } });
+    status.textContent = 'Connected!';
+    status.style.color = 'var(--accent)';
+    currentUser.has_spotify = true;
+    loadSettings();
+    setTimeout(() => { status.textContent = ''; }, 2000);
+  } catch (e) {
+    status.textContent = e.message || 'Failed to connect';
+    status.style.color = 'var(--red)';
+  } finally { btn.disabled = false; }
+});
+
+$('#spotifyDisconnect').addEventListener('click', async () => {
+  if (!confirm('Disconnect your Spotify account?')) return;
+  try {
+    await apiJson('/api/user/spotify', { method: 'DELETE' });
+    currentUser.has_spotify = false;
+    loadSettings();
+  } catch { }
+});
+
+$('#settingHideSpotify').addEventListener('change', async () => {
+  const hide = $('#settingHideSpotify').checked;
+  try {
+    await apiJson('/api/user/settings', { method: 'PUT', body: { hide_spotify: hide } });
+    currentUser.hide_spotify = hide;
+    const playlistsBtn = $('.nav-btn[data-page="playlists"]');
+    const playlistsBnavBtn = $('.bnav-btn[data-page="playlists"]');
+    if (hide) {
+      playlistsBtn.style.display = 'none';
+      if (playlistsBnavBtn) playlistsBnavBtn.style.display = 'none';
+    } else {
+      playlistsBtn.style.display = '';
+      if (playlistsBnavBtn) playlistsBnavBtn.style.display = '';
+    }
+  } catch { }
 });
 
 // ── Disk Usage ──

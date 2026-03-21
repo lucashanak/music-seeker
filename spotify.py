@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import time
@@ -7,63 +8,70 @@ SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 SPOTIFY_REFRESH_TOKEN = os.environ.get("SPOTIFY_REFRESH_TOKEN", "")
 
-# Separate token caches: app-level (client credentials) vs user-level (refresh token)
-_app_token = {"access_token": None, "expires_at": 0}
-_user_token = {"access_token": None, "expires_at": 0}
+# Token caches keyed by (client_id, grant_type) to support per-user credentials
+# Key format: "{client_id}:app" or "{client_id}:{refresh_token_hash}:user"
+_token_cache: dict[str, dict] = {}
 
 
-async def get_app_token() -> str:
+def _cache_key(client_id: str, refresh_token: str = "", user: bool = False) -> str:
+    if user:
+        rt_hash = hashlib.md5(refresh_token.encode()).hexdigest()[:8] if refresh_token else "none"
+        return f"{client_id}:{rt_hash}:user"
+    return f"{client_id}:app"
+
+
+async def get_app_token(creds: dict | None = None) -> str:
     """Client Credentials token — no user account, safe for search/browse."""
-    if _app_token["access_token"] and time.time() < _app_token["expires_at"] - 60:
-        return _app_token["access_token"]
+    cid = (creds or {}).get("client_id") or SPOTIFY_CLIENT_ID
+    csecret = (creds or {}).get("client_secret") or SPOTIFY_CLIENT_SECRET
+    key = _cache_key(cid)
+
+    cached = _token_cache.get(key, {})
+    if cached.get("access_token") and time.time() < cached.get("expires_at", 0) - 60:
+        return cached["access_token"]
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://accounts.spotify.com/api/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": SPOTIFY_CLIENT_ID,
-                "client_secret": SPOTIFY_CLIENT_SECRET,
-            },
+            data={"grant_type": "client_credentials", "client_id": cid, "client_secret": csecret},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         resp.raise_for_status()
         data = resp.json()
 
-    _app_token["access_token"] = data["access_token"]
-    _app_token["expires_at"] = time.time() + data.get("expires_in", 3600)
+    _token_cache[key] = {"access_token": data["access_token"], "expires_at": time.time() + data.get("expires_in", 3600)}
     return data["access_token"]
 
 
-async def get_user_token() -> str:
+async def get_user_token(creds: dict | None = None) -> str:
     """User token via refresh_token — needed for user-specific endpoints (playlists)."""
-    if _user_token["access_token"] and time.time() < _user_token["expires_at"] - 60:
-        return _user_token["access_token"]
+    cid = (creds or {}).get("client_id") or SPOTIFY_CLIENT_ID
+    csecret = (creds or {}).get("client_secret") or SPOTIFY_CLIENT_SECRET
+    rt = (creds or {}).get("refresh_token") or SPOTIFY_REFRESH_TOKEN
+    key = _cache_key(cid, rt, user=True)
 
-    if not SPOTIFY_REFRESH_TOKEN:
-        raise RuntimeError("SPOTIFY_REFRESH_TOKEN not configured — cannot access user data")
+    cached = _token_cache.get(key, {})
+    if cached.get("access_token") and time.time() < cached.get("expires_at", 0) - 60:
+        return cached["access_token"]
+
+    if not rt:
+        raise RuntimeError("Spotify refresh token not configured — cannot access user data")
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://accounts.spotify.com/api/token",
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": SPOTIFY_REFRESH_TOKEN,
-                "client_id": SPOTIFY_CLIENT_ID,
-                "client_secret": SPOTIFY_CLIENT_SECRET,
-            },
+            data={"grant_type": "refresh_token", "refresh_token": rt, "client_id": cid, "client_secret": csecret},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         resp.raise_for_status()
         data = resp.json()
 
-    _user_token["access_token"] = data["access_token"]
-    _user_token["expires_at"] = time.time() + data.get("expires_in", 3600)
+    _token_cache[key] = {"access_token": data["access_token"], "expires_at": time.time() + data.get("expires_in", 3600)}
     return data["access_token"]
 
 
-async def spotify_get(endpoint: str, params: dict | None = None, user: bool = False) -> dict:
-    token = await (get_user_token() if user else get_app_token())
+async def spotify_get(endpoint: str, params: dict | None = None, user: bool = False, creds: dict | None = None) -> dict:
+    token = await (get_user_token(creds) if user else get_app_token(creds))
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"https://api.spotify.com/v1/{endpoint}",
@@ -162,8 +170,8 @@ async def resolve_url(name: str, artist: str, item_type: str = "track") -> dict 
     return results[0] if results else None
 
 
-async def get_user_playlists() -> list[dict]:
-    data = await spotify_get("me/playlists", {"limit": 50}, user=True)
+async def get_user_playlists(creds: dict | None = None) -> list[dict]:
+    data = await spotify_get("me/playlists", {"limit": 50}, user=True, creds=creds)
     playlists = []
     for item in data.get("items", []):
         playlists.append({
@@ -177,12 +185,12 @@ async def get_user_playlists() -> list[dict]:
     return playlists
 
 
-async def get_playlist_tracks(playlist_id: str) -> dict:
+async def get_playlist_tracks(playlist_id: str, creds: dict | None = None) -> dict:
     # Get playlist metadata first
     try:
-        playlist = await spotify_get(f"playlists/{playlist_id}", {"fields": "name,images"})
+        playlist = await spotify_get(f"playlists/{playlist_id}", {"fields": "name,images"}, creds=creds)
     except httpx.HTTPStatusError:
-        playlist = await spotify_get(f"playlists/{playlist_id}", {"fields": "name,images"}, user=True)
+        playlist = await spotify_get(f"playlists/{playlist_id}", {"fields": "name,images"}, user=True, creds=creds)
 
     # Paginate through all tracks (Spotify returns max 100 per request)
     tracks = []
@@ -192,10 +200,10 @@ async def get_playlist_tracks(playlist_id: str) -> dict:
         try:
             if use_user:
                 data = await spotify_get(f"playlists/{playlist_id}/tracks",
-                    {"limit": 100, "offset": offset}, user=True)
+                    {"limit": 100, "offset": offset}, user=True, creds=creds)
             else:
                 data = await spotify_get(f"playlists/{playlist_id}/tracks",
-                    {"limit": 100, "offset": offset})
+                    {"limit": 100, "offset": offset}, creds=creds)
         except httpx.HTTPStatusError:
             if not use_user:
                 use_user = True
@@ -228,12 +236,12 @@ async def get_playlist_tracks(playlist_id: str) -> dict:
     }
 
 
-async def get_liked_tracks() -> dict:
+async def get_liked_tracks(creds: dict | None = None) -> dict:
     """Fetch user's Liked Songs (saved tracks) with pagination."""
     tracks = []
     offset = 0
     while True:
-        data = await spotify_get("me/tracks", {"limit": 50, "offset": offset}, user=True)
+        data = await spotify_get("me/tracks", {"limit": 50, "offset": offset}, user=True, creds=creds)
         for item in data.get("items", []):
             t = item.get("track")
             if not t or not t.get("id"):

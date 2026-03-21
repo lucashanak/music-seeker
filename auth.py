@@ -95,6 +95,8 @@ def _user_perms(user: dict) -> dict:
         "allowed_formats": user.get("allowed_formats", DEFAULT_PERMS["allowed_formats"]),
         "allowed_methods": user.get("allowed_methods", DEFAULT_PERMS["allowed_methods"]),
         "quota_gb": user.get("quota_gb", DEFAULT_PERMS["quota_gb"]),
+        "hide_spotify": user.get("hide_spotify", False),
+        "has_spotify": bool(user.get("spotify_refresh_token")),
     }
 
 
@@ -200,5 +202,63 @@ def change_password(username: str, new_password: str) -> bool:
     if username not in users:
         return False
     users[username]["password"] = _hash_password(new_password)
+    _save_users(users)
+    return True
+
+
+def get_user_spotify(username: str) -> dict:
+    """Get user's Spotify credentials (masked)."""
+    users = _load_users()
+    user = users.get(username, {})
+    return {
+        "spotify_client_id": user.get("spotify_client_id", ""),
+        "spotify_client_secret": bool(user.get("spotify_client_secret", "")),
+        "spotify_refresh_token": bool(user.get("spotify_refresh_token", "")),
+        "connected": bool(user.get("spotify_refresh_token")),
+    }
+
+
+def get_user_spotify_raw(username: str) -> dict:
+    """Get user's actual Spotify credentials (not masked)."""
+    users = _load_users()
+    user = users.get(username, {})
+    return {
+        "client_id": user.get("spotify_client_id", ""),
+        "client_secret": user.get("spotify_client_secret", ""),
+        "refresh_token": user.get("spotify_refresh_token", ""),
+    }
+
+
+def update_user_spotify(username: str, client_id: str, client_secret: str, refresh_token: str) -> bool:
+    users = _load_users()
+    if username not in users:
+        return False
+    users[username]["spotify_client_id"] = client_id
+    users[username]["spotify_client_secret"] = client_secret
+    users[username]["spotify_refresh_token"] = refresh_token
+    _save_users(users)
+    return True
+
+
+def clear_user_spotify(username: str) -> bool:
+    users = _load_users()
+    if username not in users:
+        return False
+    users[username].pop("spotify_client_id", None)
+    users[username].pop("spotify_client_secret", None)
+    users[username].pop("spotify_refresh_token", None)
+    _save_users(users)
+    return True
+
+
+def update_user_setting(username: str, key: str, value) -> bool:
+    """Update a single user-level setting (e.g., hide_spotify)."""
+    allowed = {"hide_spotify"}
+    if key not in allowed:
+        return False
+    users = _load_users()
+    if username not in users:
+        return False
+    users[username][key] = value
     _save_users(users)
     return True
