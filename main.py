@@ -79,7 +79,7 @@ class DownloadRequest(BaseModel):
 @app.get("/api/search")
 async def search(
     q: str = Query(..., min_length=1),
-    type: str = Query("track", pattern="^(track|album|artist|playlist)$"),
+    type: str = Query("track", pattern="^(track|album|artist|playlist|show|episode)$"),
     limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
     user: dict = Depends(auth.get_current_user),
@@ -103,6 +103,12 @@ async def get_liked_tracks(user: dict = Depends(auth.get_current_user)):
 @app.get("/api/spotify/playlist/{playlist_id}/tracks")
 async def get_playlist_tracks(playlist_id: str, user: dict = Depends(auth.get_current_user)):
     data = await spotify.get_playlist_tracks(playlist_id)
+    return data
+
+
+@app.get("/api/spotify/show/{show_id}/episodes")
+async def get_show_episodes(show_id: str, user: dict = Depends(auth.get_current_user)):
+    data = await spotify.get_show_episodes(show_id)
     return data
 
 

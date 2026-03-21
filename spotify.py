@@ -75,7 +75,10 @@ async def spotify_get(endpoint: str, params: dict | None = None, user: bool = Fa
 
 
 async def search(query: str, search_type: str = "track", limit: int = 20, offset: int = 0) -> list[dict]:
-    data = await spotify_get("search", {"q": query, "type": search_type, "limit": limit, "offset": offset})
+    params = {"q": query, "type": search_type, "limit": limit, "offset": offset}
+    if search_type in ("show", "episode"):
+        params["market"] = "CZ"
+    data = await spotify_get("search", params)
 
     results = []
     items_key = f"{search_type}s"
@@ -124,6 +127,30 @@ async def search(query: str, search_type: str = "track", limit: int = 20, offset
                 "url": item["external_urls"].get("spotify", ""),
                 "total_tracks": item.get("tracks", {}).get("total", 0),
                 "type": "playlist",
+            })
+        elif search_type == "show":
+            results.append({
+                "id": item["id"],
+                "name": item["name"],
+                "artist": item.get("publisher", ""),
+                "image": _best_image(item.get("images", [])),
+                "url": item["external_urls"].get("spotify", ""),
+                "total_tracks": item.get("total_episodes", 0),
+                "type": "show",
+                "description": (item.get("description", "") or "")[:200],
+            })
+        elif search_type == "episode":
+            results.append({
+                "id": item["id"],
+                "name": item["name"],
+                "artist": item.get("show", {}).get("name", ""),
+                "image": _best_image(item.get("images", [])),
+                "url": item["external_urls"].get("spotify", ""),
+                "duration_ms": item.get("duration_ms", 0),
+                "release_date": item.get("release_date", ""),
+                "type": "episode",
+                "show_id": item.get("show", {}).get("id", ""),
+                "description": (item.get("description", "") or "")[:200],
             })
 
     return results
@@ -233,7 +260,7 @@ async def get_liked_tracks() -> dict:
 
 def parse_spotify_url(url: str) -> tuple[str, str] | None:
     """Extract (type, id) from a Spotify URL. Returns None if not a valid Spotify URL."""
-    m = re.search(r"open\.spotify\.com/(track|album|playlist|artist)/([a-zA-Z0-9]+)", url)
+    m = re.search(r"open\.spotify\.com/(track|album|playlist|artist|episode|show)/([a-zA-Z0-9]+)", url)
     if m:
         return m.group(1), m.group(2)
     return None
@@ -276,6 +303,59 @@ async def get_album_tracks(album_id: str) -> list[dict]:
         offset += 50
 
     return tracks
+
+
+async def get_episode_metadata(episode_id: str) -> dict:
+    """Get metadata for a single podcast episode."""
+    data = await spotify_get(f"episodes/{episode_id}", {"market": "CZ"})
+    return {
+        "name": data["name"],
+        "artist": data.get("show", {}).get("name", ""),
+        "album": data.get("show", {}).get("name", ""),
+        "image": _best_image(data.get("images", [])),
+        "url": data["external_urls"].get("spotify", ""),
+        "duration_ms": data.get("duration_ms", 0),
+        "type": "episode",
+    }
+
+
+async def get_show_episodes(show_id: str) -> dict:
+    """Get all episodes from a podcast show."""
+    show = await spotify_get(f"shows/{show_id}", {"market": "CZ"})
+    show_name = show.get("name", "")
+    show_image = _best_image(show.get("images", []))
+    publisher = show.get("publisher", "")
+
+    episodes = []
+    offset = 0
+    while True:
+        data = await spotify_get(f"shows/{show_id}/episodes",
+                                 {"limit": 50, "offset": offset, "market": "CZ"})
+        for item in data.get("items", []):
+            if not item or not item.get("id"):
+                continue
+            episodes.append({
+                "id": item["id"],
+                "name": item["name"],
+                "artist": show_name,
+                "album": show_name,
+                "image": _best_image(item.get("images", [])) or show_image,
+                "url": item["external_urls"].get("spotify", ""),
+                "duration_ms": item.get("duration_ms", 0),
+                "release_date": item.get("release_date", ""),
+                "type": "episode",
+                "description": (item.get("description", "") or "")[:200],
+            })
+        if not data.get("next"):
+            break
+        offset += 50
+
+    return {
+        "name": show_name,
+        "image": show_image,
+        "publisher": publisher,
+        "episodes": episodes,
+    }
 
 
 def _best_image(images: list[dict]) -> str:

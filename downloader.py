@@ -57,11 +57,35 @@ def _sanitize(name: str) -> str:
 
 async def _resolve_tracks(job: Job) -> list[dict]:
     """Resolve job into a list of {name, artist, album} dicts for downloading."""
-    from spotify import parse_spotify_url, get_track_metadata, get_album_tracks
+    from spotify import parse_spotify_url, get_track_metadata, get_album_tracks, get_episode_metadata, get_show_episodes
 
     # Playlists: already have track data
     if job.type == "playlist" and job.playlist_tracks:
         return job.playlist_tracks
+
+    # Shows: already have episode data from frontend
+    if job.type == "show" and job.playlist_tracks:
+        return job.playlist_tracks
+
+    # Episodes: resolve from Spotify URL
+    if job.type == "episode":
+        parsed = parse_spotify_url(job.url)
+        if parsed and parsed[0] == "episode":
+            try:
+                meta = await get_episode_metadata(parsed[1])
+                return [meta]
+            except Exception:
+                pass
+
+    # Shows: fetch episodes from Spotify
+    if job.type == "show":
+        parsed = parse_spotify_url(job.url)
+        if parsed and parsed[0] == "show":
+            try:
+                data = await get_show_episodes(parsed[1])
+                return data.get("episodes", [])
+            except Exception:
+                pass
 
     # Albums: fetch track list from Spotify
     if job.type == "album":
@@ -80,6 +104,14 @@ async def _resolve_tracks(job: Job) -> list[dict]:
             return [meta]
         except Exception:
             pass  # Spotify API unavailable, fall through to title parsing
+
+    # Episode URL without type hint
+    if parsed and parsed[0] == "episode":
+        try:
+            meta = await get_episode_metadata(parsed[1])
+            return [meta]
+        except Exception:
+            pass
 
     if " - " in job.title:
         artist, title = job.title.split(" - ", 1)
@@ -105,16 +137,23 @@ async def _download_cover(image_url: str, dest_path: str) -> bool:
 
 
 async def _download_track_ytdlp(artist: str, title: str, album: str, fmt: str,
-                                 image_url: str = "") -> bool:
+                                 image_url: str = "", is_podcast: bool = False) -> bool:
     """Download a single track via yt-dlp, then overwrite metadata from Spotify."""
     safe_artist = _sanitize(artist) or "Unknown Artist"
     safe_album = _sanitize(album) or "Unknown Album"
     safe_title = _sanitize(title) or "Unknown"
-    out_dir = f"{MUSIC_DIR}/{safe_artist}/{safe_album}"
+    if is_podcast:
+        out_dir = f"{MUSIC_DIR}/Podcasts/{safe_artist}"
+    else:
+        out_dir = f"{MUSIC_DIR}/{safe_artist}/{safe_album}"
     out_template = f"{out_dir}/{safe_title}.%(ext)s"
     final_file = f"{out_dir}/{safe_title}.{fmt}"
 
-    query = f"{artist} {title}" if artist else title
+    if is_podcast:
+        # For podcasts, use just the episode title — adding show name makes queries too specific
+        query = title
+    else:
+        query = f"{artist} {title}" if artist else title
 
     # Step 1: Download audio with yt-dlp (no metadata from YouTube)
     cmd = [
@@ -206,29 +245,33 @@ async def _download_track_ytdlp(artist: str, title: str, album: str, fmt: str,
 
 async def _run_ytdlp(job: Job):
     tracks = await _resolve_tracks(job)
+    is_podcast = job.type in ("episode", "show")
 
-    # Library check: skip existing tracks
-    job.progress_text = "Checking library for existing tracks..."
-    to_download = []
+    # Library check: skip existing tracks (skip for podcasts — not indexed in Navidrome)
+    to_download = tracks
     already_have = 0
-    for track in tracks:
-        name = track.get("name", "")
-        artist = track.get("artist", "")
-        sid = await library.find_song_id(name, artist)
-        if sid:
-            already_have += 1
-        else:
-            to_download.append(track)
+    if not is_podcast:
+        job.progress_text = "Checking library for existing tracks..."
+        to_download = []
+        for track in tracks:
+            name = track.get("name", "")
+            artist = track.get("artist", "")
+            sid = await library.find_song_id(name, artist)
+            if sid:
+                already_have += 1
+            else:
+                to_download.append(track)
 
-    if already_have > 0:
-        job.progress_text = f"Skipping {already_have} tracks already in library, downloading {len(to_download)}..."
-    if not to_download:
-        job.progress_text = f"All {already_have} tracks already in library, skipping download"
-        return False
+        if already_have > 0:
+            job.progress_text = f"Skipping {already_have} tracks already in library, downloading {len(to_download)}..."
+        if not to_download:
+            job.progress_text = f"All {already_have} tracks already in library, skipping download"
+            return False
 
-    # Download each track
+    # Download each track/episode
     total = len(to_download)
     failed = []
+    label = "episodes" if is_podcast else "tracks"
     for i, track in enumerate(to_download, 1):
         name = track.get("name", "")
         artist = track.get("artist", "")
@@ -237,7 +280,7 @@ async def _run_ytdlp(job: Job):
         job.progress = int((i - 1) / total * 100)
 
         image = track.get("image", "")
-        ok = await _download_track_ytdlp(artist, name, album, job.format, image)
+        ok = await _download_track_ytdlp(artist, name, album, job.format, image, is_podcast=is_podcast)
         if not ok:
             failed.append(f"{artist} - {name}")
 
@@ -245,7 +288,7 @@ async def _run_ytdlp(job: Job):
     if failed:
         job.progress_text = f"Done with {len(failed)} failures: {', '.join(failed[:3])}"
     else:
-        job.progress_text = f"Downloaded {total} tracks"
+        job.progress_text = f"Downloaded {total} {label}"
 
     return True
 

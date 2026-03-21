@@ -793,6 +793,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
       <button class="type-btn" data-type="album">Albums</button>
       <button class="type-btn" data-type="artist">Artists</button>
       <button class="type-btn" data-type="playlist">Playlists</button>
+      <button class="type-btn" data-type="show">Podcasts</button>
     </div>
   </div>
   <div class="recognize-result" id="recognizeResult">
@@ -813,6 +814,21 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
   <div id="searchResults" class="grid"></div>
   <div id="searchLoadMore" style="text-align:center; padding:20px; display:none;">
     <div class="skeleton" style="height:40px; width:200px; margin:0 auto;"></div>
+  </div>
+  <div id="showDetail" style="display:none; margin-top:24px;">
+    <button id="backToSearch" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back to results</button>
+    <div class="playlist-hero">
+      <img id="showDetailImg" class="playlist-hero-img" src="">
+      <div class="playlist-hero-info">
+        <h2 id="showDetailName"></h2>
+        <p id="showDetailPublisher" style="color:var(--text-muted); font-size:13px;"></p>
+        <p id="showDetailCount"></p>
+      </div>
+      <div class="playlist-hero-actions">
+        <button class="btn-download" id="downloadShow" style="width:auto; padding:12px 28px;">Download All</button>
+      </div>
+    </div>
+    <div id="showEpisodes" class="grid"></div>
   </div>
 </main>
 
@@ -1199,6 +1215,10 @@ function switchPage(page, fromPopstate) {
   $('#pageDiscover').style.display = page === 'discover' ? '' : 'none';
   $('#pagePlaylists').style.display = page === 'playlists' ? '' : 'none';
   $('#pageSettings').style.display = page === 'settings' ? '' : 'none';
+  if (page === 'search') {
+    $('#showDetail').style.display = 'none';
+    $('#searchResults').style.display = '';
+  }
   if (page === 'discover') loadTags();
   if (page === 'playlists') loadPlaylists();
   if (page === 'settings') loadSettings();
@@ -1265,7 +1285,8 @@ async function doSearch(append) {
             <div class="card-sub">${esc(item.artist || '')}</div>
             <div class="card-meta">
               ${item.year ? `<span>${item.year}</span>` : ''}
-              ${item.total_tracks ? `<span>${item.total_tracks} tracks</span>` : ''}
+              ${item.total_tracks ? `<span>${item.total_tracks} ${item.type === 'show' ? 'episodes' : 'tracks'}</span>` : ''}
+              ${item.release_date ? `<span>${item.release_date}</span>` : ''}
               ${item.duration_ms ? `<span>${formatDuration(item.duration_ms)}</span>` : ''}
             </div>
           </div>
@@ -1276,6 +1297,8 @@ async function doSearch(append) {
           const item = JSON.parse(card.dataset.item);
           if (item.type === 'playlist' && item.id) {
             loadPlaylistDetail(item.id, item.url, 'search');
+          } else if (item.type === 'show' && item.id) {
+            loadShowDetail(item.id, item.url, 'search');
           } else {
             openModal(item);
           }
@@ -1306,7 +1329,8 @@ function renderResults(items, container, fromPage) {
         <div class="card-sub">${esc(item.artist || '')}</div>
         <div class="card-meta">
           ${item.year ? `<span>${item.year}</span>` : ''}
-          ${item.total_tracks ? `<span>${item.total_tracks} tracks</span>` : ''}
+          ${item.total_tracks ? `<span>${item.total_tracks} ${item.type === 'show' ? 'episodes' : 'tracks'}</span>` : ''}
+          ${item.release_date ? `<span>${item.release_date}</span>` : ''}
           ${item.duration_ms ? `<span>${formatDuration(item.duration_ms)}</span>` : ''}
         </div>
       </div>
@@ -1318,6 +1342,8 @@ function renderResults(items, container, fromPage) {
       const item = JSON.parse(card.dataset.item);
       if (item.type === 'playlist' && item.id) {
         loadPlaylistDetail(item.id, item.url, fromPage);
+      } else if (item.type === 'show' && item.id) {
+        loadShowDetail(item.id, item.url, fromPage);
       } else {
         openModal(item);
       }
@@ -1639,6 +1665,51 @@ $('#downloadPlaylist').addEventListener('click', () => {
   });
 });
 
+// ── Show (Podcast) Detail ──
+let currentShowEpisodes = [];
+let showDetailSource = null;
+async function loadShowDetail(id, url, fromPage) {
+  showDetailSource = fromPage || null;
+  $('#searchResults').style.display = 'none';
+  $('#searchLoadMore').style.display = 'none';
+  $('#showDetail').style.display = '';
+  history.pushState({layer: 'showDetail'}, '');
+  const episodesEl = $('#showEpisodes');
+  episodesEl.innerHTML = Array(6).fill('<div class="skeleton skeleton-card"></div>').join('');
+  try {
+    const data = await apiJson(`/api/spotify/show/${id}/episodes`);
+    currentShowEpisodes = data.episodes.map(e => ({ name: e.name, artist: e.artist, album: e.artist, image: e.image || '', url: e.url, type: 'episode' }));
+    $('#showDetailImg').src = data.image || '';
+    $('#showDetailName').textContent = data.name;
+    $('#showDetailPublisher').textContent = data.publisher || '';
+    $('#showDetailCount').textContent = `${data.episodes.length} episodes`;
+    renderResults(data.episodes, '#showEpisodes');
+  } catch (e) {
+    episodesEl.innerHTML = `<div class="empty-state"><p>Failed to load episodes: ${e.message}</p></div>`;
+  }
+}
+
+$('#backToSearch').addEventListener('click', () => closeShowDetail());
+function closeShowDetail(fromPopstate) {
+  $('#showDetail').style.display = 'none';
+  $('#searchResults').style.display = '';
+  const src = showDetailSource;
+  showDetailSource = null;
+  if (src) switchPage(src, true);
+  if (!fromPopstate) history.back();
+}
+
+$('#downloadShow').addEventListener('click', () => {
+  if (!currentShowEpisodes.length) return;
+  openModal({
+    name: $('#showDetailName').textContent,
+    artist: $('#showDetailPublisher').textContent || 'Podcast',
+    image: $('#showDetailImg').src,
+    url: '',
+    type: 'show',
+  });
+});
+
 // ── Download Modal ──
 function openModal(item) {
   history.pushState({layer: 'modal'}, '');
@@ -1650,17 +1721,25 @@ function openModal(item) {
   const allowedFormats = currentUser?.allowed_formats || ['mp3','flac'];
   const defMethod = appSettings.default_method || 'yt-dlp';
   const defFormat = appSettings.default_format || 'flac';
-  selectedMethod = allowedMethods.includes(defMethod) ? defMethod : allowedMethods[0];
-  selectedFormat = allowedFormats.includes(defFormat) ? defFormat : allowedFormats[0];
+  const isPodcast = item.type === 'episode' || item.type === 'show';
+  if (isPodcast) {
+    selectedMethod = 'yt-dlp';
+    selectedFormat = 'mp3';
+  } else {
+    selectedMethod = allowedMethods.includes(defMethod) ? defMethod : allowedMethods[0];
+    selectedFormat = allowedFormats.includes(defFormat) ? defFormat : allowedFormats[0];
+  }
   updateOptionGroups();
+  // Hide method/format for podcasts (always yt-dlp + mp3)
+  $$('.modal-section', $('#downloadModal')).forEach((s, i) => { if (i < 2) s.style.display = isPodcast ? 'none' : ''; });
   $('#modalLibraryNotice').style.display = item.inLibrary ? '' : 'none';
   const dlBtn = $('#modalDownload');
   dlBtn.disabled = false;
   dlBtn.textContent = 'Download';
   $('#downloadModal').classList.add('open');
 
-  // Last.fm items have no Spotify URL — resolve it (skip for playlists)
-  if (!item.url && item.type !== 'playlist') {
+  // Last.fm items have no Spotify URL — resolve it (skip for playlists/podcasts)
+  if (!item.url && item.type !== 'playlist' && !isPodcast) {
     dlBtn.disabled = true;
     dlBtn.textContent = 'Resolving...';
     apiJson('/api/discover/resolve', {
@@ -1721,6 +1800,9 @@ $('#modalDownload').addEventListener('click', async () => {
       if ($('#createPlaylistCheck').checked) {
         dlBody.playlist_name = modalItem.name;
       }
+    }
+    if (modalItem.type === 'show' && currentShowEpisodes.length) {
+      dlBody.playlist_tracks = currentShowEpisodes;
     }
     await apiJson('/api/download', { method: 'POST', body: dlBody });
     closeModal();
@@ -2103,6 +2185,7 @@ window.addEventListener('popstate', e => {
   if (epDialog) { epDialog.remove(); return; }
   // Sub-page navigation
   if ($('#playlistDetail').style.display !== 'none') { closePlaylistDetail(true); return; }
+  if ($('#showDetail').style.display !== 'none') { closeShowDetail(true); return; }
   if ($('#tagDetailView').style.display !== 'none') { closeTagDetail(true); return; }
   // Page navigation
   if (state && state.page) { switchPage(state.page, true); }
