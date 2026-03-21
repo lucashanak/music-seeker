@@ -152,6 +152,18 @@ async def search(
     return {"results": results, "query": q, "type": search_type}
 
 
+@app.get("/api/artist/{artist_id}/albums")
+async def get_artist_albums(artist_id: str, user: dict = Depends(auth.get_current_user)):
+    data = await search_providers.deezer_get_artist_albums(artist_id)
+    return data
+
+
+@app.get("/api/album/{album_id}/tracks")
+async def get_album_tracks(album_id: str, user: dict = Depends(auth.get_current_user)):
+    tracks = await search_providers.deezer_get_album_tracks(album_id)
+    return {"tracks": tracks}
+
+
 def _user_spotify_creds(user: dict) -> dict | None:
     """Get Spotify credentials for a user (per-user first, then global fallback)."""
     raw = auth.get_user_spotify_raw(user["username"])

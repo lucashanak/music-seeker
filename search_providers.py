@@ -119,6 +119,36 @@ async def deezer_get_album_tracks(album_id: str) -> list[dict]:
     return tracks
 
 
+async def deezer_get_artist_albums(artist_id: str) -> dict:
+    async with httpx.AsyncClient(timeout=10) as client:
+        # Get artist info
+        resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}")
+        resp.raise_for_status()
+        artist = resp.json()
+        # Get albums
+        resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}/albums", params={"limit": 100})
+        resp.raise_for_status()
+        data = resp.json()
+
+    albums = []
+    for item in data.get("data", []):
+        albums.append({
+            "id": str(item["id"]),
+            "name": item.get("title", ""),
+            "artist": artist.get("name", ""),
+            "image": item.get("cover_big", ""),
+            "url": item.get("link", ""),
+            "total_tracks": item.get("nb_tracks", 0),
+            "release_date": item.get("release_date", ""),
+            "type": "album",
+        })
+    return {
+        "name": artist.get("name", ""),
+        "image": artist.get("picture_big", ""),
+        "albums": albums,
+    }
+
+
 def parse_deezer_url(url: str) -> tuple[str, str] | None:
     m = re.search(r"deezer\.com/(track|album|playlist|artist)/(\d+)", url)
     if m:

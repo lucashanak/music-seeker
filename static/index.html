@@ -1053,6 +1053,17 @@ body.player-active .player-bar { display: flex; }
     </div>
     <div id="showEpisodes" class="grid"></div>
   </div>
+  <div id="artistDetail" style="display:none; margin-top:24px;">
+    <button id="backFromArtist" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back to results</button>
+    <div class="playlist-hero">
+      <img id="artistDetailImg" class="playlist-hero-img" src="" style="border-radius:50%;">
+      <div class="playlist-hero-info">
+        <h2 id="artistDetailName"></h2>
+        <p id="artistDetailCount"></p>
+      </div>
+    </div>
+    <div id="artistAlbums" class="grid"></div>
+  </div>
 </main>
 
 <!-- ── Discover Page ── -->
@@ -1753,6 +1764,8 @@ async function doSearch(append) {
             loadPlaylistDetail(item.id, item.url, 'search');
           } else if (item.type === 'show' && item.id) {
             loadShowDetail(item.id, item.url, 'search', item.feed_url);
+          } else if (item.type === 'artist' && item.id) {
+            loadArtistDetail(item.id, 'search');
           } else {
             openModal(item);
           }
@@ -1821,6 +1834,8 @@ function renderResults(items, container, fromPage) {
         loadPlaylistDetail(item.id, item.url, fromPage);
       } else if (item.type === 'show' && item.id) {
         loadShowDetail(item.id, item.url, fromPage, item.feed_url);
+      } else if (item.type === 'artist' && item.id) {
+        loadArtistDetail(item.id, fromPage);
       } else {
         openModal(item);
       }
@@ -2190,6 +2205,55 @@ function closeShowDetail(fromPopstate) {
   $('#searchResults').style.display = '';
   const src = showDetailSource;
   showDetailSource = null;
+  if (src) switchPage(src, true);
+  if (!fromPopstate) historyBack();
+}
+
+// ── Artist Detail ──
+let artistDetailSource = null;
+let currentArtistAlbums = [];
+
+async function loadArtistDetail(id, fromPage) {
+  artistDetailSource = fromPage || null;
+  $('#searchResults').style.display = 'none';
+  $('#searchLoadMore').style.display = 'none';
+  $('#artistDetail').style.display = '';
+  history.pushState({layer: 'artistDetail'}, '');
+  const albumsEl = $('#artistAlbums');
+  albumsEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  try {
+    const data = await apiJson(`/api/artist/${id}/albums`);
+    currentArtistAlbums = data.albums || [];
+    $('#artistDetailImg').src = data.image || '';
+    $('#artistDetailName').textContent = data.name;
+    $('#artistDetailCount').textContent = `${currentArtistAlbums.length} albums`;
+    albumsEl.innerHTML = currentArtistAlbums.map((a, i) => `
+      <div class="card" data-album-idx="${i}">
+        <img class="card-img" src="${a.image || ''}" alt="" loading="lazy">
+        <div class="card-body">
+          <div class="card-title">${esc(a.name)}</div>
+          <div class="card-sub">${a.total_tracks || ''} tracks${a.release_date ? ' · ' + a.release_date.slice(0, 4) : ''}</div>
+        </div>
+      </div>
+    `).join('');
+    $$('.card', albumsEl).forEach(card => {
+      card.addEventListener('click', () => {
+        const album = currentArtistAlbums[card.dataset.albumIdx];
+        if (album) openModal(album);
+      });
+    });
+  } catch (e) {
+    albumsEl.innerHTML = `<div class="empty-state"><p>Failed to load albums: ${e.message}</p></div>`;
+  }
+}
+
+$('#backFromArtist').addEventListener('click', () => closeArtistDetail());
+function closeArtistDetail(fromPopstate) {
+  $('#artistDetail').style.display = 'none';
+  $('#searchResults').style.display = '';
+  $('#searchLoadMore').style.display = '';
+  const src = artistDetailSource;
+  artistDetailSource = null;
   if (src) switchPage(src, true);
   if (!fromPopstate) historyBack();
 }
@@ -3312,6 +3376,7 @@ window.addEventListener('popstate', e => {
   if ($('#showDetail').style.display !== 'none') { closeShowDetail(true); return; }
   if ($('#podcastEpisodes').style.display !== 'none') { closePodcastShow(true); return; }
   if ($('#tagDetailView').style.display !== 'none') { closeTagDetail(true); return; }
+  if ($('#artistDetail').style.display !== 'none') { closeArtistDetail(true); return; }
   // Page navigation
   if (state && state.page) { switchPage(state.page, true); }
 });
