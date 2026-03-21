@@ -666,11 +666,18 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
 }
 .disk-usage-row:last-child { border-bottom: none; }
 .disk-usage-name { flex: 1; font-weight: 600; font-size: 14px; }
+.disk-usage-name.expandable { cursor: pointer; }
+.disk-usage-name.expandable::before { content: '▶'; font-size: 10px; margin-right: 6px; display: inline-block; transition: transform 0.2s; }
+.disk-usage-name.expandable.expanded::before { transform: rotate(90deg); }
 .disk-usage-stats { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .disk-usage-bar { width: 80px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
 .disk-usage-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
 .btn-delete-dir { background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 12px; padding: 4px 10px; cursor: pointer; }
 .btn-delete-dir:hover { border-color: #e74c3c; color: #e74c3c; }
+.disk-usage-subs { display: none; padding-left: 24px; }
+.disk-usage-subs.open { display: block; }
+.disk-usage-subs .disk-usage-row { padding: 6px 0; }
+.disk-usage-subs .disk-usage-name { font-weight: 500; font-size: 13px; color: var(--text-muted); }
 
 /* ── Animations ── */
 @keyframes slideUp {
@@ -2542,6 +2549,43 @@ $('#saveSettings').addEventListener('click', async () => {
 });
 
 // ── Disk Usage ──
+function confirmDeleteTypeName(name) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay open';
+    const s = esc(name);
+    overlay.innerHTML = '<div class="modal-content" style="max-width:420px"><button class="modal-close" style="position:absolute;top:12px;right:12px">&times;</button><div style="display:flex;flex-direction:column;gap:12px"><div style="font-weight:700;font-size:15px;color:#e74c3c">Delete "'+s+'"?</div><div style="font-size:13px;color:var(--text-muted)">This will permanently delete all files in this folder. This cannot be undone.</div><div style="font-size:13px;color:var(--text-muted)">Type <strong style="color:var(--text)">'+s+'</strong> to confirm:</div><input type="text" autocomplete="off" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:14px" placeholder="Type folder name..."><div style="display:flex;gap:8px;justify-content:flex-end"><button class="cd-cancel" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:8px 16px;color:var(--text);cursor:pointer">Cancel</button><button class="cd-confirm" disabled style="background:var(--border);color:var(--text-muted);border:none;border-radius:var(--radius);padding:8px 16px;font-weight:600;cursor:not-allowed;transition:all .2s">Delete</button></div></div></div>';
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('input');
+    const btn = overlay.querySelector('.cd-confirm');
+    const close = () => { overlay.remove(); resolve(false); };
+    overlay.querySelector('.modal-close').onclick = close;
+    overlay.querySelector('.cd-cancel').onclick = close;
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    input.addEventListener('input', () => {
+      if (input.value === name) { btn.disabled = false; btn.style.background = '#e74c3c'; btn.style.color = '#fff'; btn.style.cursor = 'pointer'; }
+      else { btn.disabled = true; btn.style.background = 'var(--border)'; btn.style.color = 'var(--text-muted)'; btn.style.cursor = 'not-allowed'; }
+    });
+    btn.addEventListener('click', () => { if (!btn.disabled) { overlay.remove(); resolve(true); } });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter' && !btn.disabled) { overlay.remove(); resolve(true); } });
+    setTimeout(() => input.focus(), 100);
+  });
+}
+
+function confirmDeleteSimple(name, parent) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay open';
+    overlay.innerHTML = '<div class="modal-content" style="max-width:400px"><button class="modal-close" style="position:absolute;top:12px;right:12px">&times;</button><div style="display:flex;flex-direction:column;gap:12px"><div style="font-weight:700;font-size:15px;color:#e74c3c">Delete "'+esc(name)+'"?</div><div style="font-size:13px;color:var(--text-muted)">from <strong>'+esc(parent)+'</strong></div><div style="font-size:13px;color:var(--text-muted)">This will permanently delete all files in this subfolder.</div><div style="display:flex;gap:8px;justify-content:flex-end"><button class="cd-cancel" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:8px 16px;color:var(--text);cursor:pointer">No</button><button class="cd-confirm" style="background:#e74c3c;color:#fff;border:none;border-radius:var(--radius);padding:8px 16px;font-weight:600;cursor:pointer">Yes, delete</button></div></div></div>';
+    document.body.appendChild(overlay);
+    const close = () => { overlay.remove(); resolve(false); };
+    overlay.querySelector('.modal-close').onclick = close;
+    overlay.querySelector('.cd-cancel').onclick = close;
+    overlay.querySelector('.cd-confirm').onclick = () => { overlay.remove(); resolve(true); };
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  });
+}
+
 async function loadDiskUsage() {
   const container = $('#diskUsageList');
   container.innerHTML = '<div class="skeleton" style="height:80px;"></div>';
@@ -2568,21 +2612,63 @@ async function loadDiskUsage() {
           else if (usedGb >= quotaGb * 0.8) barColor = '#f39c12';
         }
         return `
-        <div class="disk-usage-row" data-dir="${esc(item.name)}">
-          <div class="disk-usage-name">${esc(item.name)}</div>
-          <div class="disk-usage-bar"><div class="disk-usage-bar-fill" style="width:${pctOfMax}%;background:${barColor}"></div></div>
-          <div class="disk-usage-stats">${item.file_count} files &middot; ${formatSize(item.size_bytes)}${quotaInfo}</div>
-          <button class="btn-delete-dir" title="Delete this directory">Delete</button>
+        <div class="disk-usage-group" data-dir="${esc(item.name)}">
+          <div class="disk-usage-row">
+            <div class="disk-usage-name expandable">${esc(item.name)}</div>
+            <div class="disk-usage-bar"><div class="disk-usage-bar-fill" style="width:${pctOfMax}%;background:${barColor}"></div></div>
+            <div class="disk-usage-stats">${item.file_count} files &middot; ${formatSize(item.size_bytes)}${quotaInfo}</div>
+            <button class="btn-delete-dir" title="Delete this directory">Delete</button>
+          </div>
+          <div class="disk-usage-subs"></div>
         </div>`;
       }).join('');
-    $$('.btn-delete-dir', container).forEach(btn => {
+    $$('.disk-usage-name.expandable', container).forEach(name => {
+      name.addEventListener('click', async () => {
+        const group = name.closest('.disk-usage-group');
+        const subsEl = group.querySelector('.disk-usage-subs');
+        if (name.classList.toggle('expanded')) {
+          subsEl.classList.add('open');
+          subsEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:6px 0;">Loading...</div>';
+          try {
+            const data = await apiJson(`/api/admin/disk-usage/${encodeURIComponent(group.dataset.dir)}/subfolders`);
+            const subs = data.subfolders || [];
+            if (!subs.length) { subsEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:6px 0;">No subfolders</div>'; return; }
+            const subMax = Math.max(...subs.map(s => s.size_bytes), 1);
+            subsEl.innerHTML = subs.map(s => `
+              <div class="disk-usage-row" data-sub="${esc(s.name)}">
+                <div class="disk-usage-name">${esc(s.name)}</div>
+                <div class="disk-usage-bar"><div class="disk-usage-bar-fill" style="width:${(s.size_bytes/subMax*100).toFixed(1)}%"></div></div>
+                <div class="disk-usage-stats">${s.file_count} files &middot; ${formatSize(s.size_bytes)}</div>
+                <button class="btn-delete-dir" title="Delete this subfolder">Delete</button>
+              </div>`).join('');
+            $$('.btn-delete-dir', subsEl).forEach(btn => {
+              btn.addEventListener('click', async () => {
+                const row = btn.closest('.disk-usage-row');
+                const subName = row.dataset.sub;
+                const ok = await confirmDeleteSimple(subName, group.dataset.dir);
+                if (!ok) return;
+                try {
+                  await apiJson(`/api/admin/disk-usage/${encodeURIComponent(group.dataset.dir)}?subfolder=${encodeURIComponent(subName)}`, { method: 'DELETE' });
+                  row.remove();
+                  loadDiskUsage();
+                } catch (e) { alert('Failed: ' + e.message); }
+              });
+            });
+          } catch (e) { subsEl.innerHTML = `<div style="color:#e74c3c;font-size:12px;padding:6px 0;">Failed: ${e.message}</div>`; }
+        } else {
+          subsEl.classList.remove('open');
+        }
+      });
+    });
+    $$('.disk-usage-group > .disk-usage-row > .btn-delete-dir', container).forEach(btn => {
       btn.addEventListener('click', async () => {
-        const row = btn.closest('.disk-usage-row');
-        const dirName = row.dataset.dir;
-        if (!confirm(`Delete ALL files in "${dirName}"? This cannot be undone.`)) return;
+        const group = btn.closest('.disk-usage-group');
+        const dirName = group.dataset.dir;
+        const ok = await confirmDeleteTypeName(dirName);
+        if (!ok) return;
         try {
           await apiJson(`/api/admin/disk-usage/${encodeURIComponent(dirName)}`, { method: 'DELETE' });
-          row.remove();
+          group.remove();
         } catch (e) { alert('Failed: ' + e.message); }
       });
     });
@@ -2599,18 +2685,34 @@ $('#diskUsageSection').addEventListener('toggle', (e) => {
 // ── User Management ──
 async function loadUsers() {
   try {
-    const data = await apiJson('/api/users');
+    const [data, diskData] = await Promise.all([
+      apiJson('/api/users'),
+      apiJson('/api/admin/disk-usage').catch(() => ({ usage: [] }))
+    ]);
+    const diskMap = {};
+    diskData.usage.forEach(d => { diskMap[d.name] = d; });
     $('#usersList').innerHTML = data.users.map(u => {
       const fmts = (u.allowed_formats || ['mp3','flac']).map(f => `<span class="user-perm-tag">${esc(f)}</span>`).join('');
       const methLabels = {'yt-dlp':'YouTube','slskd':'Soulseek','lidarr':'Torrent'};
       const meths = (u.allowed_methods || ['yt-dlp','slskd','lidarr']).map(m => `<span class="user-perm-tag">${esc(methLabels[m]||m)}</span>`).join('');
-      const quotaTag = u.quota_gb > 0 ? `<span class="user-perm-tag" style="background:var(--surface-light);">${u.quota_gb} GB</span>` : '';
+      const disk = diskMap[u.username];
+      const usedBytes = disk ? disk.size_bytes : 0;
+      const quotaGb = u.quota_gb || 0;
+      let diskTag;
+      if (quotaGb > 0) {
+        const usedGb = usedBytes / (1024**3);
+        const pct = Math.min(usedGb / quotaGb * 100, 100).toFixed(0);
+        const color = usedGb >= quotaGb ? '#e74c3c' : usedGb >= quotaGb * 0.8 ? '#f39c12' : 'var(--accent)';
+        diskTag = `<span class="user-perm-tag" style="background:var(--surface-light);border-left:3px solid ${color};">${formatSize(usedBytes)} / ${quotaGb} GB (${pct}%)</span>`;
+      } else {
+        diskTag = `<span class="user-perm-tag" style="background:var(--surface-light);">${formatSize(usedBytes)}</span>`;
+      }
       return `<div class="user-row">
         <span class="user-name">${esc(u.username)}</span>
         ${u.is_admin ? '<span class="user-badge">Admin</span>' : ''}
         <button class="user-perm-edit" onclick="editPerms('${u.username}')">Edit</button>
         ${u.username !== currentUser.username ? `<button class="btn-delete-user" onclick="deleteUser('${u.username}')">&times;</button>` : ''}
-        <div class="user-perms">${fmts}${meths}${quotaTag}</div>
+        <div class="user-perms">${fmts}${meths}${diskTag}</div>
       </div>`;
     }).join('');
   } catch { }

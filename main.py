@@ -595,18 +595,37 @@ async def get_disk_usage(user: dict = Depends(auth.require_admin)):
     return {"usage": usage}
 
 
-@app.delete("/api/admin/disk-usage/{dirname}")
-async def delete_user_downloads(dirname: str, user: dict = Depends(auth.require_admin)):
-    import shutil
+@app.get("/api/admin/disk-usage/{dirname}/subfolders")
+async def get_subfolders(dirname: str, user: dict = Depends(auth.require_admin)):
     if dirname.startswith('.') or '/' in dirname or '\\' in dirname:
         raise HTTPException(400, "Invalid directory name")
     music_dir = os.environ.get("MUSIC_DIR", "/music")
     target = os.path.join(music_dir, dirname)
     if not os.path.isdir(target):
         raise HTTPException(404, "Directory not found")
+    subs = []
+    for entry in sorted(os.scandir(target), key=lambda e: e.name):
+        if not entry.is_dir() or entry.name.startswith('.'):
+            continue
+        total, file_count = _get_dir_size(entry.path)
+        subs.append({"name": entry.name, "size_bytes": total, "file_count": file_count})
+    return {"subfolders": subs}
+
+
+@app.delete("/api/admin/disk-usage/{dirname}")
+async def delete_user_downloads(dirname: str, subfolder: str | None = None, user: dict = Depends(auth.require_admin)):
+    import shutil
+    if dirname.startswith('.') or '/' in dirname or '\\' in dirname:
+        raise HTTPException(400, "Invalid directory name")
+    if subfolder and (subfolder.startswith('.') or '/' in subfolder or '\\' in subfolder):
+        raise HTTPException(400, "Invalid subfolder name")
+    music_dir = os.environ.get("MUSIC_DIR", "/music")
+    target = os.path.join(music_dir, dirname, subfolder) if subfolder else os.path.join(music_dir, dirname)
+    if not os.path.isdir(target):
+        raise HTTPException(404, "Directory not found")
     shutil.rmtree(target)
     await downloader._trigger_navidrome_scan()
-    return {"status": "deleted", "name": dirname}
+    return {"status": "deleted", "name": subfolder or dirname}
 
 
 # --- Static files ---
