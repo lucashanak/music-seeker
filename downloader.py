@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import re
 import time
@@ -13,10 +12,6 @@ LIDARR_API_KEY = os.environ.get("LIDARR_API_KEY", "")
 MUSIC_DIR = os.environ.get("MUSIC_DIR", "/music")
 NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://navidrome:4533")
 NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "")
-HOST_MUSIC_DIR = os.environ.get("HOST_MUSIC_DIR", "/mnt/nas/Media/_Music")
-DOCKER_NETWORK = os.environ.get("DOCKER_NETWORK", "")
-
-DOCKER_SOCKET = "/var/run/docker.sock"
 
 
 async def run_download(job: Job):
@@ -50,52 +45,9 @@ async def run_download(job: Job):
             save_if_finished(job)
 
 
-async def _docker_api(method: str, path: str, json_data: dict | None = None, timeout: float = 30) -> httpx.Response:
-    """Call Docker Engine API via unix socket."""
-    transport = httpx.AsyncHTTPTransport(uds=DOCKER_SOCKET)
-    async with httpx.AsyncClient(transport=transport, base_url="http://docker", timeout=timeout) as client:
-        if method == "POST":
-            return await client.post(path, json=json_data)
-        elif method == "DELETE":
-            return await client.delete(path)
-        else:
-            return await client.get(path)
-
-
-async def _docker_stream_logs(container_id: str, job: Job):
-    """Stream container logs via Docker API."""
-    transport = httpx.AsyncHTTPTransport(uds=DOCKER_SOCKET)
-    async with httpx.AsyncClient(transport=transport, base_url="http://docker", timeout=None) as client:
-        async with client.stream("GET", f"/containers/{container_id}/logs?follow=true&stdout=true&stderr=true") as resp:
-            buffer = b""
-            async for chunk in resp.aiter_bytes():
-                buffer += chunk
-                while b"\n" in buffer:
-                    line_bytes, buffer = buffer.split(b"\n", 1)
-                    # Docker multiplexed stream: 8-byte header [type(1) 0 0 0 size(4)]
-                    # Strip header if present (first byte is 0x01 stdout or 0x02 stderr)
-                    if len(line_bytes) >= 8 and line_bytes[0] in (0, 1, 2):
-                        line_bytes = line_bytes[8:]
-                    # Remove any remaining non-printable chars
-                    text = line_bytes.decode("utf-8", errors="replace")
-                    text = re.sub(r'[\x00-\x08\x0e-\x1f]', '', text).strip()
-                    if not text:
-                        continue
-                    job.progress_text = text
-
-                    m = re.search(r"(\d+)/(\d+)", text)
-                    if m:
-                        done, total = int(m.group(1)), int(m.group(2))
-                        if total > 0:
-                            job.progress = int((done / total) * 100)
-
-                    m2 = re.search(r"(\d+)%", text)
-                    if m2:
-                        job.progress = int(m2.group(1))
-
-
 async def _run_spotdl(job: Job):
-    import settings
+    from spotify import get_app_token, SPOTIFY_CLIENT_ID
+
     # For playlists with track data: check library and only download missing tracks
     download_urls = [job.url]
     if job.type == "playlist" and job.playlist_tracks:
@@ -122,79 +74,46 @@ async def _run_spotdl(job: Job):
 
     cmd = [
         "spotdl", "download", *download_urls,
-        "--output", "/music/{artist}/{album}/{title}.{output-ext}",
+        "--output", f"{MUSIC_DIR}/{{artist}}/{{album}}/{{title}}.{{output-ext}}",
         "--format", job.format,
         "--threads", "4",
     ]
 
     # Optionally pass our app token to spotDL instead of its built-in credentials
+    import settings
     if not settings.get_all().get("spotdl_own_credentials", True):
-        from spotify import get_app_token, SPOTIFY_CLIENT_ID
         token = await get_app_token()
         cmd.extend(["--client-id", SPOTIFY_CLIENT_ID, "--auth-token", token])
 
-    create_config = {
-        "Image": "spotdl-local",
-        "Cmd": cmd,
-        "HostConfig": {
-            "Binds": [f"{HOST_MUSIC_DIR}:/music"],
-            "AutoRemove": False,
-        },
-    }
+    job.progress_text = "Starting download..."
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
 
-    if DOCKER_NETWORK:
-        create_config["HostConfig"]["NetworkMode"] = DOCKER_NETWORK
+    async for raw_line in proc.stdout:
+        text = raw_line.decode("utf-8", errors="replace").strip()
+        if not text:
+            continue
+        text = re.sub(r'[\x00-\x08\x0e-\x1f]', '', text)
+        if not text:
+            continue
+        job.progress_text = text
 
-    # Create container
-    job.progress_text = "Creating spotDL container..."
-    resp = await _docker_api("POST", "/containers/create", json_data=create_config)
-    if resp.status_code != 201:
-        raise RuntimeError(f"Docker create failed ({resp.status_code}): {resp.text}")
+        m = re.search(r"(\d+)/(\d+)", text)
+        if m:
+            done, total = int(m.group(1)), int(m.group(2))
+            if total > 0:
+                job.progress = int((done / total) * 100)
 
-    container_id = resp.json()["Id"]
+        m2 = re.search(r"(\d+)%", text)
+        if m2:
+            job.progress = int(m2.group(1))
 
-    try:
-        # Start container
-        job.progress_text = "Starting download..."
-        resp = await _docker_api("POST", f"/containers/{container_id}/start")
-        if resp.status_code not in (200, 204):
-            raise RuntimeError(f"Docker start failed ({resp.status_code}): {resp.text}")
-
-        # Stream logs for progress
-        log_task = asyncio.create_task(_docker_stream_logs(container_id, job))
-
-        # Wait for container to finish
-        resp = await _docker_api("POST", f"/containers/{container_id}/wait", timeout=600)
-        log_task.cancel()
-        try:
-            await log_task
-        except asyncio.CancelledError:
-            pass
-
-        if resp.status_code == 200:
-            exit_code = resp.json().get("StatusCode", -1)
-            if exit_code != 0:
-                raise RuntimeError(f"spotdl exited with code {exit_code}: {job.progress_text}")
-        else:
-            raise RuntimeError(f"Docker wait failed ({resp.status_code}): {resp.text}")
-
-        # Clean up container after success
-        try:
-            await _docker_api("DELETE", f"/containers/{container_id}?force=true", timeout=5)
-        except Exception:
-            pass
-
-    except Exception:
-        # Try to stop/remove container on error
-        try:
-            await _docker_api("POST", f"/containers/{container_id}/stop", timeout=5)
-        except Exception:
-            pass
-        try:
-            await _docker_api("DELETE", f"/containers/{container_id}?force=true", timeout=5)
-        except Exception:
-            pass
-        raise
+    exit_code = await proc.wait()
+    if exit_code != 0:
+        raise RuntimeError(f"spotdl exited with code {exit_code}: {job.progress_text}")
 
     return True
 

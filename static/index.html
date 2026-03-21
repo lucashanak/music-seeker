@@ -1399,7 +1399,7 @@ async function loadSettings() {
     $('#settingMethod').value = data.default_method || 'spotdl';
     $('#settingFormat').value = data.default_format || 'flac';
     $('#settingMaxConcurrent').value = data.max_concurrent || 10;
-    $('#settingSpotdlOwn').checked = data.spotdl_own_credentials !== false;
+    $('#settingSpotdlOwn').checked = data.spotdl_own_credentials === true;
     $('#settingNavidromeUrl').value = data.navidrome_url || '';
     $('#settingNavidromeUser').value = data.navidrome_user || '';
     $('#settingNavidromePass').value = '';

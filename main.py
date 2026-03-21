@@ -247,6 +247,9 @@ class SettingsUpdate(BaseModel):
     default_format: str | None = None
     default_method: str | None = None
     max_concurrent: int | None = None
+    spotdl_own_credentials: bool | None = None
+    navidrome_url: str | None = None
+    navidrome_user: str | None = None
     navidrome_password: str | None = None
 
 
