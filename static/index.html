@@ -687,33 +687,96 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
 
 /* ── Player Bar ── */
 :root { --player-height: 0px; }
-body.player-active { --player-height: 64px; }
+body.player-active { --player-height: 68px; }
 .player-bar {
-  position: fixed; bottom: 0; left: 0; right: 0; height: 64px; z-index: 99;
-  background: rgba(15,15,22,0.97); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-  border-top: 1px solid var(--border); display: none; align-items: center; gap: 12px; padding: 0 16px;
-  box-shadow: 0 -4px 24px rgba(0,0,0,.4);
+  position: fixed; bottom: 0; left: 0; right: 0; height: 68px; z-index: 99;
+  background: linear-gradient(180deg, rgba(22,22,32,0.97), rgba(12,12,18,0.98));
+  backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+  border-top: 1px solid rgba(255,255,255,.06); display: none; align-items: center; gap: 14px; padding: 0 20px;
+  box-shadow: 0 -4px 24px rgba(0,0,0,.5);
+}
+.player-bar::before {
+  content: ''; position: absolute; top: -1px; left: 0; height: 2px;
+  width: var(--player-progress, 0%); background: var(--accent); transition: width .15s linear;
 }
 body.player-active .player-bar { display: flex; }
-.player-bar .player-img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--bg-elevated); }
-.player-bar .player-text { min-width: 0; flex: 0 1 200px; }
+.player-bar .player-img { width: 46px; height: 46px; border-radius: 10px; object-fit: cover; flex-shrink: 0; background: var(--bg-elevated); cursor: pointer; transition: box-shadow .2s; }
+.player-bar .player-img:hover { box-shadow: 0 0 16px rgba(162,230,64,.15); }
+.player-bar .player-text { min-width: 0; flex: 1; cursor: pointer; }
 .player-bar .player-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player-bar .player-artist { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.player-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.player-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .player-controls button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
 .player-controls button:hover { color: var(--text); background: rgba(255,255,255,.05); }
-.player-controls .player-play-btn { width: 40px; height: 40px; color: #000; background: var(--accent); border-radius: 50%; }
+.player-controls .player-play-btn { width: 42px; height: 42px; color: #000; background: var(--accent); border-radius: 50%; }
 .player-controls .player-play-btn:hover { box-shadow: 0 0 16px var(--accent-glow); transform: scale(1.05); background: var(--accent); color: #000; }
-.player-progress-wrap { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.player-progress-wrap { flex: 1 1 0; display: flex; align-items: center; gap: 8px; min-width: 100px; max-width: 600px; }
 .player-progress-bar { flex: 1; height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; cursor: pointer; position: relative; }
 .player-progress-bar:hover { height: 6px; }
 .player-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; width: 0%; transition: width .1s linear; }
 .player-time { font-size: 10px; color: var(--text-dim); flex-shrink: 0; min-width: 32px; text-align: center; }
-.player-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
-.player-actions button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
+.player-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.player-actions button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
 .player-actions button:hover { color: var(--text); background: rgba(255,255,255,.05); }
-.player-actions .player-vol-wrap { display: flex; align-items: center; }
-.player-actions .player-vol { width: 70px; height: 4px; accent-color: var(--accent); cursor: pointer; }
+.player-actions .player-vol-wrap { display: flex; align-items: center; gap: 4px; }
+.player-actions .player-vol { width: 80px; height: 4px; accent-color: var(--accent); cursor: pointer; }
+/* ── Full Player ── */
+.full-player-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.7); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); opacity: 0; pointer-events: none; transition: opacity .3s; }
+.full-player-backdrop.open { opacity: 1; pointer-events: auto; }
+.full-player {
+  position: fixed; z-index: 201; display: flex; flex-direction: column; align-items: center;
+  background: linear-gradient(180deg, rgba(28,28,40,0.99) 0%, rgba(10,10,16,0.99) 100%);
+  transform: translateY(100%); transition: transform .35s cubic-bezier(.4,0,.2,1);
+  overflow: hidden;
+}
+.full-player.open { transform: translateY(0); }
+.fp-header { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; flex-shrink: 0; }
+.fp-header button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
+.fp-header button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.fp-header .fp-source { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
+.fp-art-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 32px; min-height: 0; }
+.fp-art { width: 100%; max-width: 340px; aspect-ratio: 1; border-radius: 14px; object-fit: cover; box-shadow: 0 12px 48px rgba(0,0,0,.6); background: var(--bg-elevated); }
+.fp-info { width: 100%; padding: 24px 32px 0; text-align: center; flex-shrink: 0; }
+.fp-title { font-size: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+.fp-artist { font-size: 14px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fp-progress { width: 100%; padding: 20px 32px 0; flex-shrink: 0; }
+.fp-progress-bar { width: 100%; height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; cursor: pointer; position: relative; }
+.fp-progress-bar:hover { height: 6px; }
+.fp-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; width: 0%; transition: width .1s linear; }
+.fp-times { display: flex; justify-content: space-between; margin-top: 8px; font-size: 11px; color: var(--text-dim); }
+.fp-controls { display: flex; align-items: center; justify-content: center; gap: 24px; padding: 20px 0; flex-shrink: 0; }
+.fp-controls button { background: none; border: none; color: var(--text); cursor: pointer; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
+.fp-controls button:hover { background: rgba(255,255,255,.05); }
+.fp-controls button svg { width: 28px; height: 28px; }
+.fp-controls .fp-play-btn { width: 64px; height: 64px; background: var(--accent); color: #000; border-radius: 50%; }
+.fp-controls .fp-play-btn:hover { box-shadow: 0 0 24px var(--accent-glow); transform: scale(1.05); background: var(--accent); color: #000; }
+.fp-controls .fp-play-btn svg { width: 32px; height: 32px; }
+.fp-mode-btn { position: relative; }
+.fp-mode-btn.active { color: var(--accent) !important; }
+.fp-mode-btn svg { width: 20px; height: 20px; }
+.fp-repeat-badge { position: absolute; top: 2px; right: 2px; font-size: 8px; font-weight: 700; color: var(--accent); display: none; }
+.fp-mode-btn.active .fp-repeat-badge { display: block; }
+.fp-actions { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 0 32px 24px; flex-shrink: 0; width: 100%; }
+.fp-actions button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
+.fp-actions button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.fp-vol-wrap { display: flex; align-items: center; gap: 6px; flex: 1; max-width: 200px; }
+.fp-vol-wrap svg { width: 18px; height: 18px; color: var(--text-muted); flex-shrink: 0; }
+.fp-vol { flex: 1; height: 4px; accent-color: var(--accent); cursor: pointer; }
+/* Mobile full player */
+@media (max-width: 640px) {
+  .full-player { left: 0; right: 0; top: 0; bottom: 0; border-radius: 0; }
+  .fp-art { max-width: 280px; }
+  .fp-title { font-size: 18px; }
+  .fp-artist { font-size: 13px; }
+  .fp-actions .fp-vol-wrap { display: none; }
+}
+/* Desktop full player */
+@media (min-width: 641px) {
+  .full-player { left: 50%; top: 50%; width: 420px; height: 640px; border-radius: 20px; border: 1px solid var(--border); transform: translate(-50%, -50%) scale(0.9); opacity: 0; transition: transform .3s cubic-bezier(.4,0,.2,1), opacity .3s; }
+  .full-player.open { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  .fp-art { max-width: 280px; }
+}
+
 .card-play-btn { position: absolute; bottom: 8px; right: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
 .card:hover .card-play-btn { opacity: 1; transform: translateY(0); }
 .card-play-btn:hover { transform: scale(1.1) !important; box-shadow: 0 4px 16px rgba(0,0,0,.5), var(--shadow-glow); }
@@ -784,16 +847,19 @@ body.player-active .player-bar { display: flex; }
     padding: 1px 5px; border-radius: 8px; min-width: 14px; text-align: center;
   }
   .bottom-nav .bnav-btn .bnav-badge:empty { display: none; }
+  .bottom-nav .bnav-now-playing { color: var(--accent); }
+  .bottom-nav .bnav-now-playing svg { animation: npPulse 2s ease-in-out infinite; }
+  @keyframes npPulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
 
   main {
     padding: 16px 16px calc(var(--bottom-nav-height) + 16px);
   }
-  body.player-active main { padding-bottom: calc(var(--bottom-nav-height) + 64px + 16px); }
-  body.player-active .bottom-nav { bottom: 64px; }
-  .player-bar { padding: 0 10px; gap: 8px; }
+  body.player-active main { padding-bottom: calc(var(--bottom-nav-height) + 68px + 16px); }
+  body.player-active .bottom-nav { bottom: 68px; }
+  .player-bar { padding: 0 12px; gap: 10px; height: 68px; }
   .player-progress-wrap { display: none; }
   .player-volume { display: none !important; }
-  .player-bar .player-img { width: 38px; height: 38px; }
+  .player-bar .player-img { width: 42px; height: 42px; }
   .card-play-btn { opacity: .85; transform: translateY(0); }
   .queue-panel { width: 100%; border-radius: 0; border-left: none; }
 
@@ -919,6 +985,10 @@ body.player-active .player-bar { display: flex; }
   <button class="bnav-btn" data-page="settings">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
     Settings
+  </button>
+  <button class="bnav-btn bnav-now-playing" id="bnavNowPlaying" style="display:none;">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+    Playing
   </button>
 </div>
 
@@ -1295,6 +1365,46 @@ body.player-active .player-bar { display: flex; }
     <input type="range" class="player-volume" id="playerVolume" min="0" max="100" value="100" title="Volume">
   </div>
   <audio id="audioElement" preload="none"></audio>
+</div>
+
+<!-- ── Full Player ── -->
+<div class="full-player-backdrop" id="fullPlayerBackdrop"></div>
+<div class="full-player" id="fullPlayer">
+  <div class="fp-header">
+    <button id="fpClose" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+    <span class="fp-source">Now Playing</span>
+    <button id="fpQueueTop" title="Queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
+  </div>
+  <div class="fp-art-wrap">
+    <img class="fp-art" id="fpImg" src="" alt="">
+  </div>
+  <div class="fp-info">
+    <div class="fp-title" id="fpTitle"></div>
+    <div class="fp-artist" id="fpArtist"></div>
+  </div>
+  <div class="fp-progress">
+    <div class="fp-progress-bar" id="fpProgressBar">
+      <div class="fp-progress-fill" id="fpProgressFill"></div>
+    </div>
+    <div class="fp-times">
+      <span id="fpTimeCurrent">0:00</span>
+      <span id="fpTimeTotal">0:00</span>
+    </div>
+  </div>
+  <div class="fp-controls">
+    <button class="fp-mode-btn" id="fpShuffle" title="Shuffle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg></button>
+    <button id="fpPrev" title="Previous"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6V6zm3.5 6 8.5 6V6l-8.5 6z"/></svg></button>
+    <button class="fp-play-btn" id="fpPlayPause" title="Play"><svg viewBox="0 0 24 24" fill="currentColor" id="fpPlayPauseIcon"><path d="M8 5v14l11-7z"/></svg></button>
+    <button id="fpNext" title="Next"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 18h2V6h-2v12zM6 18l8.5-6L6 6v12z"/></svg></button>
+    <button class="fp-mode-btn" id="fpRepeat" title="Repeat off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg><span class="fp-repeat-badge" id="fpRepeatBadge"></span></button>
+  </div>
+  <div class="fp-actions">
+    <button id="fpDownload" title="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+    <div class="fp-vol-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
+      <input type="range" class="fp-vol" id="fpVolume" min="0" max="100" value="100">
+    </div>
+  </div>
 </div>
 
 <!-- ── Queue Panel ── -->
@@ -3181,6 +3291,7 @@ history.replaceState({page: 'search'}, '');
 window.addEventListener('popstate', e => {
   const state = e.state;
   // Close overlays first (highest priority)
+  if (fullPlayerOpen) { closeFullPlayer(true); return; }
   if (queuePanelOpen) { closeQueuePanel(true); return; }
   if (modalItem) { closeModal(true); return; }
   if (panelOpen) { closePanel(true); return; }
@@ -3204,7 +3315,7 @@ document.addEventListener('keydown', e => {
     $('#searchInput').focus();
     requestNotificationPermission();
   }
-  if (e.key === 'Escape') { closeModal(); closePanel(); closeQueuePanel(); }
+  if (e.key === 'Escape') { if (fullPlayerOpen) { closeFullPlayer(); return; } closeModal(); closePanel(); closeQueuePanel(); }
 });
 
 // ── Helpers ──
@@ -3258,30 +3369,61 @@ function loadAndPlay() {
   $('#playerProgressFill').style.width = '0%';
   $('#playerTimeCurrent').textContent = '0:00';
   $('#playerTimeTotal').textContent = '0:00';
+  document.getElementById('playerBar').style.setProperty('--player-progress', '0%');
   const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: authToken });
   audio.src = `/api/player/stream?${params}`;
   audio.load();
   audio.play().catch(() => {});
   showPlayerBar();
   updatePlayPauseIcon(true);
+  syncFullPlayer();
+  updateDownloadButtons(item);
   renderQueue();
   saveQueueDebounced();
   updateMediaSession();
 }
 
+function updateDownloadButtons(item) {
+  const inLib = !!item.inLibrary;
+  const miniBtn = $('#playerDownloadBtn');
+  const fpBtn = $('#fpDownload');
+  if (miniBtn) {
+    miniBtn.disabled = inLib;
+    miniBtn.style.opacity = inLib ? '0.3' : '';
+    miniBtn.title = inLib ? 'Already in library' : 'Download current track';
+  }
+  if (fpBtn) {
+    fpBtn.disabled = inLib;
+    fpBtn.style.opacity = inLib ? '0.3' : '';
+    fpBtn.title = inLib ? 'Already in library' : 'Download';
+  }
+}
+
 function showPlayerBar() {
   $('#playerBar').classList.add('active');
   document.body.classList.add('player-active');
+  const npBtn = $('#bnavNowPlaying');
+  if (npBtn) npBtn.style.display = '';
 }
 
 function hidePlayerBar() {
   $('#playerBar').classList.remove('active');
   document.body.classList.remove('player-active');
+  const npBtn = $('#bnavNowPlaying');
+  if (npBtn) npBtn.style.display = 'none';
 }
 
 function nextTrack() {
-  if (playerIndex < playerQueue.length - 1) {
+  if (shuffleEnabled && playerQueue.length > 1) {
+    let next;
+    do { next = Math.floor(Math.random() * playerQueue.length); } while (next === playerIndex);
+    playerIndex = next;
+    loadAndPlay();
+  } else if (playerIndex < playerQueue.length - 1) {
     playerIndex++;
+    loadAndPlay();
+  } else if (repeatMode === 'all') {
+    playerIndex = 0;
     loadAndPlay();
   } else {
     audio.pause();
@@ -3300,10 +3442,11 @@ function prevTrack() {
 
 function updatePlayPauseIcon(playing) {
   playerPlaying = playing;
-  const icon = $('#playPauseIcon');
-  icon.innerHTML = playing
-    ? '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'
-    : '<path d="M8 5v14l11-7z"/>';
+  const playPath = '<path d="M8 5v14l11-7z"/>';
+  const pausePath = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+  $('#playPauseIcon').innerHTML = playing ? pausePath : playPath;
+  const fpIcon = $('#fpPlayPauseIcon');
+  if (fpIcon) fpIcon.innerHTML = playing ? pausePath : playPath;
 }
 
 function fmtTime(s) {
@@ -3316,13 +3459,29 @@ function fmtTime(s) {
 // Audio events
 audio.addEventListener('play', () => updatePlayPauseIcon(true));
 audio.addEventListener('pause', () => updatePlayPauseIcon(false));
-audio.addEventListener('ended', () => nextTrack());
+audio.addEventListener('ended', () => {
+  if (repeatMode === 'one') {
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  } else {
+    nextTrack();
+  }
+});
 audio.addEventListener('timeupdate', () => {
   if (!audio.duration) return;
   const pct = (audio.currentTime / audio.duration) * 100;
   $('#playerProgressFill').style.width = pct + '%';
   $('#playerTimeCurrent').textContent = fmtTime(audio.currentTime);
   $('#playerTimeTotal').textContent = fmtTime(audio.duration);
+  // Sync mini bar top progress line
+  document.getElementById('playerBar').style.setProperty('--player-progress', pct + '%');
+  // Sync full player
+  const fpFill = $('#fpProgressFill');
+  if (fpFill) fpFill.style.width = pct + '%';
+  const fpCur = $('#fpTimeCurrent');
+  if (fpCur) fpCur.textContent = fmtTime(audio.currentTime);
+  const fpTot = $('#fpTimeTotal');
+  if (fpTot) fpTot.textContent = fmtTime(audio.duration);
 });
 audio.addEventListener('error', () => {
   showToast('Stream error, skipping...');
@@ -3413,6 +3572,7 @@ $('#clearQueue').addEventListener('click', () => {
   saveQueueDebounced();
 });
 
+let queueOpenedFromFullPlayer = false;
 function openQueuePanel() {
   renderQueue();
   $('#queuePanel').classList.add('open');
@@ -3423,7 +3583,10 @@ function closeQueuePanel(fromPopstate) {
   if (!queuePanelOpen) return;
   $('#queuePanel').classList.remove('open');
   queuePanelOpen = false;
+  const returnToFP = queueOpenedFromFullPlayer;
+  queueOpenedFromFullPlayer = false;
   if (!fromPopstate) history.back();
+  if (returnToFP) setTimeout(() => openFullPlayer(), 50);
 }
 
 function renderQueue() {
@@ -3564,6 +3727,130 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (audio.paused) audio.play().catch(() => {}); else audio.pause();
   }
+});
+
+// ── Full Player ──
+let fullPlayerOpen = false;
+let shuffleEnabled = false;
+let repeatMode = 'off'; // 'off' | 'all' | 'one'
+
+function syncFullPlayer() {
+  if (playerIndex < 0 || playerIndex >= playerQueue.length) return;
+  const item = playerQueue[playerIndex];
+  const fpImg = $('#fpImg');
+  if (fpImg) fpImg.src = item.image || '';
+  const fpTitle = $('#fpTitle');
+  if (fpTitle) fpTitle.textContent = item.name || '';
+  const fpArtist = $('#fpArtist');
+  if (fpArtist) fpArtist.textContent = item.artist || '';
+  const fpFill = $('#fpProgressFill');
+  if (fpFill) fpFill.style.width = '0%';
+  const fpCur = $('#fpTimeCurrent');
+  if (fpCur) fpCur.textContent = '0:00';
+  const fpTot = $('#fpTimeTotal');
+  if (fpTot) fpTot.textContent = fmtTime(audio.duration || 0);
+  // Sync volume
+  const fpVol = $('#fpVolume');
+  if (fpVol) fpVol.value = Math.round(playerVolume * 100);
+}
+
+function openFullPlayer() {
+  if (fullPlayerOpen || playerIndex < 0) return;
+  syncFullPlayer();
+  // Update progress if already playing
+  if (audio.duration) {
+    const pct = (audio.currentTime / audio.duration) * 100;
+    $('#fpProgressFill').style.width = pct + '%';
+    $('#fpTimeCurrent').textContent = fmtTime(audio.currentTime);
+    $('#fpTimeTotal').textContent = fmtTime(audio.duration);
+  }
+  updatePlayPauseIcon(playerPlaying);
+  $('#fullPlayerBackdrop').classList.add('open');
+  $('#fullPlayer').classList.add('open');
+  fullPlayerOpen = true;
+  history.pushState({layer: 'fullPlayer'}, '');
+}
+
+function closeFullPlayer(fromPopstate) {
+  if (!fullPlayerOpen) return;
+  $('#fullPlayerBackdrop').classList.remove('open');
+  $('#fullPlayer').classList.remove('open');
+  fullPlayerOpen = false;
+  if (!fromPopstate) history.back();
+}
+
+// Open full player by clicking mini player img/text
+$('#playerImg').addEventListener('click', openFullPlayer);
+$('.player-text').addEventListener('click', openFullPlayer);
+
+// Now Playing bottom nav button
+$('#bnavNowPlaying').addEventListener('click', openFullPlayer);
+
+// Full player close button
+$('#fpClose').addEventListener('click', () => closeFullPlayer());
+$('#fullPlayerBackdrop').addEventListener('click', () => closeFullPlayer());
+
+// Full player controls
+$('#fpPlayPause').addEventListener('click', () => {
+  if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+});
+$('#fpPrev').addEventListener('click', prevTrack);
+$('#fpNext').addEventListener('click', nextTrack);
+
+// Full player seek
+$('#fpProgressBar').addEventListener('click', (e) => {
+  if (!audio.duration) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  audio.currentTime = pct * audio.duration;
+});
+
+// Full player volume
+$('#fpVolume').addEventListener('input', (e) => {
+  playerVolume = e.target.value / 100;
+  audio.volume = playerVolume;
+  $('#playerVolume').value = e.target.value;
+});
+
+// Full player download
+$('#fpDownload').addEventListener('click', async () => {
+  const item = playerIndex >= 0 ? playerQueue[playerIndex] : null;
+  if (!item) return;
+  const btn = $('#fpDownload');
+  btn.style.color = 'var(--accent)';
+  try {
+    await apiJson('/api/download', { method: 'POST', body: {
+      url: item.url || '', title: `${item.artist || ''} - ${item.name || ''}`,
+      method: appSettings.default_method || 'yt-dlp', format: appSettings.default_format || 'flac',
+      type: item.type || 'track',
+    }});
+    showToast('Download started');
+  } catch (e) { showToast('Download failed: ' + e.message); }
+  finally { setTimeout(() => { btn.style.color = ''; }, 1000); }
+});
+
+// Full player queue button
+$('#fpQueueTop').addEventListener('click', () => {
+  queueOpenedFromFullPlayer = true;
+  closeFullPlayer();
+  setTimeout(() => openQueuePanel(), 350);
+});
+
+// Shuffle toggle
+$('#fpShuffle').addEventListener('click', () => {
+  shuffleEnabled = !shuffleEnabled;
+  $('#fpShuffle').classList.toggle('active', shuffleEnabled);
+});
+
+// Repeat toggle: off → all → one → off
+$('#fpRepeat').addEventListener('click', () => {
+  const modes = ['off', 'all', 'one'];
+  repeatMode = modes[(modes.indexOf(repeatMode) + 1) % 3];
+  const btn = $('#fpRepeat');
+  const badge = $('#fpRepeatBadge');
+  btn.classList.toggle('active', repeatMode !== 'off');
+  badge.textContent = repeatMode === 'one' ? '1' : '';
+  btn.title = repeatMode === 'off' ? 'Repeat off' : repeatMode === 'all' ? 'Repeat all' : 'Repeat one';
 });
 </script>
 </body>

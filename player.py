@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import library
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 PLAYER_DIR = DATA_DIR / "player"
+MUSIC_DIR = Path(os.environ.get("MUSIC_DIR", "/music"))
 
 # In-memory cache for resolved YouTube stream URLs (4h TTL)
 _url_cache: dict[str, tuple[dict, float]] = {}
@@ -21,13 +23,53 @@ def _cache_key(name: str, artist: str) -> str:
     return f"{artist.lower().strip()}:{name.lower().strip()}"
 
 
+def _sanitize(s: str) -> str:
+    """Match downloader.py sanitization for filename lookup."""
+    return re.sub(r'[/\\:*?"<>|]', '_', s).strip().rstrip('.')
+
+
+def _resolve_local_file(name: str, artist: str) -> dict | None:
+    """Check if track exists as a downloaded file in any user's folder."""
+    if not MUSIC_DIR.is_dir():
+        return None
+    safe_title = _sanitize(name) if name else ""
+    safe_artist = _sanitize(artist) if artist else ""
+    if not safe_title:
+        return None
+    # Search across all user dirs: /music/{user}/{artist}/{album}/{title}.ext
+    for user_dir in MUSIC_DIR.iterdir():
+        if not user_dir.is_dir() or user_dir.name.startswith('.'):
+            continue
+        # If we have an artist, look in artist subdirs
+        search_dirs = []
+        if safe_artist:
+            artist_dir = user_dir / safe_artist
+            if artist_dir.is_dir():
+                search_dirs.append(artist_dir)
+        else:
+            search_dirs.append(user_dir)
+        for search_dir in search_dirs:
+            for ext in ("flac", "mp3", "opus", "m4a"):
+                matches = list(search_dir.rglob(f"{safe_title}.{ext}"))
+                if matches:
+                    # Prefer FLAC > MP3 > others
+                    return {"source": "local", "path": str(matches[0])}
+    return None
+
+
 async def resolve_stream(name: str, artist: str) -> dict | None:
-    """Resolve a track to a streamable source. Navidrome first, YouTube fallback."""
+    """Resolve a track to a streamable source. Local file > Navidrome > YouTube."""
     # Check cache first
     key = _cache_key(name, artist)
     cached = _url_cache.get(key)
     if cached and time.time() - cached[1] < _URL_TTL:
         return cached[0]
+
+    # Try local downloaded files first
+    result = _resolve_local_file(name, artist)
+    if result:
+        _url_cache[key] = (result, time.time())
+        return result
 
     # Try Navidrome
     result = await _resolve_navidrome(name, artist)
@@ -80,6 +122,38 @@ async def _resolve_youtube(name: str, artist: str) -> dict | None:
         }
     except (asyncio.TimeoutError, Exception):
         return None
+
+
+async def stream_local_file(file_path: str):
+    """Stream a local audio file, transcoding to MP3 if needed via ffmpeg."""
+    ext = Path(file_path).suffix.lower()
+    if ext == ".mp3":
+        # Stream MP3 directly without transcoding
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(8192)
+                if not chunk:
+                    break
+                yield chunk
+    else:
+        # Transcode to MP3 via ffmpeg
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-i", file_path,
+            "-f", "mp3", "-ab", "192k", "-vn",
+            "-y", "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            while True:
+                chunk = await proc.stdout.read(8192)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
 
 
 async def stream_navidrome(song_id: str):

@@ -519,7 +519,9 @@ async def player_stream(name: str, artist: str = "", user: dict = Depends(_strea
     result = await player.resolve_stream(name, artist)
     if not result:
         raise HTTPException(404, "Could not resolve stream for this track")
-    if result["source"] == "navidrome":
+    if result["source"] == "local":
+        return StreamingResponse(player.stream_local_file(result["path"]), media_type="audio/mpeg")
+    elif result["source"] == "navidrome":
         return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg")
     else:
         return StreamingResponse(player.stream_youtube(result["url"]), media_type="audio/mpeg")
