@@ -129,12 +129,26 @@ async def create_playlist(name: str, song_ids: list[str]) -> bool:
     """Create a playlist in Navidrome via Subsonic API."""
     if not NAVIDROME_PASSWORD or not song_ids:
         return False
-    # Build params as list of tuples to support repeated songId
-    param_list = list(_params(name=name).items())
-    for sid in song_ids:
-        param_list.append(("songId", sid))
     async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=30) as client:
-        resp = await client.get("/rest/createPlaylist", params=param_list)
+        # Step 1: Create empty playlist
+        resp = await client.get("/rest/createPlaylist", params=_params(name=name))
         resp.raise_for_status()
         data = resp.json()
-        return data.get("subsonic-response", {}).get("status") == "ok"
+        sr = data.get("subsonic-response", {})
+        if sr.get("status") != "ok":
+            return False
+        playlist_id = sr.get("playlist", {}).get("id")
+        if not playlist_id:
+            return False
+
+        # Step 2: Add songs in batches (avoid URL length limits)
+        batch_size = 20
+        for i in range(0, len(song_ids), batch_size):
+            batch = song_ids[i:i + batch_size]
+            param_list = list(_params(playlistId=playlist_id).items())
+            for sid in batch:
+                param_list.append(("songIdToAdd", sid))
+            resp = await client.get("/rest/updatePlaylist", params=param_list)
+            resp.raise_for_status()
+
+        return True
