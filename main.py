@@ -1,8 +1,8 @@
 import asyncio
 import os
-from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 import spotify
@@ -15,6 +15,7 @@ import recognize
 import lastfm
 import podcasts
 import search_providers
+import player
 
 APP_VERSION = "1.10.0"
 
@@ -498,6 +499,70 @@ async def update_user_settings(req: UserSettingRequest, user: dict = Depends(aut
     for key, value in data.items():
         auth.update_user_setting(user["username"], key, value)
     return {"status": "updated", **data}
+
+
+# --- Player (streaming + queue) ---
+
+def _stream_auth(request: Request, token: str = ""):
+    """Auth for stream endpoint — accepts token as query param (for <audio> element)."""
+    if token:
+        payload = auth._decode_token(token)
+        if not payload:
+            raise HTTPException(401, "Invalid token")
+        users = auth._load_users()
+        user_data = users.get(payload["sub"], {})
+        return {"username": payload["sub"], "is_admin": payload.get("admin", False), **auth._user_perms(user_data)}
+    return auth.get_current_user(request)
+
+@app.get("/api/player/stream")
+async def player_stream(name: str, artist: str = "", user: dict = Depends(_stream_auth)):
+    result = await player.resolve_stream(name, artist)
+    if not result:
+        raise HTTPException(404, "Could not resolve stream for this track")
+    if result["source"] == "navidrome":
+        return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg")
+    else:
+        return StreamingResponse(player.stream_youtube(result["url"]), media_type="audio/mpeg")
+
+
+@app.get("/api/player/queue")
+async def get_player_queue(user: dict = Depends(auth.get_current_user)):
+    return player.load_queue(user["username"])
+
+
+class QueueState(BaseModel):
+    queue: list[dict] = []
+    current_index: int = -1
+    position_seconds: float = 0.0
+    volume: float = 1.0
+
+
+@app.put("/api/player/queue")
+async def save_player_queue(state: QueueState, user: dict = Depends(auth.get_current_user)):
+    player.save_queue(user["username"], state.model_dump())
+    return {"status": "saved"}
+
+
+class AddToQueueRequest(BaseModel):
+    tracks: list[dict]
+    play_now: bool = False
+
+
+@app.post("/api/player/queue/add")
+async def add_to_queue(req: AddToQueueRequest, user: dict = Depends(auth.get_current_user)):
+    state = player.load_queue(user["username"])
+    state["queue"].extend(req.tracks)
+    if req.play_now or state["current_index"] < 0:
+        state["current_index"] = len(state["queue"]) - len(req.tracks)
+        state["position_seconds"] = 0.0
+    player.save_queue(user["username"], state)
+    return state
+
+
+@app.delete("/api/player/queue")
+async def clear_player_queue(user: dict = Depends(auth.get_current_user)):
+    player.clear_queue(user["username"])
+    return {"status": "cleared"}
 
 
 # --- Podcasts (file browser) ---
