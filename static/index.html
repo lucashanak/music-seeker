@@ -2555,14 +2555,26 @@ async function loadDiskUsage() {
     const maxSize = Math.max(...items.map(i => i.size_bytes), 1);
     const totalSize = items.reduce((s, i) => s + i.size_bytes, 0);
     container.innerHTML = `<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Total: ${formatSize(totalSize)}</div>` +
-      items.map(item => `
+      items.map(item => {
+        const quotaGb = item.quota_gb || 0;
+        const usedGb = item.size_bytes / (1024**3);
+        const pctOfMax = (item.size_bytes / maxSize * 100).toFixed(1);
+        let quotaInfo = '';
+        let barColor = 'var(--accent)';
+        if (quotaGb > 0) {
+          const pctUsed = Math.min(usedGb / quotaGb * 100, 100).toFixed(0);
+          quotaInfo = ` / ${quotaGb} GB (${pctUsed}%)`;
+          if (usedGb >= quotaGb) barColor = '#e74c3c';
+          else if (usedGb >= quotaGb * 0.8) barColor = '#f39c12';
+        }
+        return `
         <div class="disk-usage-row" data-dir="${esc(item.name)}">
           <div class="disk-usage-name">${esc(item.name)}</div>
-          <div class="disk-usage-bar"><div class="disk-usage-bar-fill" style="width:${(item.size_bytes / maxSize * 100).toFixed(1)}%"></div></div>
-          <div class="disk-usage-stats">${item.file_count} files &middot; ${formatSize(item.size_bytes)}</div>
+          <div class="disk-usage-bar"><div class="disk-usage-bar-fill" style="width:${pctOfMax}%;background:${barColor}"></div></div>
+          <div class="disk-usage-stats">${item.file_count} files &middot; ${formatSize(item.size_bytes)}${quotaInfo}</div>
           <button class="btn-delete-dir" title="Delete this directory">Delete</button>
-        </div>
-      `).join('');
+        </div>`;
+      }).join('');
     $$('.btn-delete-dir', container).forEach(btn => {
       btn.addEventListener('click', async () => {
         const row = btn.closest('.disk-usage-row');
@@ -2592,12 +2604,13 @@ async function loadUsers() {
       const fmts = (u.allowed_formats || ['mp3','flac']).map(f => `<span class="user-perm-tag">${esc(f)}</span>`).join('');
       const methLabels = {'yt-dlp':'YouTube','slskd':'Soulseek','lidarr':'Torrent'};
       const meths = (u.allowed_methods || ['yt-dlp','slskd','lidarr']).map(m => `<span class="user-perm-tag">${esc(methLabels[m]||m)}</span>`).join('');
+      const quotaTag = u.quota_gb > 0 ? `<span class="user-perm-tag" style="background:var(--surface-light);">${u.quota_gb} GB</span>` : '';
       return `<div class="user-row">
         <span class="user-name">${esc(u.username)}</span>
         ${u.is_admin ? '<span class="user-badge">Admin</span>' : ''}
         <button class="user-perm-edit" onclick="editPerms('${u.username}')">Edit</button>
         ${u.username !== currentUser.username ? `<button class="btn-delete-user" onclick="deleteUser('${u.username}')">&times;</button>` : ''}
-        <div class="user-perms">${fmts}${meths}</div>
+        <div class="user-perms">${fmts}${meths}${quotaTag}</div>
       </div>`;
     }).join('');
   } catch { }
@@ -2609,6 +2622,7 @@ async function editPerms(username) {
   if (!u) return;
   const fmts = u.allowed_formats || ['mp3','flac'];
   const meths = u.allowed_methods || ['yt-dlp','slskd','lidarr'];
+  const quotaGb = u.quota_gb || 0;
   const html = `<div style="display:flex;flex-direction:column;gap:12px;">
     <div style="font-weight:700;font-size:15px;">Permissions for ${esc(username)}</div>
     <details class="perm-section" open>
@@ -2624,6 +2638,13 @@ async function editPerms(username) {
         <label class="perm-check" title="Stahuje audio z YouTube, metadata ze Spotify"><span>YouTube</span> <input type="checkbox" id="ep_ytdlp" ${meths.includes('yt-dlp')?'checked':''}></label>
         <label class="perm-check" title="P2P stahování přes síť Soulseek, preferuje FLAC"><span>Soulseek</span> <input type="checkbox" id="ep_slskd" ${meths.includes('slskd')?'checked':''}></label>
         <label class="perm-check" title="Torrent stahování přes Lidarr, monitoruje diskografie"><span>Torrent</span> <input type="checkbox" id="ep_lidarr" ${meths.includes('lidarr')?'checked':''}></label>
+      </div>
+    </details>
+    <details class="perm-section" open>
+      <summary class="perm-section-title">Disk Quota</summary>
+      <div class="perm-section-body" style="flex-direction:row;align-items:center;gap:8px;">
+        <input type="number" id="ep_quota" value="${quotaGb}" min="0" step="1" style="width:80px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-size:14px;">
+        <span style="color:var(--text-muted);font-size:13px;">GB (0 = unlimited)</span>
       </div>
     </details>
   </div>`;
@@ -2645,10 +2666,11 @@ async function editPerms(username) {
     if (dialog.querySelector('#ep_ytdlp').checked) newMeths.push('yt-dlp');
     if (dialog.querySelector('#ep_slskd').checked) newMeths.push('slskd');
     if (dialog.querySelector('#ep_lidarr').checked) newMeths.push('lidarr');
+    const newQuota = parseFloat(dialog.querySelector('#ep_quota').value) || 0;
     if (!newFmts.length) { alert('Select at least one format'); return; }
     if (!newMeths.length) { alert('Select at least one method'); return; }
     try {
-      await apiJson(`/api/users/${username}/perms`, { method: 'PUT', body: { allowed_formats: newFmts, allowed_methods: newMeths } });
+      await apiJson(`/api/users/${username}/perms`, { method: 'PUT', body: { allowed_formats: newFmts, allowed_methods: newMeths, quota_gb: newQuota } });
       dialog.remove();
       loadUsers();
     } catch (e) { alert('Failed: ' + e.message); }

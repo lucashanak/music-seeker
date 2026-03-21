@@ -86,6 +86,7 @@ def _decode_token(token: str) -> dict | None:
 DEFAULT_PERMS = {
     "allowed_formats": ["mp3", "flac"],
     "allowed_methods": ["yt-dlp", "slskd", "lidarr"],
+    "quota_gb": 0,  # 0 = unlimited
 }
 
 
@@ -93,6 +94,7 @@ def _user_perms(user: dict) -> dict:
     return {
         "allowed_formats": user.get("allowed_formats", DEFAULT_PERMS["allowed_formats"]),
         "allowed_methods": user.get("allowed_methods", DEFAULT_PERMS["allowed_methods"]),
+        "quota_gb": user.get("quota_gb", DEFAULT_PERMS["quota_gb"]),
     }
 
 
@@ -169,7 +171,8 @@ def create_user(username: str, password: str, is_admin: bool = False,
 
 
 def update_user_perms(username: str, allowed_formats: list[str] | None = None,
-                      allowed_methods: list[str] | None = None) -> bool:
+                      allowed_methods: list[str] | None = None,
+                      quota_gb: float | None = None) -> bool:
     users = _load_users()
     if username not in users:
         return False
@@ -177,6 +180,8 @@ def update_user_perms(username: str, allowed_formats: list[str] | None = None,
         users[username]["allowed_formats"] = allowed_formats
     if allowed_methods is not None:
         users[username]["allowed_methods"] = allowed_methods
+    if quota_gb is not None:
+        users[username]["quota_gb"] = max(0, quota_gb)
     _save_users(users)
     return True
 

@@ -208,6 +208,20 @@ async def start_download(req: DownloadRequest, user: dict = Depends(auth.get_cur
         raise HTTPException(403, f"Method '{req.method}' not allowed for your account")
     if req.format not in user.get("allowed_formats", ["mp3", "flac"]):
         raise HTTPException(403, f"Format '{req.format}' not allowed for your account")
+    # Quota check
+    quota_gb = user.get("quota_gb", 0)
+    if quota_gb > 0:
+        music_dir = os.environ.get("MUSIC_DIR", "/music")
+        user_dir = os.path.join(music_dir, user["username"])
+        used_bytes, _ = _get_dir_size(user_dir)
+        quota_bytes = quota_gb * 1024 * 1024 * 1024
+        if used_bytes >= quota_bytes:
+            used_gb = used_bytes / (1024 ** 3)
+            if quota_gb < 1:
+                used_mb = used_bytes / (1024 ** 2)
+                quota_mb = quota_gb * 1024
+                raise HTTPException(403, f"Disk quota exceeded ({used_mb:.0f} MB / {quota_mb:.0f} MB)")
+            raise HTTPException(403, f"Disk quota exceeded ({used_gb:.1f} GB / {quota_gb:.1f} GB)")
     job = jobs.create_job(
         type_=req.type,
         title=req.title or req.url,
@@ -353,11 +367,12 @@ async def create_user(req: CreateUserRequest, user: dict = Depends(auth.require_
 class UpdateUserPermsRequest(BaseModel):
     allowed_formats: list[str] | None = None
     allowed_methods: list[str] | None = None
+    quota_gb: float | None = None
 
 
 @app.put("/api/users/{username}/perms")
 async def update_user_perms(username: str, req: UpdateUserPermsRequest, user: dict = Depends(auth.require_admin)):
-    if not auth.update_user_perms(username, req.allowed_formats, req.allowed_methods):
+    if not auth.update_user_perms(username, req.allowed_formats, req.allowed_methods, req.quota_gb):
         raise HTTPException(404, "User not found")
     return {"status": "updated"}
 
@@ -547,23 +562,36 @@ async def sync_podcasts(user: dict = Depends(auth.get_current_user)):
 
 # --- Disk Usage (admin) ---
 
+def _get_dir_size(path: str) -> tuple[int, int]:
+    """Get total size in bytes and file count for a directory."""
+    total = 0
+    file_count = 0
+    if not os.path.isdir(path):
+        return 0, 0
+    for root, dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+                file_count += 1
+            except OSError:
+                pass
+    return total, file_count
+
+
 @app.get("/api/admin/disk-usage")
 async def get_disk_usage(user: dict = Depends(auth.require_admin)):
     music_dir = os.environ.get("MUSIC_DIR", "/music")
+    all_users = {u["username"]: u for u in auth.list_users()}
     usage = []
     for entry in sorted(os.scandir(music_dir), key=lambda e: e.name):
         if not entry.is_dir() or entry.name.startswith('.'):
             continue
-        total = 0
-        file_count = 0
-        for root, dirs, files in os.walk(entry.path):
-            for f in files:
-                try:
-                    total += os.path.getsize(os.path.join(root, f))
-                    file_count += 1
-                except OSError:
-                    pass
-        usage.append({"name": entry.name, "size_bytes": total, "file_count": file_count})
+        total, file_count = _get_dir_size(entry.path)
+        item = {"name": entry.name, "size_bytes": total, "file_count": file_count}
+        # Add quota info if this is a user folder
+        if entry.name in all_users:
+            item["quota_gb"] = all_users[entry.name].get("quota_gb", 0)
+        usage.append(item)
     return {"usage": usage}
 
 
