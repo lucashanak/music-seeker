@@ -13,13 +13,17 @@ import settings as app_settings
 import auth
 import recognize
 import lastfm
+import podcasts
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 
 app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
+
+
+SYNC_INTERVAL = int(os.environ.get("PODCAST_SYNC_HOURS", "6")) * 3600
 
 
 @app.on_event("startup")
@@ -29,6 +33,45 @@ async def startup():
         print("WARNING: ADMIN_PASS not set! Set it via environment variable.", file=sys.stderr)
         return
     auth.init_admin(ADMIN_USER, ADMIN_PASS)
+    asyncio.create_task(_podcast_auto_sync())
+
+
+async def _podcast_auto_sync():
+    """Background task: sync subscribed podcasts every SYNC_INTERVAL seconds."""
+    while True:
+        await asyncio.sleep(SYNC_INTERVAL)
+        subs = podcasts.get_subs()
+        if not subs:
+            continue
+        for sub in subs:
+            try:
+                show_data = await spotify.get_show_episodes(sub["spotify_id"])
+                episodes = show_data.get("episodes", [])
+                local = set(e.lower() for e in podcasts.get_local_episodes(sub["show_name"]))
+                missing = [ep for ep in episodes if ep["name"].lower().strip() not in local]
+                if missing:
+                    if sub.get("max_episodes", 0) > 0:
+                        missing = missing[:max(0, sub["max_episodes"] - len(local))]
+                    if missing:
+                        playlist_tracks = [{"name": ep["name"], "artist": sub["show_name"],
+                                            "album": sub["show_name"],
+                                            "image": ep.get("image") or sub.get("image", ""),
+                                            "url": ep.get("url", "")} for ep in missing]
+                        job = jobs.create_job(
+                            type_="show",
+                            title=f"Auto-sync: {sub['show_name']} ({len(missing)} new)",
+                            url="",
+                            method="yt-dlp",
+                            fmt="mp3",
+                            playlist_name="",
+                            playlist_tracks=playlist_tracks,
+                        )
+                        task = asyncio.create_task(downloader.run_download(job))
+                        jobs.register_task(job.id, task)
+                if sub.get("max_episodes", 0) > 0:
+                    podcasts.cleanup_old_episodes(sub["show_name"], sub["max_episodes"])
+            except Exception:
+                pass
 
 
 # --- Version (public) ---
@@ -336,6 +379,154 @@ async def change_password(username: str, req: ChangePasswordRequest, user: dict 
     if not auth.change_password(username, req.new_password):
         raise HTTPException(404, "User not found")
     return {"status": "updated"}
+
+
+# --- Podcasts (file browser) ---
+
+@app.get("/api/podcasts")
+async def list_podcasts(user: dict = Depends(auth.get_current_user)):
+    """List downloaded podcast shows and their episodes."""
+    podcasts_dir = os.path.join(os.environ.get("MUSIC_DIR", "/music"), "Podcasts")
+    if not os.path.isdir(podcasts_dir):
+        return {"shows": [], "total_size": 0}
+    shows = []
+    total_size = 0
+    for show_name in sorted(os.listdir(podcasts_dir)):
+        show_path = os.path.join(podcasts_dir, show_name)
+        if not os.path.isdir(show_path):
+            continue
+        episodes = []
+        show_size = 0
+        for fname in sorted(os.listdir(show_path)):
+            fpath = os.path.join(show_path, fname)
+            if not os.path.isfile(fpath):
+                continue
+            size = os.path.getsize(fpath)
+            show_size += size
+            name = os.path.splitext(fname)[0]
+            episodes.append({
+                "name": name,
+                "filename": fname,
+                "size": size,
+                "modified": os.path.getmtime(fpath),
+            })
+        episodes.sort(key=lambda e: e["modified"], reverse=True)
+        total_size += show_size
+        shows.append({
+            "name": show_name,
+            "episodes": episodes,
+            "total_size": show_size,
+            "count": len(episodes),
+        })
+    return {"shows": shows, "total_size": total_size}
+
+
+@app.delete("/api/podcasts/{show_name}/{filename}")
+async def delete_podcast_episode(show_name: str, filename: str, user: dict = Depends(auth.get_current_user)):
+    """Delete a single podcast episode file."""
+    podcasts_dir = os.path.join(os.environ.get("MUSIC_DIR", "/music"), "Podcasts")
+    fpath = os.path.join(podcasts_dir, show_name, filename)
+    if not os.path.isfile(fpath):
+        raise HTTPException(404, "Episode not found")
+    os.remove(fpath)
+    # Remove show dir if empty
+    show_dir = os.path.join(podcasts_dir, show_name)
+    if os.path.isdir(show_dir) and not os.listdir(show_dir):
+        os.rmdir(show_dir)
+    return {"status": "deleted"}
+
+
+@app.delete("/api/podcasts/{show_name}")
+async def delete_podcast_show(show_name: str, user: dict = Depends(auth.get_current_user)):
+    """Delete all episodes of a podcast show."""
+    import shutil
+    podcasts_dir = os.path.join(os.environ.get("MUSIC_DIR", "/music"), "Podcasts")
+    show_dir = os.path.join(podcasts_dir, show_name)
+    if not os.path.isdir(show_dir):
+        raise HTTPException(404, "Show not found")
+    shutil.rmtree(show_dir)
+    return {"status": "deleted"}
+
+
+# --- Podcast Subscriptions ---
+
+@app.get("/api/podcasts/subs")
+async def get_podcast_subs(user: dict = Depends(auth.get_current_user)):
+    return {"subs": podcasts.get_subs()}
+
+
+class PodcastSubRequest(BaseModel):
+    show_name: str
+    spotify_id: str
+    image: str = ""
+    max_episodes: int = 0
+
+
+@app.post("/api/podcasts/subs")
+async def subscribe_podcast(req: PodcastSubRequest, user: dict = Depends(auth.get_current_user)):
+    if not podcasts.subscribe(req.show_name, req.spotify_id, req.image, req.max_episodes):
+        raise HTTPException(409, "Already subscribed")
+    return {"status": "subscribed"}
+
+
+@app.delete("/api/podcasts/subs/{spotify_id}")
+async def unsubscribe_podcast(spotify_id: str, user: dict = Depends(auth.get_current_user)):
+    if not podcasts.unsubscribe(spotify_id):
+        raise HTTPException(404, "Subscription not found")
+    return {"status": "unsubscribed"}
+
+
+class PodcastSubUpdate(BaseModel):
+    max_episodes: int | None = None
+
+
+@app.put("/api/podcasts/subs/{spotify_id}")
+async def update_podcast_sub(spotify_id: str, req: PodcastSubUpdate, user: dict = Depends(auth.get_current_user)):
+    if not podcasts.update_sub(spotify_id, req.max_episodes):
+        raise HTTPException(404, "Subscription not found")
+    return {"status": "updated"}
+
+
+@app.post("/api/podcasts/sync")
+async def sync_podcasts(user: dict = Depends(auth.get_current_user)):
+    """Sync all subscribed podcasts — download new episodes, cleanup old ones."""
+    subs = podcasts.get_subs()
+    if not subs:
+        return {"status": "no_subs", "synced": 0}
+    synced = 0
+    for sub in subs:
+        try:
+            show_data = await spotify.get_show_episodes(sub["spotify_id"])
+            episodes = show_data.get("episodes", [])
+            local = set(e.lower() for e in podcasts.get_local_episodes(sub["show_name"]))
+            missing = [ep for ep in episodes if ep["name"].lower().strip() not in local]
+            if missing:
+                # Respect max_episodes limit
+                if sub.get("max_episodes", 0) > 0:
+                    missing = missing[:max(0, sub["max_episodes"] - len(local))]
+                if missing:
+                    playlist_tracks = [{"name": ep["name"], "artist": sub["show_name"],
+                                        "album": sub["show_name"],
+                                        "image": ep.get("image") or sub.get("image", ""),
+                                        "url": ep.get("url", "")} for ep in missing]
+                    job = jobs.create_job(
+                        type_="show",
+                        title=f"Sync: {sub['show_name']} ({len(missing)} new)",
+                        url="",
+                        method="yt-dlp",
+                        fmt="mp3",
+                        playlist_name="",
+                        playlist_tracks=playlist_tracks,
+                    )
+                    task = asyncio.create_task(downloader.run_download(job))
+                    jobs.register_task(job.id, task)
+                    synced += len(missing)
+            # Cleanup old episodes
+            if sub.get("max_episodes", 0) > 0:
+                podcasts.cleanup_old_episodes(sub["show_name"], sub["max_episodes"])
+        except Exception:
+            pass
+    return {"status": "synced", "synced": synced}
 
 
 # --- Static files ---
