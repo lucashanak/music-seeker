@@ -3181,6 +3181,7 @@ history.replaceState({page: 'search'}, '');
 window.addEventListener('popstate', e => {
   const state = e.state;
   // Close overlays first (highest priority)
+  if (queuePanelOpen) { closeQueuePanel(true); return; }
   if (modalItem) { closeModal(true); return; }
   if (panelOpen) { closePanel(true); return; }
   // Close any edit perms dialog
@@ -3203,7 +3204,7 @@ document.addEventListener('keydown', e => {
     $('#searchInput').focus();
     requestNotificationPermission();
   }
-  if (e.key === 'Escape') { closeModal(); closePanel(); }
+  if (e.key === 'Escape') { closeModal(); closePanel(); closeQueuePanel(); }
 });
 
 // ── Helpers ──
@@ -3416,10 +3417,13 @@ function openQueuePanel() {
   renderQueue();
   $('#queuePanel').classList.add('open');
   queuePanelOpen = true;
+  history.pushState({layer: 'queuePanel'}, '');
 }
-function closeQueuePanel() {
+function closeQueuePanel(fromPopstate) {
+  if (!queuePanelOpen) return;
   $('#queuePanel').classList.remove('open');
   queuePanelOpen = false;
+  if (!fromPopstate) history.back();
 }
 
 function renderQueue() {
