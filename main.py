@@ -12,6 +12,7 @@ import library
 import settings as app_settings
 import auth
 import recognize
+import lastfm
 
 APP_VERSION = "1.6.0"
 
@@ -92,6 +93,52 @@ async def get_playlists(user: dict = Depends(auth.get_current_user)):
 async def get_playlist_tracks(playlist_id: str, user: dict = Depends(auth.get_current_user)):
     data = await spotify.get_playlist_tracks(playlist_id)
     return data
+
+
+# --- Discover (Last.fm) ---
+
+@app.get("/api/discover/tags")
+async def discover_tags(
+    limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(auth.get_current_user),
+):
+    if not lastfm.LASTFM_API_KEY:
+        raise HTTPException(503, "Last.fm API key not configured")
+    tags = await lastfm.get_top_tags(limit)
+    return {"tags": tags}
+
+
+@app.get("/api/discover/tag/{tag_name}")
+async def discover_tag(
+    tag_name: str,
+    type: str = Query("track", pattern="^(track|album|artist)$"),
+    limit: int = Query(20, ge=1, le=50),
+    page: int = Query(1, ge=1),
+    user: dict = Depends(auth.get_current_user),
+):
+    if not lastfm.LASTFM_API_KEY:
+        raise HTTPException(503, "Last.fm API key not configured")
+    if type == "track":
+        results = await lastfm.get_tag_tracks(tag_name, limit, page)
+    elif type == "album":
+        results = await lastfm.get_tag_albums(tag_name, limit, page)
+    else:
+        results = await lastfm.get_tag_artists(tag_name, limit, page)
+    return {"results": results, "tag": tag_name, "type": type}
+
+
+class ResolveRequest(BaseModel):
+    name: str
+    artist: str = ""
+    type: str = "track"
+
+
+@app.post("/api/discover/resolve")
+async def discover_resolve(req: ResolveRequest, user: dict = Depends(auth.get_current_user)):
+    result = await spotify.resolve_url(req.name, req.artist, req.type)
+    if not result:
+        raise HTTPException(404, "Not found on Spotify")
+    return result
 
 
 @app.post("/api/download")

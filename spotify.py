@@ -116,6 +116,12 @@ async def search(query: str, search_type: str = "track", limit: int = 20) -> lis
     return results
 
 
+async def resolve_url(name: str, artist: str, item_type: str = "track") -> dict | None:
+    query = f"{artist} {name}" if artist else name
+    results = await search(query, item_type, 1)
+    return results[0] if results else None
+
+
 async def get_user_playlists() -> list[dict]:
     data = await spotify_get("me/playlists", {"limit": 50}, user=True)
     playlists = []

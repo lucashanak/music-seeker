@@ -316,6 +316,22 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 }
 .job-retry:hover { background: var(--accent); color: #000; }
 
+/* ── Discover / Tags ── */
+.tag-cloud { display: flex; flex-wrap: wrap; gap: 10px; }
+.tag-chip {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--text); padding: 8px 16px; border-radius: 20px;
+  cursor: pointer; font-size: 14px; transition: all .2s;
+}
+.tag-chip:hover { border-color: var(--accent); color: var(--accent); }
+.tag-chip .tag-count { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
+.tag-detail-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.tag-back-btn {
+  background: none; border: 1px solid var(--border); color: var(--text);
+  padding: 6px 14px; border-radius: var(--radius); cursor: pointer; font-size: 13px;
+}
+.tag-back-btn:hover { border-color: var(--accent); color: var(--accent); }
+
 /* ── Settings ── */
 .settings-form { max-width: 500px; }
 .setting-group { margin-bottom: 20px; }
@@ -404,6 +420,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 <nav>
   <div class="logo">MusicSeeker</div>
   <button class="nav-btn active" data-page="search">Search</button>
+  <button class="nav-btn" data-page="discover">Discover</button>
   <button class="nav-btn" data-page="playlists">Playlists</button>
   <button class="nav-btn" data-page="settings">Settings</button>
   <div class="nav-spacer"></div>
@@ -448,6 +465,32 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
     </div>
   </div>
   <div id="searchResults" class="grid"></div>
+</main>
+
+<!-- ── Discover Page ── -->
+<main id="pageDiscover" style="display:none">
+  <div id="tagCloudView">
+    <h2 style="margin-bottom:20px; font-size:22px;">Discover by Genre</h2>
+    <div id="tagCloud" class="tag-cloud"></div>
+  </div>
+  <div id="tagDetailView" style="display:none;">
+    <div class="tag-detail-header">
+      <button class="tag-back-btn" id="backToTags">&larr; Back</button>
+      <h2 id="tagDetailName" style="font-size:20px;"></h2>
+    </div>
+    <div style="display:flex; gap:12px; align-items:center; margin-bottom:20px; flex-wrap:wrap;">
+      <div class="type-toggle">
+        <button class="type-btn active" data-tagtype="track">Tracks</button>
+        <button class="type-btn" data-tagtype="album">Albums</button>
+        <button class="type-btn" data-tagtype="artist">Artists</button>
+      </div>
+      <input id="tagFilter" type="text" class="search-input" placeholder="Filter results..." style="flex:1; min-width:150px; max-width:300px; padding:8px 14px; font-size:14px;">
+    </div>
+    <div id="tagResults" class="grid"></div>
+    <div id="tagLoadMore" style="text-align:center; padding:20px; display:none;">
+      <div class="skeleton" style="height:40px; width:200px; margin:0 auto;"></div>
+    </div>
+  </div>
 </main>
 
 <!-- ── Playlists Page ── -->
@@ -715,6 +758,8 @@ let selectedFormat = 'flac';
 let panelOpen = false;
 let currentPlaylistId = null;
 let currentPlaylistUrl = null;
+let currentTag = null;
+let discoverTagType = 'track';
 let currentPlaylistTracks = [];
 let appSettings = { default_format: 'flac', default_method: 'spotdl', max_concurrent: 10 };
 
@@ -727,8 +772,10 @@ $$('.nav-btn[data-page]').forEach(btn => {
     btn.classList.add('active');
     currentPage = page;
     $('#pageSearch').style.display = page === 'search' ? '' : 'none';
+    $('#pageDiscover').style.display = page === 'discover' ? '' : 'none';
     $('#pagePlaylists').style.display = page === 'playlists' ? '' : 'none';
     $('#pageSettings').style.display = page === 'settings' ? '' : 'none';
+    if (page === 'discover') loadTags();
     if (page === 'playlists') loadPlaylists();
     if (page === 'settings') loadSettings();
   });
@@ -1082,7 +1129,30 @@ function openModal(item) {
   selectedFormat = appSettings.default_format || 'flac';
   updateOptionGroups();
   $('#modalLibraryNotice').style.display = item.inLibrary ? '' : 'none';
+  const dlBtn = $('#modalDownload');
+  dlBtn.disabled = false;
+  dlBtn.textContent = 'Download';
   $('#downloadModal').classList.add('open');
+
+  // Last.fm items have no Spotify URL — resolve it
+  if (!item.url) {
+    dlBtn.disabled = true;
+    dlBtn.textContent = 'Resolving...';
+    apiJson('/api/discover/resolve', {
+      method: 'POST',
+      body: { name: item.name, artist: item.artist || '', type: item.type || 'track' },
+    }).then(resolved => {
+      if (!modalItem || modalItem.name !== item.name) return; // modal changed
+      modalItem.url = resolved.url;
+      modalItem.id = resolved.id;
+      if (resolved.image) $('#modalImg').src = resolved.image;
+      dlBtn.disabled = false;
+      dlBtn.textContent = 'Download';
+    }).catch(() => {
+      if (!modalItem || modalItem.name !== item.name) return;
+      dlBtn.textContent = 'Not found on Spotify';
+    });
+  }
 }
 
 function closeModal() { $('#downloadModal').classList.remove('open'); modalItem = null; }
@@ -1211,6 +1281,116 @@ function checkJobCompletions(jobs) {
   }
 }
 
+// __ Discover __
+let tagPage = 1;
+let tagLoading = false;
+let tagHasMore = true;
+let allTagResults = [];
+
+async function loadTags() {
+  const cloud = $('#tagCloud');
+  cloud.innerHTML = '<div class="skeleton" style="height:200px;"></div>';
+  $('#tagCloudView').style.display = '';
+  $('#tagDetailView').style.display = 'none';
+  $('#tagFilter').value = '';
+  try {
+    const data = await apiJson('/api/discover/tags?limit=60');
+    cloud.innerHTML = data.tags.map(t =>
+      `<button class="tag-chip" data-tag="${esc(t.name)}">${esc(t.name)}<span class="tag-count">${t.count.toLocaleString()}</span></button>`
+    ).join('');
+    $$('.tag-chip', cloud).forEach(chip => {
+      chip.addEventListener('click', () => loadTagResults(chip.dataset.tag));
+    });
+  } catch (e) {
+    cloud.innerHTML = `<div class="empty-state"><p>${e.message || 'Failed to load tags'}</p></div>`;
+  }
+}
+
+async function loadTagResults(tag, type, append) {
+  if (!append) {
+    currentTag = tag;
+    discoverTagType = type || 'track';
+    tagPage = 1;
+    tagHasMore = true;
+    allTagResults = [];
+    $('#tagCloudView').style.display = 'none';
+    $('#tagDetailView').style.display = '';
+    $('#tagDetailName').textContent = tag;
+    $('#tagFilter').value = '';
+    $$('[data-tagtype]').forEach(b => b.classList.toggle('active', b.dataset.tagtype === discoverTagType));
+    $('#tagResults').innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  }
+  tagLoading = true;
+  $('#tagLoadMore').style.display = '';
+  try {
+    const data = await apiJson(`/api/discover/tag/${encodeURIComponent(tag)}?type=${discoverTagType}&limit=20&page=${tagPage}`);
+    if (data.results.length < 20) tagHasMore = false;
+    allTagResults = allTagResults.concat(data.results);
+    if (!append) {
+      renderResults(allTagResults, '#tagResults');
+    } else {
+      // Append new cards
+      const grid = $('#tagResults');
+      const fragment = document.createElement('div');
+      fragment.innerHTML = data.results.map(item => `
+        <div class="card" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
+          <img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+          <div class="card-body">
+            <div class="card-title">${esc(item.name)}</div>
+            <div class="card-sub">${esc(item.artist || '')}</div>
+            <div class="card-meta"></div>
+          </div>
+        </div>
+      `).join('');
+      Array.from(fragment.children).forEach(card => {
+        card.addEventListener('click', () => openModal(JSON.parse(card.dataset.item)));
+        grid.appendChild(card);
+      });
+      checkLibrary(data.results, grid);
+    }
+    applyTagFilter();
+  } catch (e) {
+    if (!append) $('#tagResults').innerHTML = `<div class="empty-state"><p>${e.message || 'Failed to load'}</p></div>`;
+  }
+  tagLoading = false;
+  $('#tagLoadMore').style.display = 'none';
+}
+
+function applyTagFilter() {
+  const filter = $('#tagFilter').value.toLowerCase().trim();
+  $$('#tagResults .card').forEach(card => {
+    if (!filter) { card.style.display = ''; return; }
+    const item = JSON.parse(card.dataset.item);
+    const text = `${item.name} ${item.artist}`.toLowerCase();
+    card.style.display = text.includes(filter) ? '' : 'none';
+  });
+}
+
+$('#tagFilter').addEventListener('input', applyTagFilter);
+
+// Infinite scroll
+window.addEventListener('scroll', () => {
+  if (currentPage !== 'discover' || !currentTag || tagLoading || !tagHasMore) return;
+  if ($('#tagDetailView').style.display === 'none') return;
+  const scrollBottom = window.innerHeight + window.scrollY;
+  if (scrollBottom >= document.body.offsetHeight - 300) {
+    tagPage++;
+    loadTagResults(currentTag, discoverTagType, true);
+  }
+});
+
+$('#backToTags').addEventListener('click', () => {
+  $('#tagCloudView').style.display = '';
+  $('#tagDetailView').style.display = 'none';
+  currentTag = null;
+});
+
+$$('[data-tagtype]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (currentTag) loadTagResults(currentTag, btn.dataset.tagtype);
+  });
+});
+
 // __ Settings __
 async function loadSettings() {
   try {
@@ -1293,6 +1473,7 @@ document.addEventListener('keydown', e => {
     $('.nav-btn[data-page="search"]').classList.add('active');
     currentPage = 'search';
     $('#pageSearch').style.display = '';
+    $('#pageDiscover').style.display = 'none';
     $('#pagePlaylists').style.display = 'none';
     $('#pageSettings').style.display = 'none';
     $('#searchInput').focus();
