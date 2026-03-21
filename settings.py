@@ -1,7 +1,11 @@
 import os
+import json
 import jobs
 
-_settings = {
+DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+
+_defaults = {
     "default_format": os.environ.get("DEFAULT_FORMAT", "flac"),
     "default_method": os.environ.get("DEFAULT_METHOD", "spotdl"),
     "max_concurrent": int(os.environ.get("MAX_CONCURRENT", "10")),
@@ -10,6 +14,32 @@ _settings = {
     "navidrome_password": os.environ.get("NAVIDROME_PASSWORD", ""),
     "spotdl_own_credentials": True,
 }
+
+_settings = {**_defaults}
+
+
+def _load():
+    global _settings
+    _settings = {**_defaults}
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE) as f:
+                saved = json.load(f)
+            for key, value in saved.items():
+                if key in _settings:
+                    _settings[key] = value
+        except (json.JSONDecodeError, OSError):
+            pass
+
+
+def _save():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(_settings, f, indent=2)
+
+
+# Load on import
+_load()
 
 
 def get_all() -> dict:
@@ -20,6 +50,8 @@ def update(data: dict) -> dict:
     for key, value in data.items():
         if key in _settings:
             _settings[key] = value
+
+    _save()
 
     # Apply max_concurrent change
     if "max_concurrent" in data:
