@@ -268,6 +268,12 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
   font-size: 13px; color: var(--text-muted); margin-top: 3px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.card-sub .clickable, .card-meta .clickable {
+  cursor: pointer; transition: color .15s;
+}
+.card-sub .clickable:hover, .card-meta .clickable:hover {
+  color: var(--accent); text-decoration: underline;
+}
 .card-meta {
   font-size: 11px; color: var(--text-dim); margin-top: 8px;
   display: flex; justify-content: space-between;
@@ -1421,6 +1427,25 @@ function switchPage(page, fromPopstate) {
   if (page === 'settings') loadSettings();
 }
 
+function searchFor(query, type) {
+  switchPage('search');
+  $('#searchInput').value = query;
+  $('#searchClear').style.display = '';
+  searchType = type;
+  $$('.type-btn[data-type]').forEach(b => b.classList.remove('active'));
+  const btn = $(`.type-btn[data-type="${type}"]`);
+  if (btn) btn.classList.add('active');
+  doSearch();
+}
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('.clickable[data-search-type]');
+  if (!el) return;
+  e.stopPropagation();
+  if ($('#downloadModal').classList.contains('open')) closeModal();
+  searchFor(el.dataset.searchQ, el.dataset.searchType);
+});
+
 $$('.nav-btn[data-page]').forEach(btn => {
   btn.addEventListener('click', () => switchPage(btn.dataset.page));
 });
@@ -1479,7 +1504,7 @@ async function doSearch(append) {
           <img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
           <div class="card-body">
             <div class="card-title">${esc(item.name)}</div>
-            <div class="card-sub">${esc(item.artist || '')}</div>
+            <div class="card-sub">${cardSubHtml(item)}</div>
             <div class="card-meta">
               ${item.year ? `<span>${item.year}</span>` : ''}
               ${item.total_tracks ? `<span>${item.total_tracks} ${item.type === 'show' ? 'episodes' : 'tracks'}</span>` : ''}
@@ -1490,7 +1515,8 @@ async function doSearch(append) {
         </div>
       `).join('');
       Array.from(fragment.children).forEach(card => {
-        card.addEventListener('click', () => {
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('.clickable')) return;
           const item = JSON.parse(card.dataset.item);
           if (item.type === 'playlist' && item.id) {
             loadPlaylistDetail(item.id, item.url, 'search');
@@ -1512,6 +1538,22 @@ async function doSearch(append) {
   $('#searchLoadMore').style.display = 'none';
 }
 
+function cardSubHtml(item) {
+  const artist = item.artist || '';
+  const album = item.album || '';
+  const type = item.type || 'track';
+  // For tracks: show clickable artist + album; for albums: clickable artist; others: plain
+  if (type === 'track' && artist) {
+    let html = `<span class="clickable" data-search-type="artist" data-search-q="${esc(artist)}">${esc(artist)}</span>`;
+    if (album) html += ` · <span class="clickable" data-search-type="album" data-search-q="${esc(album)}">${esc(album)}</span>`;
+    return html;
+  }
+  if ((type === 'album' || type === 'episode') && artist) {
+    return `<span class="clickable" data-search-type="artist" data-search-q="${esc(artist)}">${esc(artist)}</span>`;
+  }
+  return esc(artist);
+}
+
 function renderResults(items, container, fromPage) {
   const el = $(container);
   if (!items.length) {
@@ -1523,7 +1565,7 @@ function renderResults(items, container, fromPage) {
       <img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="card-body">
         <div class="card-title">${esc(item.name)}</div>
-        <div class="card-sub">${esc(item.artist || '')}</div>
+        <div class="card-sub">${cardSubHtml(item)}</div>
         <div class="card-meta">
           ${item.year ? `<span>${item.year}</span>` : ''}
           ${item.total_tracks ? `<span>${item.total_tracks} ${item.type === 'show' ? 'episodes' : 'tracks'}</span>` : ''}
@@ -1535,7 +1577,8 @@ function renderResults(items, container, fromPage) {
   `).join('');
 
   $$('.card', el).forEach(card => {
-    card.addEventListener('click', () => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.clickable')) return;
       const item = JSON.parse(card.dataset.item);
       if (item.type === 'playlist' && item.id) {
         loadPlaylistDetail(item.id, item.url, fromPage);
@@ -2272,7 +2315,19 @@ function openModal(item) {
   modalItem = item;
   $('#modalImg').src = item.image || '';
   $('#modalTitle').textContent = item.name;
-  $('#modalArtist').textContent = item.artist || '';
+  const artistEl = $('#modalArtist');
+  const artist = item.artist || '';
+  const album = item.album || '';
+  const type = item.type || 'track';
+  if (type === 'track' && artist) {
+    let html = `<span class="clickable" data-search-type="artist" data-search-q="${esc(artist)}">${esc(artist)}</span>`;
+    if (album) html += ` · <span class="clickable" data-search-type="album" data-search-q="${esc(album)}">${esc(album)}</span>`;
+    artistEl.innerHTML = html;
+  } else if ((type === 'album' || type === 'episode') && artist) {
+    artistEl.innerHTML = `<span class="clickable" data-search-type="artist" data-search-q="${esc(artist)}">${esc(artist)}</span>`;
+  } else {
+    artistEl.textContent = artist;
+  }
   const allowedMethods = currentUser?.allowed_methods || ['yt-dlp','slskd','lidarr'];
   const allowedFormats = currentUser?.allowed_formats || ['mp3','flac'];
   const defMethod = appSettings.default_method || 'yt-dlp';
@@ -2523,13 +2578,16 @@ async function loadTagResults(tag, type, append) {
           <img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
           <div class="card-body">
             <div class="card-title">${esc(item.name)}</div>
-            <div class="card-sub">${esc(item.artist || '')}</div>
+            <div class="card-sub">${cardSubHtml(item)}</div>
             <div class="card-meta"></div>
           </div>
         </div>
       `).join('');
       Array.from(fragment.children).forEach(card => {
-        card.addEventListener('click', () => openModal(JSON.parse(card.dataset.item)));
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('.clickable')) return;
+          openModal(JSON.parse(card.dataset.item));
+        });
         grid.appendChild(card);
       });
       checkLibrary(data.results, grid);
