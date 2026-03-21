@@ -8,12 +8,13 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 
 ## Features
 
-- **Spotify Search** — Search tracks, albums, and artists via Spotify's catalog
+- **Spotify Search** — Search tracks, albums, artists, and playlists via Spotify's catalog with infinite scroll pagination
+- **Discover** — Browse music by genre tags (rock, jazz, electronic, etc.) powered by Last.fm, with infinite scroll and filtering
 - **Two download methods:**
-  - **spotDL** — Direct download in FLAC or MP3 (runs as a sidecar Docker container)
+  - **spotDL** — Direct download in FLAC or MP3 (runs as subprocess inside the container)
   - **Lidarr** — Torrent-based downloads with automatic artist monitoring
 - **Song Recognition** — Identify songs via your microphone using Shazam, with AcoustID fingerprinting as fallback, then download them instantly
-- **Spotify Playlists** — Browse your Spotify playlists and download individual tracks or full playlists with automatic Navidrome playlist creation
+- **Spotify Playlists** — Browse your own or search public Spotify playlists and download individual tracks or full playlists with optional Navidrome playlist creation
 - **Smart Downloads** — Checks your Navidrome library before downloading and skips tracks you already have
 - **Library Detection** — Shows "In Library" badge for tracks already in your Navidrome collection (fuzzy matching handles remasters, feat. tags, etc.)
 - **Download Management** — Real-time progress tracking, retry failed downloads, cancel running downloads
@@ -23,17 +24,17 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 
 ## Screenshots
 
-| Login | Search | Download Modal | Settings |
-|-------|--------|---------------|----------|
-| ![Login](screenshots/login.png) | ![Search](screenshots/search-results.png) | ![Modal](screenshots/download-modal.png) | ![Settings](screenshots/settings.png) |
+| Login | Search | Discover | Download Modal | Settings |
+|-------|--------|----------|---------------|----------|
+| ![Login](screenshots/login.png) | ![Search](screenshots/search-results.png) | ![Discover](screenshots/discover.png) | ![Modal](screenshots/download-modal.png) | ![Settings](screenshots/settings.png) |
 
 ## Requirements
 
 - Docker & Docker Compose
-- [Spotify Developer App](https://developer.spotify.com/dashboard) (Client ID + Client Secret required; Refresh Token only needed for playlist browsing)
-- [spotDL Docker image](https://github.com/spotDL/spotify-downloader) built locally as `spotdl-local`
+- [Spotify Developer App](https://developer.spotify.com/dashboard) (Client ID + Client Secret required; Refresh Token only needed for browsing your own playlists)
 - *(Optional)* Lidarr instance for torrent-based downloads
 - *(Optional)* Navidrome instance for library detection and playlist sync
+- *(Optional)* [Last.fm API key](https://www.last.fm/api/account/create) for genre-based discovery (Discover tab)
 - *(Optional)* [AcoustID API key](https://acoustid.org/my-applications) for fingerprint-based recognition fallback
 
 ## Quick Start
@@ -45,16 +46,7 @@ git clone https://github.com/lucashanak/music-seeker.git
 cd music-seeker
 ```
 
-### 2. Build the spotDL sidecar image
-
-MusicSeeker spawns spotDL containers for each download. You need to build the image locally:
-
-```bash
-docker pull spotdl/spotify-downloader
-docker tag spotdl/spotify-downloader spotdl-local
-```
-
-### 3. Configure environment
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
@@ -66,13 +58,15 @@ Edit `.env` with your credentials:
 # Required
 SPOTIFY_CLIENT_ID=your_client_id
 SPOTIFY_CLIENT_SECRET=your_client_secret
-HOST_MUSIC_DIR=/path/to/your/music
-
-# Optional (for Spotify playlist browsing)
-SPOTIFY_REFRESH_TOKEN=your_refresh_token
-
+MUSIC_DIR=/music
 ADMIN_USER=admin
 ADMIN_PASS=your_secure_password
+
+# Optional (for browsing your own Spotify playlists)
+SPOTIFY_REFRESH_TOKEN=your_refresh_token
+
+# Optional (for Last.fm Discover tab)
+LASTFM_API_KEY=your_lastfm_key
 
 # Optional (for AcoustID recognition fallback)
 ACOUSTID_API_KEY=your_acoustid_key
@@ -81,16 +75,13 @@ ACOUSTID_API_KEY=your_acoustid_key
 LIDARR_URL=http://lidarr:8686
 LIDARR_API_KEY=your_api_key
 
-# Optional (for "In Library" detection)
+# Optional (for "In Library" detection and playlist sync)
 NAVIDROME_URL=http://navidrome:4533
 NAVIDROME_USER=your_user
 NAVIDROME_PASSWORD=your_password
-
-# If running on the same Docker network as other services
-DOCKER_NETWORK=your_network_name
 ```
 
-### 4. Start the app
+### 3. Start the app
 
 ```bash
 docker compose up -d --build
@@ -98,13 +89,13 @@ docker compose up -d --build
 
 The app will be available at `http://localhost:8090`.
 
-### 5. Log in
+### 4. Log in
 
 Use the admin credentials you set in `.env`. You can create additional users from the Settings page.
 
 ## Getting a Spotify Refresh Token
 
-Search and downloads work with just Client ID + Client Secret (Client Credentials flow). A refresh token is only needed if you want to browse your personal Spotify playlists. Here's how to get one:
+Search and downloads work with just Client ID + Client Secret (Client Credentials flow). A refresh token is only needed if you want to browse your personal Spotify playlists. Public playlists can be searched and downloaded without one.
 
 1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and create an app
 2. Set the Redirect URI to `http://localhost:8888/callback`
@@ -149,16 +140,14 @@ services:
       - LIDARR_URL=http://lidarr:8686
       - LIDARR_API_KEY=${LIDARR_API_KEY}
       - MUSIC_DIR=/music
-      - HOST_MUSIC_DIR=/mnt/nas/Media/_Music
       - NAVIDROME_URL=http://navidrome:4533
       - NAVIDROME_USER=your_user
       - NAVIDROME_PASSWORD=${NAVIDROME_PASSWORD}
-      - DOCKER_NETWORK=yams-server_default
+      - LASTFM_API_KEY=${LASTFM_API_KEY}
       - ADMIN_USER=admin
       - ADMIN_PASS=${ADMIN_PASS}
     volumes:
       - /mnt/nas/Media/_Music:/music
-      - /var/run/docker.sock:/var/run/docker.sock
       - ${INSTALL_DIRECTORY}/config/music-seeker:/app/data
 ```
 
@@ -173,26 +162,22 @@ services:
 ┌────────────▼─────────────────┐
 │     FastAPI (main.py)        │
 │  Auth, Search, Downloads,    │
-│  Recognition, Settings       │
+│  Recognition, Discover,      │
+│  Settings                    │
 ├──────────────────────────────┤
 │ spotify.py  │ Spotify Web API│
-│ downloader.py │ Docker API   │
+│ lastfm.py   │ Last.fm API   │
+│ downloader.py │ spotDL subprocess│
 │ library.py  │ Subsonic API   │
 │ recognize.py│ shazamio+acoustid│
 │ auth.py     │ HMAC tokens    │
 │ jobs.py     │ Job queue      │
-└──────┬───────────────────────┘
-       │ Unix Socket
-┌──────▼───────────────────────┐
-│    Docker Engine             │
-│  Spawns spotdl-local         │
-│  containers per download     │
 └──────────────────────────────┘
 ```
 
-- **No database** — users and history stored as JSON files in `/app/data`
+- **No database** — users and settings stored as JSON files in `/app/data`
 - **No build step** — frontend is a single HTML file served by FastAPI
-- **Docker-in-Docker** — downloads run in isolated spotDL containers via the Docker socket
+- **spotDL runs in-process** — downloads run as subprocesses, no Docker-in-Docker needed
 
 ## API Reference
 
@@ -203,7 +188,7 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `GET` | `/api/version` | Get app version (public) |
 | `POST` | `/api/auth/login` | Login, returns JWT token |
 | `GET` | `/api/auth/me` | Get current user info |
-| `GET` | `/api/search?q=...&type=track` | Search Spotify |
+| `GET` | `/api/search?q=...&type=track&offset=0` | Search Spotify (track/album/artist/playlist) |
 | `POST` | `/api/download` | Start a download job |
 | `GET` | `/api/jobs` | List all jobs |
 | `GET` | `/api/jobs/:id` | Get job status |
@@ -214,6 +199,9 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `POST` | `/api/recognize` | Identify song from audio (multipart) |
 | `GET` | `/api/spotify/playlists` | Get user's Spotify playlists |
 | `GET` | `/api/spotify/playlist/:id/tracks` | Get playlist tracks |
+| `GET` | `/api/discover/tags` | Get popular Last.fm genre tags |
+| `GET` | `/api/discover/tag/:tag?type=track` | Get top items for a tag |
+| `POST` | `/api/discover/resolve` | Resolve Last.fm item to Spotify URL |
 | `GET` | `/api/settings` | Get app settings |
 | `PUT` | `/api/settings` | Update settings (admin only) |
 | `GET` | `/api/users` | List users (admin only) |
@@ -227,17 +215,16 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 |----------|----------|---------|-------------|
 | `SPOTIFY_CLIENT_ID` | Yes | — | Spotify app Client ID |
 | `SPOTIFY_CLIENT_SECRET` | Yes | — | Spotify app Client Secret |
-| `SPOTIFY_REFRESH_TOKEN` | No | — | Spotify OAuth refresh token (only needed for playlist browsing) |
+| `SPOTIFY_REFRESH_TOKEN` | No | — | Spotify OAuth refresh token (only needed for your own playlists) |
 | `ADMIN_USER` | Yes | `admin` | Initial admin username |
 | `ADMIN_PASS` | Yes | — | Initial admin password |
-| `HOST_MUSIC_DIR` | Yes | — | Absolute path to music dir on the host |
 | `MUSIC_DIR` | No | `/music` | Music dir inside the container |
 | `LIDARR_URL` | No | `http://lidarr:8686` | Lidarr API URL |
 | `LIDARR_API_KEY` | No | — | Lidarr API key |
 | `NAVIDROME_URL` | No | `http://navidrome:4533` | Navidrome URL |
 | `NAVIDROME_USER` | No | `lucas` | Navidrome username |
 | `NAVIDROME_PASSWORD` | No | — | Navidrome password |
-| `DOCKER_NETWORK` | No | — | Docker network for spotDL containers |
+| `LASTFM_API_KEY` | No | — | Last.fm API key for Discover tab |
 | `ACOUSTID_API_KEY` | No | — | AcoustID API key for fingerprint recognition fallback |
 | `JWT_SECRET` | No | auto-generated | Secret for signing auth tokens |
 
