@@ -92,6 +92,8 @@ async def get_version():
     return {
         "version": APP_VERSION,
         "search_provider": app_settings._settings.get("search_provider", "deezer"),
+        "search_fallback": app_settings._settings.get("search_fallback", ""),
+        "podcast_provider": app_settings._settings.get("podcast_provider", "itunes"),
         "spotify_available": bool(spotify.SPOTIFY_CLIENT_ID and spotify.SPOTIFY_CLIENT_SECRET),
         "spotify_user": bool(spotify.SPOTIFY_REFRESH_TOKEN),
     }
@@ -139,9 +141,14 @@ async def search(
     offset: int = Query(0, ge=0),
     user: dict = Depends(auth.get_current_user),
 ):
-    provider = app_settings._settings.get("search_provider", "deezer")
-    results = await search_providers.search(q, type, limit, offset, provider=provider)
-    return {"results": results, "query": q, "type": type}
+    search_type = type
+    if search_type in ("show", "episode"):
+        provider = app_settings._settings.get("podcast_provider", "itunes")
+    else:
+        provider = app_settings._settings.get("search_provider", "deezer")
+    fallback = app_settings._settings.get("search_fallback", "")
+    results = await search_providers.search(q, search_type, limit, offset, provider=provider, fallback=fallback)
+    return {"results": results, "query": q, "type": search_type}
 
 
 @app.get("/api/spotify/playlists")
@@ -164,8 +171,8 @@ async def get_playlist_tracks(playlist_id: str, user: dict = Depends(auth.get_cu
 
 @app.get("/api/spotify/show/{show_id}/episodes")
 async def get_show_episodes(show_id: str, user: dict = Depends(auth.get_current_user)):
-    provider = app_settings._settings.get("search_provider", "deezer")
-    if provider != "spotify":
+    podcast_prov = app_settings._settings.get("podcast_provider", "itunes")
+    if podcast_prov != "spotify":
         # Use iTunes/RSS for non-Spotify providers
         try:
             data = await search_providers.itunes_get_show_episodes(show_id)
@@ -228,7 +235,8 @@ class ResolveRequest(BaseModel):
 @app.post("/api/discover/resolve")
 async def discover_resolve(req: ResolveRequest, user: dict = Depends(auth.get_current_user)):
     provider = app_settings._settings.get("search_provider", "deezer")
-    result = await search_providers.resolve(req.name, req.artist, req.type, provider=provider)
+    fallback = app_settings._settings.get("search_fallback", "")
+    result = await search_providers.resolve(req.name, req.artist, req.type, provider=provider, fallback=fallback)
     if not result:
         raise HTTPException(404, "Not found")
     return result
@@ -338,7 +346,8 @@ async def recognize_song(audio: UploadFile = File(...), user: dict = Depends(aut
     if result.get("name"):
         try:
             provider = app_settings._settings.get("search_provider", "deezer")
-            tracks = await search_providers.search(f"{result['artist']} {result['name']}", "track", 1, provider=provider)
+            fallback = app_settings._settings.get("search_fallback", "")
+            tracks = await search_providers.search(f"{result['artist']} {result['name']}", "track", 1, provider=provider, fallback=fallback)
             if tracks:
                 result["image"] = result.get("image") or tracks[0].get("image", "")
                 result["id"] = tracks[0].get("id", "")
@@ -360,6 +369,8 @@ class SettingsUpdate(BaseModel):
     default_format: str | None = None
     default_method: str | None = None
     search_provider: str | None = None
+    search_fallback: str | None = None
+    podcast_provider: str | None = None
     max_concurrent: int | None = None
     navidrome_url: str | None = None
     navidrome_user: str | None = None

@@ -1001,14 +1001,32 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
       <summary class="setting-section-title">Downloads</summary>
       <div class="setting-section-body">
         <div class="setting-group">
-          <label class="setting-label">Search Provider</label>
+          <label class="setting-label">Music Search</label>
           <select class="setting-select" id="settingSearchProvider">
-            <option value="deezer">Deezer (free, no key needed)</option>
-            <option value="ytmusic">YouTube Music (free, no key needed)</option>
-            <option value="apple">Apple Music / iTunes (free, no key needed)</option>
+            <option value="deezer">Deezer</option>
+            <option value="ytmusic">YouTube Music</option>
+            <option value="apple">Apple Music / iTunes</option>
             <option value="spotify">Spotify (requires API credentials)</option>
           </select>
-          <div id="searchProviderNote" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Music Search Fallback</label>
+          <select class="setting-select" id="settingSearchFallback">
+            <option value="">Auto (default)</option>
+            <option value="deezer">Deezer</option>
+            <option value="ytmusic">YouTube Music</option>
+            <option value="apple">Apple Music / iTunes</option>
+            <option value="spotify">Spotify</option>
+            <option value="none">None (no fallback)</option>
+          </select>
+          <div id="searchFallbackNote" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Podcast Search</label>
+          <select class="setting-select" id="settingPodcastProvider">
+            <option value="itunes">iTunes (free, no key needed)</option>
+            <option value="spotify">Spotify (requires API credentials)</option>
+          </select>
         </div>
         <div class="setting-group">
           <label class="setting-label">Default Download Method</label>
@@ -1162,6 +1180,7 @@ const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
 // ── Version ──
 const APP_VERSION = '1.8.0';
 let searchProvider = 'deezer';
+let podcastProvider = 'itunes';
 let spotifyAvailable = false;
 let spotifyUser = true;
 
@@ -1170,6 +1189,7 @@ let spotifyUser = true;
     const r = await fetch('/api/version');
     const d = await r.json();
     searchProvider = d.search_provider || 'deezer';
+    podcastProvider = d.podcast_provider || 'itunes';
     spotifyAvailable = d.spotify_available === true;
     spotifyUser = d.spotify_user !== false;
     const stored = localStorage.getItem('ms_version');
@@ -1322,7 +1342,7 @@ let searchLoading = false;
 let searchHasMore = true;
 let searchQuery = '';
 let currentPlaylistTracks = [];
-let appSettings = { default_format: 'flac', default_method: 'yt-dlp', search_provider: 'deezer', max_concurrent: 10 };
+let appSettings = { default_format: 'flac', default_method: 'yt-dlp', search_provider: 'deezer', search_fallback: '', podcast_provider: 'itunes', max_concurrent: 10 };
 
 // ── Navigation ──
 function switchPage(page, fromPopstate) {
@@ -2525,22 +2545,13 @@ async function loadSettings() {
     const data = await apiJson('/api/settings');
     appSettings = data;
     $('#settingSearchProvider').value = data.search_provider || 'deezer';
-    const spNote = $('#searchProviderNote');
-    if (data.search_provider === 'spotify' && !spotifyAvailable) {
-      spNote.textContent = 'Warning: Spotify credentials not configured. Search will not work.';
-      spNote.style.color = '#e74c3c';
-    } else if (data.search_provider === 'deezer') {
-      spNote.textContent = 'Falls back to YouTube Music if Deezer is unavailable. Podcasts via iTunes.';
-      spNote.style.color = 'var(--text-muted)';
-    } else if (data.search_provider === 'ytmusic') {
-      spNote.textContent = 'Falls back to Deezer if YouTube Music is unavailable. Podcasts via iTunes.';
-      spNote.style.color = 'var(--text-muted)';
-    } else if (data.search_provider === 'apple') {
-      spNote.textContent = 'Falls back to Deezer if iTunes is unavailable. Podcasts included natively.';
-      spNote.style.color = 'var(--text-muted)';
-    } else {
-      spNote.textContent = '';
-    }
+    $('#settingSearchFallback').value = data.search_fallback || '';
+    $('#settingPodcastProvider').value = data.podcast_provider || 'itunes';
+    const fbNote = $('#searchFallbackNote');
+    const fb = data.search_fallback || '';
+    const defaults = { deezer: 'YouTube Music', ytmusic: 'Deezer', apple: 'Deezer', spotify: 'none' };
+    fbNote.textContent = fb ? '' : 'Auto: ' + (defaults[data.search_provider] || 'none');
+    fbNote.style.color = 'var(--text-muted)';
     $('#settingMethod').value = data.default_method || 'yt-dlp';
     $('#settingFormat').value = data.default_format || 'flac';
     $('#settingMaxConcurrent').value = data.max_concurrent || 10;
@@ -2555,11 +2566,23 @@ async function loadSettings() {
   if (currentUser && currentUser.is_admin) loadUsers();
 }
 
+function updateFallbackNote() {
+  const prov = $('#settingSearchProvider').value;
+  const fb = $('#settingSearchFallback').value;
+  const note = $('#searchFallbackNote');
+  const defaults = { deezer: 'YouTube Music', ytmusic: 'Deezer', apple: 'Deezer', spotify: 'none' };
+  note.textContent = fb ? '' : 'Auto: ' + (defaults[prov] || 'none');
+}
+$('#settingSearchProvider').addEventListener('change', updateFallbackNote);
+$('#settingSearchFallback').addEventListener('change', updateFallbackNote);
+
 $('#saveSettings').addEventListener('click', async () => {
   const btn = $('#saveSettings');
   btn.disabled = true; $('#saveStatus').textContent = '';
   const payload = {
     search_provider: $('#settingSearchProvider').value,
+    search_fallback: $('#settingSearchFallback').value,
+    podcast_provider: $('#settingPodcastProvider').value,
     default_method: $('#settingMethod').value,
     default_format: $('#settingFormat').value,
     max_concurrent: parseInt($('#settingMaxConcurrent').value) || 10,
@@ -2573,6 +2596,10 @@ $('#saveSettings').addEventListener('click', async () => {
   if (pass) payload.navidrome_password = pass;
   try {
     appSettings = await apiJson('/api/settings', { method: 'PUT', body: payload });
+    searchProvider = appSettings.search_provider || 'deezer';
+    podcastProvider = appSettings.podcast_provider || 'itunes';
+    const providerLabels = {deezer: 'Deezer', ytmusic: 'YouTube Music', apple: 'Apple Music', spotify: 'Spotify'};
+    $('#searchInput').placeholder = `Search for music (${providerLabels[searchProvider] || searchProvider})...`;
     $('#saveStatus').textContent = 'Saved!';
     setTimeout(() => { $('#saveStatus').textContent = ''; }, 2000);
   } catch (e) {

@@ -391,82 +391,66 @@ def _parse_duration(text: str) -> int:
 
 # ── Unified search ──
 
-async def search(query: str, search_type: str = "track", limit: int = 20, offset: int = 0,
-                 provider: str = "deezer") -> list[dict]:
-    """Search with the specified provider, falling back through the chain."""
+_SEARCH_FUNCS = {
+    "deezer": deezer_search,
+    "ytmusic": ytmusic_search,
+    "apple": itunes_search,
+}
 
-    # Podcasts: use iTunes (free) or Spotify depending on provider
-    if search_type in ("show", "episode"):
-        if provider == "spotify":
-            import spotify
-            return await spotify.search(query, search_type, limit, offset)
-        # All other providers use iTunes for podcasts (free, no key)
-        try:
-            results = await itunes_search(query, search_type, limit)
-            if results:
-                return results
-        except Exception as e:
-            logger.warning(f"iTunes podcast search failed: {e}")
-        # Fallback to Spotify if available
-        try:
-            import spotify
-            if spotify.SPOTIFY_CLIENT_ID:
-                return await spotify.search(query, search_type, limit, offset)
-        except Exception as e:
-            logger.warning(f"Spotify podcast fallback failed: {e}")
-        return []
+# Default fallback when user doesn't pick one
+_DEFAULT_FALLBACK = {
+    "deezer": "ytmusic",
+    "ytmusic": "deezer",
+    "apple": "deezer",
+    "spotify": "",
+    "itunes": "spotify",
+}
 
-    if provider == "spotify":
+
+async def _try_provider(name: str, query: str, search_type: str, limit: int, offset: int) -> list[dict] | None:
+    """Try a single provider, return results or None."""
+    if name == "spotify":
         import spotify
         return await spotify.search(query, search_type, limit, offset)
+    if name == "itunes":
+        return await itunes_search(query, search_type, limit)
+    func = _SEARCH_FUNCS.get(name)
+    if not func:
+        return None
+    return await func(query, search_type, limit, offset) if name != "apple" else await func(query, search_type, limit)
 
-    if provider == "apple":
+
+async def search(query: str, search_type: str = "track", limit: int = 20, offset: int = 0,
+                 provider: str = "deezer", fallback: str = "") -> list[dict]:
+    """Search with the specified provider, falling back if needed."""
+
+    if fallback == "none":
+        fallback = ""
+    elif not fallback:
+        fallback = _DEFAULT_FALLBACK.get(provider, "")
+
+    # Primary
+    try:
+        results = await _try_provider(provider, query, search_type, limit, offset)
+        if results:
+            return results
+    except Exception as e:
+        logger.warning(f"{provider} search failed: {e}")
+
+    # Fallback
+    if fallback and fallback != provider:
         try:
-            results = await itunes_search(query, search_type, limit)
+            results = await _try_provider(fallback, query, search_type, limit, offset)
             if results:
                 return results
         except Exception as e:
-            logger.warning(f"iTunes search failed: {e}")
-        # Fallback to Deezer
-        try:
-            return await deezer_search(query, search_type, limit, offset)
-        except Exception as e:
-            logger.warning(f"Deezer fallback failed: {e}")
-        return []
-
-    if provider == "deezer":
-        try:
-            results = await deezer_search(query, search_type, limit, offset)
-            if results:
-                return results
-        except Exception as e:
-            logger.warning(f"Deezer search failed: {e}")
-        # Fallback to YouTube Music
-        try:
-            return await ytmusic_search(query, search_type, limit)
-        except Exception as e:
-            logger.warning(f"YouTube Music fallback failed: {e}")
-        return []
-
-    if provider == "ytmusic":
-        try:
-            results = await ytmusic_search(query, search_type, limit)
-            if results:
-                return results
-        except Exception as e:
-            logger.warning(f"YouTube Music search failed: {e}")
-        # Fallback to Deezer
-        try:
-            return await deezer_search(query, search_type, limit, offset)
-        except Exception as e:
-            logger.warning(f"Deezer fallback failed: {e}")
-        return []
+            logger.warning(f"{fallback} fallback failed: {e}")
 
     return []
 
 
-async def resolve(name: str, artist: str, item_type: str = "track", provider: str = "deezer") -> dict | None:
+async def resolve(name: str, artist: str, item_type: str = "track", provider: str = "deezer", fallback: str = "") -> dict | None:
     """Resolve a track/album by name+artist. Used by discover."""
     query = f"{artist} {name}" if artist else name
-    results = await search(query, item_type, 1, provider=provider)
+    results = await search(query, item_type, 1, provider=provider, fallback=fallback)
     return results[0] if results else None
