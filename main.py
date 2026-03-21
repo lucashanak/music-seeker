@@ -14,7 +14,7 @@ import auth
 import recognize
 import lastfm
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 
 app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 

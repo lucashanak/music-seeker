@@ -2,214 +2,298 @@
 <html lang="cs">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>MusicSeeker</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
   --bg: #0a0a0f;
-  --bg-card: #14141f;
-  --bg-elevated: #1a1a2e;
-  --bg-input: #1e1e32;
-  --border: #2a2a40;
-  --text: #e8e8f0;
+  --bg-card: #151520;
+  --bg-elevated: #1c1c2e;
+  --bg-input: #1a1a2a;
+  --border: #2a2a3d;
+  --border-hover: #3a3a55;
+  --text: #eeeef5;
   --text-muted: #8888a0;
+  --text-dim: #555568;
   --accent: #A2E640;
-  --accent-dim: rgba(162, 230, 64, 0.15);
-  --red: #e64040;
-  --radius: 12px;
-  --radius-sm: 8px;
+  --accent-dim: rgba(162, 230, 64, 0.12);
+  --accent-glow: rgba(162, 230, 64, 0.25);
+  --red: #ef4444;
+  --blue: #3b82f6;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --radius-xs: 6px;
+  --shadow-card: 0 4px 24px rgba(0,0,0,.3);
+  --shadow-glow: 0 0 30px rgba(162,230,64,.15);
+  --nav-height: 64px;
+  --bottom-nav-height: 72px;
+  --transition: .2s cubic-bezier(.4,0,.2,1);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 /* ── Login ── */
 .login-screen {
   display: flex; align-items: center; justify-content: center;
   min-height: 100vh; padding: 20px;
+  background: radial-gradient(ellipse at 50% 0%, rgba(162,230,64,.06) 0%, transparent 60%),
+              radial-gradient(ellipse at 80% 100%, rgba(96,75,232,.06) 0%, transparent 60%),
+              var(--bg);
 }
 .login-box {
   background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: 16px; padding: 40px; width: 100%; max-width: 380px;
-  text-align: center;
+  border-radius: 20px; padding: 48px 40px; width: 100%; max-width: 400px;
+  text-align: center; box-shadow: var(--shadow-card);
 }
-.login-box .logo { font-size: 28px; margin-bottom: 8px; display: block; }
-.login-box p { color: var(--text-muted); margin-bottom: 24px; font-size: 14px; }
+.login-box .logo-icon {
+  width: 56px; height: 56px; margin: 0 auto 16px;
+  background: var(--accent-dim); border-radius: 16px;
+  display: flex; align-items: center; justify-content: center;
+}
+.login-box .logo-icon svg { width: 28px; height: 28px; }
+.login-box .logo-text { font-size: 26px; font-weight: 800; color: var(--accent); margin-bottom: 6px; letter-spacing: -0.5px; }
+.login-box p { color: var(--text-muted); margin-bottom: 28px; font-size: 14px; }
 .login-box input {
-  width: 100%; padding: 12px 16px; margin-bottom: 12px; font-size: 14px;
+  width: 100%; padding: 14px 18px; margin-bottom: 14px; font-size: 15px;
   background: var(--bg-input); border: 1px solid var(--border);
   border-radius: var(--radius-sm); color: var(--text); outline: none;
+  font-family: inherit; transition: border-color var(--transition);
 }
-.login-box input:focus { border-color: var(--accent); }
+.login-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.login-box input::placeholder { color: var(--text-dim); }
 .login-box .btn-login {
-  width: 100%; padding: 12px; background: var(--accent); color: #000;
+  width: 100%; padding: 14px; background: var(--accent); color: #000;
   border: none; border-radius: var(--radius-sm); font-size: 15px;
-  font-weight: 700; cursor: pointer; margin-top: 4px;
+  font-weight: 700; cursor: pointer; margin-top: 6px;
+  font-family: inherit; transition: all var(--transition);
 }
-.login-box .btn-login:hover { opacity: .85; }
-.login-box .btn-login:disabled { opacity: .4; }
-.login-error { color: var(--red); font-size: 13px; margin-top: 12px; }
+.login-box .btn-login:hover { opacity: .9; transform: translateY(-1px); box-shadow: var(--shadow-glow); }
+.login-box .btn-login:active { transform: translateY(0); }
+.login-box .btn-login:disabled { opacity: .4; transform: none; }
+.login-error { color: var(--red); font-size: 13px; margin-top: 14px; }
 
-/* ── Nav ── */
+/* ── Top Nav (Desktop) ── */
 nav {
   position: sticky; top: 0; z-index: 100;
-  background: rgba(10,10,15,0.85);
-  backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--border);
-  padding: 0 24px;
-  display: flex; align-items: center; height: 60px; gap: 8px;
+  background: rgba(10,10,15,0.8);
+  backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+  border-bottom: 1px solid rgba(42,42,61,.6);
+  padding: 0 28px;
+  display: flex; align-items: center; height: var(--nav-height); gap: 6px;
 }
 
 .logo {
-  font-size: 20px; font-weight: 700; color: var(--accent);
-  margin-right: 24px; white-space: nowrap;
+  font-size: 20px; font-weight: 800; color: var(--accent);
+  margin-right: 12px; white-space: nowrap; letter-spacing: -0.5px;
+  display: flex; align-items: center; gap: 10px;
 }
+.logo svg { width: 24px; height: 24px; flex-shrink: 0; }
 
 .nav-btn {
   background: none; border: none; color: var(--text-muted);
   padding: 8px 16px; border-radius: var(--radius-sm); cursor: pointer;
-  font-size: 14px; font-weight: 500; transition: all .2s;
+  font-size: 14px; font-weight: 500; transition: all var(--transition);
+  font-family: inherit; position: relative;
+  display: flex; align-items: center; gap: 8px;
 }
+.nav-btn .nav-icon { display: none; }
 .nav-btn:hover { color: var(--text); background: var(--bg-elevated); }
 .nav-btn.active { color: var(--accent); background: var(--accent-dim); }
 
 .nav-spacer { flex: 1; }
 
 .nav-user {
-  font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 10px;
 }
 .btn-logout {
   background: none; border: 1px solid var(--border); color: var(--text-muted);
-  padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12px;
+  padding: 6px 12px; border-radius: var(--radius-xs); cursor: pointer; font-size: 12px;
+  font-family: inherit; transition: all var(--transition);
 }
 .btn-logout:hover { border-color: var(--red); color: var(--red); }
 
 .downloads-btn {
   position: relative; background: var(--bg-elevated); border: 1px solid var(--border);
-  color: var(--text); padding: 8px 14px; border-radius: var(--radius-sm);
-  cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px;
+  color: var(--text); padding: 8px 16px; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 8px;
+  font-family: inherit; transition: all var(--transition);
 }
-.downloads-btn:hover { border-color: var(--accent); }
+.downloads-btn:hover { border-color: var(--accent); background: var(--accent-dim); }
 .badge {
   background: var(--accent); color: #000; font-size: 11px; font-weight: 700;
-  padding: 1px 6px; border-radius: 10px; min-width: 18px; text-align: center;
+  padding: 1px 7px; border-radius: 10px; min-width: 18px; text-align: center;
 }
 .badge:empty { display: none; }
 
 /* ── Main ── */
-main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+main { max-width: 1200px; margin: 0 auto; padding: 28px; }
+
+.page-title {
+  font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 24px;
+}
 
 /* ── Search ── */
 .search-container {
-  display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items: center;
+  display: flex; flex-direction: column; gap: 14px; margin-bottom: 28px;
+  position: sticky; top: var(--nav-height); z-index: 90;
+  background: var(--bg); padding-top: 8px; padding-bottom: 8px;
+}
+.search-row {
+  display: flex; gap: 12px; align-items: center;
+}
+.search-input-wrap {
+  flex: 1; position: relative;
+}
+.search-logo {
+  position: absolute; left: 16px; top: 50%; transform: translateY(-50%);
+  width: 22px; height: 22px; pointer-events: none; opacity: 0.7;
 }
 .search-input {
-  flex: 1; min-width: 200px; padding: 14px 20px; font-size: 16px;
-  background: var(--bg-input); border: 1px solid var(--border);
+  width: 100%; padding: 16px 48px 16px 50px; font-size: 16px;
+  background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius); color: var(--text); outline: none;
-  transition: border-color .2s;
+  font-family: inherit; transition: all var(--transition);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.2);
 }
-.search-input:focus { border-color: var(--accent); }
-.search-input::placeholder { color: var(--text-muted); }
+.search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim), inset 0 1px 3px rgba(0,0,0,.2); }
+.search-input::placeholder { color: var(--text-dim); }
+
+#searchClear {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: var(--text-muted); font-size: 20px;
+  cursor: pointer; padding: 4px 8px; display: none; transition: color var(--transition);
+}
+#searchClear:hover { color: var(--text); }
 
 .btn-mic {
-  width: 48px; height: 48px; border-radius: 50%;
-  background: var(--bg-elevated); border: 2px solid var(--border);
+  width: 52px; height: 52px; border-radius: 50%;
+  background: var(--bg-card); border: 2px solid var(--border);
   color: var(--text-muted); cursor: pointer; display: flex;
   align-items: center; justify-content: center; transition: all .3s;
   flex-shrink: 0;
 }
-.btn-mic:hover { border-color: var(--accent); color: var(--accent); }
+.btn-mic:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 .btn-mic.recording {
   border-color: var(--red); color: var(--red);
   animation: pulse 1.5s ease infinite;
-  box-shadow: 0 0 20px rgba(230, 64, 64, 0.3);
+  box-shadow: 0 0 24px rgba(239, 68, 68, 0.3);
 }
 .btn-mic.identifying { border-color: var(--accent); color: var(--accent); animation: pulse 1s ease infinite; }
 @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
 
 .mic-status {
-  font-size: 12px; color: var(--text-muted); margin-top: 4px;
-  text-align: center; min-height: 16px; width: 100%;
+  font-size: 12px; color: var(--text-muted);
+  text-align: center; width: 100%;
 }
+.mic-status:empty { display: none; }
 
 .type-toggle {
-  display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+  display: flex; gap: 6px; flex-wrap: wrap;
 }
 .type-btn {
-  background: var(--bg-input); border: none; color: var(--text-muted);
-  padding: 10px 18px; cursor: pointer; font-size: 14px; transition: all .2s;
+  background: var(--bg-card); border: 1px solid var(--border); color: var(--text-muted);
+  padding: 8px 18px; cursor: pointer; font-size: 13px; transition: all var(--transition);
+  font-family: inherit; font-weight: 500; border-radius: 20px;
 }
-.type-btn:not(:last-child) { border-right: 1px solid var(--border); }
-.type-btn.active { background: var(--accent); color: #000; font-weight: 600; }
+.type-btn:hover { border-color: var(--border-hover); color: var(--text); }
+.type-btn.active { background: var(--accent); color: #000; font-weight: 600; border-color: var(--accent); }
 
 /* ── Recognize Result ── */
 .recognize-result {
-  background: var(--bg-card); border: 2px solid var(--accent); border-radius: var(--radius);
+  background: var(--bg-card); border: 1px solid var(--accent); border-radius: var(--radius);
   padding: 20px; margin-bottom: 24px; display: none;
-  animation: badgeFadeIn .3s ease;
+  animation: slideUp .3s ease;
+  box-shadow: 0 0 20px rgba(162,230,64,.1);
 }
 .recognize-result .rr-header { display: flex; gap: 16px; align-items: center; }
 .recognize-result .rr-img { width: 64px; height: 64px; border-radius: var(--radius-sm); object-fit: cover; }
 .recognize-result .rr-info { flex: 1; min-width: 0; }
 .recognize-result .rr-title { font-size: 16px; font-weight: 700; }
 .recognize-result .rr-artist { font-size: 14px; color: var(--text-muted); margin-top: 2px; }
-.recognize-result .rr-label { font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+.recognize-result .rr-label { font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; font-weight: 600; }
 .recognize-result .rr-actions { display: flex; gap: 8px; margin-left: auto; }
 .recognize-result .rr-btn {
-  padding: 8px 16px; border-radius: var(--radius-sm); border: none;
-  font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 8px 16px; border-radius: 20px; border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: all var(--transition);
 }
 .rr-btn-download { background: var(--accent); color: #000; }
+.rr-btn-download:hover { box-shadow: var(--shadow-glow); }
 .rr-btn-search { background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border) !important; }
+.rr-btn-search:hover { border-color: var(--accent) !important; }
 .rr-btn-close { background: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border: none; padding: 4px 8px; }
 
 /* ── Grid ── */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 20px;
 }
 
 .card {
-  background: var(--bg-card); border-radius: var(--radius);
-  overflow: hidden; cursor: pointer; transition: transform .2s, box-shadow .2s;
+  background: var(--bg-card); border-radius: 16px;
+  overflow: hidden; cursor: pointer; transition: all .25s cubic-bezier(.4,0,.2,1);
   border: 1px solid transparent; position: relative;
 }
-.card:hover { transform: translateY(-4px); box-shadow: 0 8px 30px rgba(0,0,0,.4); border-color: var(--border); }
+.card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 12px 40px rgba(0,0,0,.5), 0 0 0 1px var(--border);
+  border-color: var(--border);
+}
+.card:active { transform: translateY(-2px); }
 
 .card-img {
   width: 100%; aspect-ratio: 1; object-fit: cover;
   background: var(--bg-elevated);
 }
 
-.card-body { padding: 12px; }
-.card-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; display: flex; justify-content: space-between; }
+.card-body { padding: 14px; }
+.card-title {
+  font-size: 14px; font-weight: 600; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; line-height: 1.3;
+}
+.card-sub {
+  font-size: 13px; color: var(--text-muted); margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card-meta {
+  font-size: 11px; color: var(--text-dim); margin-top: 8px;
+  display: flex; justify-content: space-between;
+}
 
 /* ── In Library Badge ── */
 .in-library-badge {
-  position: absolute; top: 8px; right: 8px;
+  position: absolute; top: 10px; right: 10px;
   background: var(--accent); color: #000;
   font-size: 10px; font-weight: 700; text-transform: uppercase;
-  padding: 3px 8px; border-radius: 6px;
+  padding: 4px 10px; border-radius: 20px;
   letter-spacing: 0.5px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  box-shadow: 0 2px 12px rgba(0,0,0,.5);
   z-index: 2;
   animation: badgeFadeIn .3s ease;
 }
 @keyframes badgeFadeIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
 
-.card.in-library { border-color: rgba(162, 230, 64, 0.3); }
+.card.in-library { border-color: rgba(162, 230, 64, 0.2); }
 
 /* ── Skeleton ── */
 .skeleton {
@@ -220,12 +304,12 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 }
 @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-.skeleton-card { height: 260px; }
+.skeleton-card { height: 280px; border-radius: 16px; }
 
 /* ── Modal ── */
 .modal-overlay {
   position: fixed; inset: 0; z-index: 200;
-  background: rgba(0,0,0,.7); backdrop-filter: blur(6px);
+  background: rgba(0,0,0,.75); backdrop-filter: blur(8px);
   display: flex; align-items: center; justify-content: center;
   opacity: 0; pointer-events: none; transition: opacity .25s;
 }
@@ -233,170 +317,340 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 
 .modal {
   background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: 16px; padding: 28px; width: 90%; max-width: 440px;
-  transform: scale(0.95); transition: transform .25s;
+  border-radius: 20px; padding: 32px; width: 90%; max-width: 440px;
+  transform: scale(0.95) translateY(10px); transition: transform .25s cubic-bezier(.4,0,.2,1);
+  box-shadow: 0 24px 80px rgba(0,0,0,.6);
 }
-.modal-overlay.open .modal { transform: scale(1); }
+.modal-overlay.open .modal { transform: scale(1) translateY(0); }
 
-.modal-header { display: flex; gap: 16px; margin-bottom: 20px; }
-.modal-img { width: 80px; height: 80px; border-radius: var(--radius-sm); object-fit: cover; }
+.modal-header { display: flex; gap: 18px; margin-bottom: 24px; align-items: center; }
+.modal-img {
+  width: 96px; height: 96px; border-radius: 12px; object-fit: cover;
+  box-shadow: 0 4px 20px rgba(0,0,0,.4);
+}
 .modal-info { flex: 1; min-width: 0; }
-.modal-title { font-size: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.modal-title { font-size: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.3px; }
 .modal-artist { font-size: 14px; color: var(--text-muted); margin-top: 4px; }
 
-.modal-section { margin-bottom: 16px; }
-.modal-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+.modal-section { margin-bottom: 20px; }
+.modal-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 10px; font-weight: 600; }
 
 .option-group { display: flex; gap: 8px; }
 .option-btn {
-  flex: 1; padding: 10px; text-align: center; background: var(--bg-input);
-  border: 2px solid var(--border); border-radius: var(--radius-sm);
-  color: var(--text); cursor: pointer; font-size: 13px; transition: all .2s;
+  flex: 1; padding: 12px 8px; text-align: center; background: var(--bg-input);
+  border: 2px solid var(--border); border-radius: 12px;
+  color: var(--text); cursor: pointer; font-size: 13px; transition: all var(--transition);
+  font-family: inherit; font-weight: 500;
 }
-.option-btn:hover { border-color: var(--text-muted); }
+.option-btn:hover { border-color: var(--border-hover); }
 .option-btn.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
-.option-btn small { display: block; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.option-btn small { display: block; font-size: 11px; color: var(--text-dim); margin-top: 3px; font-weight: 400; }
 
 .btn-download {
-  width: 100%; padding: 14px; background: var(--accent); color: #000;
-  border: none; border-radius: var(--radius-sm); font-size: 15px;
-  font-weight: 700; cursor: pointer; transition: opacity .2s;
+  width: 100%; padding: 15px; background: var(--accent); color: #000;
+  border: none; border-radius: 12px; font-size: 15px;
+  font-weight: 700; cursor: pointer; transition: all var(--transition);
+  font-family: inherit;
 }
-.btn-download:hover { opacity: .85; }
-.btn-download:disabled { opacity: .4; cursor: not-allowed; }
+.btn-download:hover { box-shadow: var(--shadow-glow); transform: translateY(-1px); }
+.btn-download:active { transform: translateY(0); }
+.btn-download:disabled { opacity: .4; cursor: not-allowed; transform: none; box-shadow: none; }
 
 .btn-close {
-  position: absolute; top: 12px; right: 16px; background: none; border: none;
+  position: absolute; top: 16px; right: 20px; background: none; border: none;
   color: var(--text-muted); font-size: 24px; cursor: pointer; line-height: 1;
+  transition: color var(--transition); width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+}
+.btn-close:hover { color: var(--text); background: rgba(255,255,255,.05); }
+
+#modalLibraryNotice {
+  background: var(--accent-dim); border: 1px solid rgba(162,230,64,0.2);
+  border-radius: 10px; padding: 12px 16px; margin-bottom: 20px;
+  font-size: 13px; color: var(--accent); font-weight: 500;
 }
 
 /* ── Downloads Panel ── */
 .downloads-panel {
-  position: fixed; right: 0; top: 60px; bottom: 0; width: 380px; z-index: 150;
-  background: var(--bg-card); border-left: 1px solid var(--border);
-  transform: translateX(100%); transition: transform .3s ease;
+  position: fixed; right: 0; top: 0; bottom: 0; width: 400px; z-index: 150;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  transform: translateX(100%); transition: transform .3s cubic-bezier(.4,0,.2,1);
   display: flex; flex-direction: column;
+  box-shadow: -8px 0 40px rgba(0,0,0,.4);
 }
 .downloads-panel.open { transform: translateX(0); }
 
 .panel-header {
-  padding: 16px 20px; border-bottom: 1px solid var(--border);
-  font-size: 16px; font-weight: 700; display: flex; justify-content: space-between; align-items: center;
+  padding: 20px 24px; border-bottom: 1px solid var(--border);
+  font-size: 18px; font-weight: 700; display: flex; justify-content: space-between; align-items: center;
+  letter-spacing: -0.3px;
 }
 .panel-close {
-  background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer;
+  background: none; border: none; color: var(--text-muted); font-size: 22px; cursor: pointer;
+  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; transition: all var(--transition);
 }
+.panel-close:hover { background: rgba(255,255,255,.05); color: var(--text); }
 
-.jobs-list { flex: 1; overflow-y: auto; padding: 12px; }
+.jobs-list { flex: 1; overflow-y: auto; padding: 16px; }
 
 .job-item {
-  padding: 12px; background: var(--bg-elevated); border-radius: var(--radius-sm);
-  margin-bottom: 8px; border: 1px solid var(--border);
+  padding: 16px; background: var(--bg-elevated); border-radius: 12px;
+  margin-bottom: 10px; border: 1px solid var(--border);
+  transition: border-color var(--transition);
 }
+.job-item:hover { border-color: var(--border-hover); }
 .job-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.job-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; display: flex; justify-content: space-between; }
-.job-progress-bar { height: 4px; background: var(--bg-input); border-radius: 2px; margin-top: 8px; overflow: hidden; }
-.job-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .5s; }
-.job-progress-text { font-size: 11px; color: var(--text-muted); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.job-status { font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.job-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; display: flex; justify-content: space-between; align-items: center; }
+.job-progress-bar { height: 4px; background: var(--bg-input); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+.job-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .5s; box-shadow: 0 0 8px var(--accent-glow); }
+.job-progress-text { font-size: 11px; color: var(--text-muted); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-status { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 5px; }
+.job-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .job-status.done { color: var(--accent); }
+.job-status.done::before { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
 .job-status.failed { color: var(--red); }
-.job-status.running { color: #40a0e6; }
-.job-status.queued, .job-status.cancelled { color: var(--text-muted); }
+.job-status.failed::before { background: var(--red); }
+.job-status.running { color: var(--blue); }
+.job-status.running::before { background: var(--blue); animation: pulse 1.5s ease infinite; }
+.job-status.queued { color: var(--text-muted); }
+.job-status.queued::before { background: var(--text-muted); }
+.job-status.cancelled { color: var(--text-dim); }
+.job-status.cancelled::before { background: var(--text-dim); }
 
 .job-cancel {
   background: none; border: none; color: var(--text-muted); cursor: pointer;
-  font-size: 11px; text-decoration: underline;
+  font-size: 11px; text-decoration: underline; font-family: inherit;
 }
 .job-cancel:hover { color: var(--red); }
 
 .job-retry {
   background: none; border: 1px solid var(--accent); color: var(--accent); cursor: pointer;
-  font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-left: 4px;
+  font-size: 11px; padding: 3px 10px; border-radius: 20px; margin-left: 4px;
+  font-family: inherit; transition: all var(--transition);
 }
 .job-retry:hover { background: var(--accent); color: #000; }
 
 /* ── Discover / Tags ── */
 .tag-cloud { display: flex; flex-wrap: wrap; gap: 10px; }
 .tag-chip {
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  color: var(--text); padding: 8px 16px; border-radius: 20px;
-  cursor: pointer; font-size: 14px; transition: all .2s;
+  background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text); padding: 10px 20px; border-radius: 24px;
+  cursor: pointer; font-size: 14px; transition: all var(--transition);
+  font-family: inherit; font-weight: 500;
 }
-.tag-chip:hover { border-color: var(--accent); color: var(--accent); }
-.tag-chip .tag-count { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
-.tag-detail-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.tag-chip:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-dim);
+  box-shadow: 0 0 16px rgba(162,230,64,.1);
+}
+.tag-chip .tag-count { font-size: 11px; color: var(--text-dim); margin-left: 8px; font-weight: 400; }
+.tag-detail-header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
 .tag-back-btn {
   background: none; border: 1px solid var(--border); color: var(--text);
-  padding: 6px 14px; border-radius: var(--radius); cursor: pointer; font-size: 13px;
+  padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 13px;
+  font-family: inherit; font-weight: 500; transition: all var(--transition);
 }
 .tag-back-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ── Settings ── */
-.settings-form { max-width: 500px; }
-.setting-group { margin-bottom: 20px; }
+.settings-form { max-width: 540px; }
+
+.setting-group {
+  margin-bottom: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 20px;
+}
 .setting-label {
-  display: block; font-size: 13px; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+  display: block; font-size: 11px; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;
+  font-weight: 600;
 }
 .setting-input, .setting-select {
-  width: 100%; padding: 10px 14px; background: var(--bg-input);
+  width: 100%; padding: 12px 16px; background: var(--bg-input);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
-  color: var(--text); font-size: 14px; outline: none; transition: border-color .2s;
+  color: var(--text); font-size: 14px; outline: none; transition: all var(--transition);
+  font-family: inherit;
 }
 .setting-select { appearance: none; cursor: pointer; }
-.setting-input:focus, .setting-select:focus { border-color: var(--accent); }
+.setting-input:focus, .setting-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.setting-input::placeholder { color: var(--text-dim); }
+
 .btn-save {
-  padding: 12px 32px; background: var(--accent); color: #000;
-  border: none; border-radius: var(--radius-sm); font-size: 14px;
-  font-weight: 700; cursor: pointer; transition: opacity .2s;
+  padding: 14px 36px; background: var(--accent); color: #000;
+  border: none; border-radius: 12px; font-size: 14px;
+  font-weight: 700; cursor: pointer; transition: all var(--transition);
+  font-family: inherit;
 }
-.btn-save:hover { opacity: .85; }
-.btn-save:disabled { opacity: .4; cursor: not-allowed; }
-.save-status { display: inline-block; margin-left: 12px; font-size: 13px; color: var(--accent); }
+.btn-save:hover { box-shadow: var(--shadow-glow); transform: translateY(-1px); }
+.btn-save:active { transform: translateY(0); }
+.btn-save:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.save-status { display: inline-block; margin-left: 12px; font-size: 13px; color: var(--accent); font-weight: 500; }
 
 /* ── User Management ── */
-.users-section { margin-top: 40px; max-width: 500px; }
-.users-section h3 { font-size: 16px; margin-bottom: 16px; }
+.users-section { margin-top: 40px; max-width: 540px; }
+.users-section h3 { font-size: 18px; margin-bottom: 16px; font-weight: 700; letter-spacing: -0.3px; }
 .user-row {
-  display: flex; align-items: center; gap: 12px; padding: 10px 14px;
-  background: var(--bg-input); border-radius: var(--radius-sm); margin-bottom: 8px;
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); margin-bottom: 8px;
 }
-.user-row .user-name { flex: 1; font-size: 14px; }
+.user-row .user-name { flex: 1; font-size: 14px; font-weight: 500; }
 .user-row .user-badge {
   font-size: 10px; text-transform: uppercase; color: var(--accent);
-  background: var(--accent-dim); padding: 2px 8px; border-radius: 4px; font-weight: 700;
+  background: var(--accent-dim); padding: 3px 10px; border-radius: 20px; font-weight: 700;
+  letter-spacing: 0.5px;
 }
 .user-row .btn-delete-user {
-  background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px;
+  background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 18px;
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; transition: all var(--transition);
 }
-.user-row .btn-delete-user:hover { color: var(--red); }
-.add-user-form { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.user-row .btn-delete-user:hover { color: var(--red); background: rgba(239,68,68,.1); }
+.add-user-form { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 .add-user-form input {
-  padding: 8px 12px; background: var(--bg-input); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); color: var(--text); font-size: 13px; outline: none; flex: 1; min-width: 120px;
+  padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font-size: 13px;
+  outline: none; flex: 1; min-width: 120px; font-family: inherit;
+  transition: border-color var(--transition);
 }
 .add-user-form input:focus { border-color: var(--accent); }
 .btn-add-user {
-  padding: 8px 16px; background: var(--accent); color: #000;
+  padding: 10px 20px; background: var(--accent); color: #000;
   border: none; border-radius: var(--radius-sm); font-size: 13px;
-  font-weight: 600; cursor: pointer;
+  font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: all var(--transition);
 }
+.btn-add-user:hover { box-shadow: var(--shadow-glow); }
+
+/* ── Playlist Detail ── */
+.playlist-hero {
+  display: flex; gap: 20px; align-items: center; margin-bottom: 24px;
+  padding: 24px; background: var(--bg-card); border-radius: 16px;
+  border: 1px solid var(--border);
+}
+.playlist-hero-img {
+  width: 100px; height: 100px; border-radius: 12px; object-fit: cover;
+  box-shadow: 0 4px 20px rgba(0,0,0,.4); flex-shrink: 0;
+}
+.playlist-hero-info { flex: 1; min-width: 0; }
+.playlist-hero-info h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+.playlist-hero-info p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+.playlist-hero-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; flex-shrink: 0; }
 
 /* ── Empty state ── */
 .empty-state {
   text-align: center; padding: 60px 20px; color: var(--text-muted);
 }
-.empty-state p { font-size: 16px; }
+.empty-state p { font-size: 15px; }
+
+/* ── Animations ── */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 /* ── Responsive ── */
 @media (max-width: 640px) {
-  main { padding: 16px; }
-  .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
-  .downloads-panel { width: 100%; }
-  nav { padding: 0 12px; }
-  .logo { margin-right: 12px; font-size: 17px; }
-  .nav-btn { padding: 6px 10px; font-size: 13px; }
+  :root { --nav-height: 52px; }
+
+  /* Top bar: logo only */
+  nav {
+    padding: 0 16px; height: var(--nav-height);
+    justify-content: space-between;
+  }
+  nav .logo { margin-right: 0; }
+  nav .nav-btn { display: none; }
+  nav .nav-spacer { display: none; }
+  nav .nav-user { display: none; }
+  nav .downloads-btn { display: none; }
+
+  /* Bottom nav bar */
+  .bottom-nav {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+    background: rgba(10,10,15,0.95);
+    backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+    border-top: 1px solid rgba(42,42,61,.6);
+    display: flex; align-items: center; justify-content: space-around;
+    height: var(--bottom-nav-height);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  .bottom-nav .bnav-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    background: none; border: none; color: var(--text-dim);
+    font-size: 10px; font-weight: 600; cursor: pointer; padding: 8px 12px;
+    border-radius: 12px; transition: all var(--transition);
+    font-family: inherit; letter-spacing: 0.3px; min-width: 56px;
+    position: relative;
+  }
+  .bottom-nav .bnav-btn svg { width: 22px; height: 22px; }
+  .bottom-nav .bnav-btn.active { color: var(--accent); }
+  .bottom-nav .bnav-btn .bnav-badge {
+    position: absolute; top: 2px; right: 6px;
+    background: var(--accent); color: #000; font-size: 9px; font-weight: 700;
+    padding: 1px 5px; border-radius: 8px; min-width: 14px; text-align: center;
+  }
+  .bottom-nav .bnav-btn .bnav-badge:empty { display: none; }
+
+  main {
+    padding: 16px 16px calc(var(--bottom-nav-height) + 16px);
+  }
+
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+  }
+  .skeleton-card { height: 220px; }
+
+  .card-body { padding: 10px; }
+  .card-title { font-size: 13px; }
+  .card-sub { font-size: 12px; }
+
+  /* Downloads panel: full screen on mobile */
+  .downloads-panel {
+    width: 100%; top: 0;
+    border-radius: 0; border-left: none;
+  }
+
+  /* Modal: bottom sheet on mobile */
+  .modal-overlay { align-items: flex-end; }
+  .modal {
+    width: 100%; max-width: 100%;
+    border-radius: 20px 20px 0 0;
+    padding: 28px 24px calc(28px + env(safe-area-inset-bottom, 0));
+    transform: translateY(100%);
+    max-height: 90vh; overflow-y: auto;
+  }
+  .modal-overlay.open .modal { transform: translateY(0); }
+
+  .modal-img { width: 72px; height: 72px; }
+
+  .page-title { font-size: 22px; }
+
+  .search-input { padding: 14px 44px 14px 46px; font-size: 15px; }
+  .btn-mic { width: 48px; height: 48px; }
+
+  /* Playlist hero stacks on mobile */
+  .playlist-hero {
+    flex-direction: column; align-items: flex-start; padding: 18px;
+  }
+  .playlist-hero-actions {
+    flex-direction: row; align-items: center; width: 100%;
+  }
+  .playlist-hero-actions .btn-download { flex: 1; }
+
+  /* Recognize result responsive */
+  .recognize-result .rr-header { flex-wrap: wrap; }
+  .recognize-result .rr-actions { width: 100%; margin-top: 12px; margin-left: 0; }
+}
+
+/* Hide bottom nav on desktop */
+@media (min-width: 641px) {
+  .bottom-nav { display: none; }
 }
 </style>
 </head>
@@ -405,7 +659,14 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 <!-- ── Login Screen ── -->
 <div class="login-screen" id="loginScreen">
   <div class="login-box">
-    <span class="logo">MusicSeeker</span>
+    <div class="logo-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 18V5l12-2v13"/>
+        <circle cx="6" cy="18" r="3" fill="var(--accent)" stroke="none"/>
+        <circle cx="18" cy="16" r="3" fill="var(--accent)" stroke="none"/>
+      </svg>
+    </div>
+    <div class="logo-text">MusicSeeker</div>
     <p>Sign in to continue</p>
     <input id="loginUser" type="text" placeholder="Username" autocomplete="username">
     <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password">
@@ -418,7 +679,13 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 <div id="appContainer" style="display:none;">
 
 <nav>
-  <div class="logo">MusicSeeker</div>
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 18V5l12-2v13"/>
+      <circle cx="6" cy="18" r="3"/>
+      <circle cx="18" cy="16" r="3"/>
+    </svg>
+  </div>
   <button class="nav-btn active" data-page="search">Search</button>
   <button class="nav-btn" data-page="discover">Discover</button>
   <button class="nav-btn" data-page="playlists">Playlists</button>
@@ -435,16 +702,44 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
   </div>
 </nav>
 
+<!-- ── Bottom Nav (mobile) ── -->
+<div class="bottom-nav" id="bottomNav">
+  <button class="bnav-btn active" data-page="search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    Search
+  </button>
+  <button class="bnav-btn" data-page="discover">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+    Discover
+  </button>
+  <button class="bnav-btn" data-page="playlists">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+    Playlists
+  </button>
+  <button class="bnav-btn" data-page="downloads" id="bnavDownloads">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    <span class="bnav-badge" id="jobsBadgeMobile"></span>
+    Downloads
+  </button>
+  <button class="bnav-btn" data-page="settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+    Settings
+  </button>
+</div>
+
 <!-- ── Search Page ── -->
 <main id="pageSearch">
   <div class="search-container">
-    <div style="position:relative; flex:1;">
-      <input class="search-input" id="searchInput" type="text" placeholder="Search for music..." style="width:100%; padding-right:36px;">
-      <button id="searchClear" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:none; color:var(--text-muted); font-size:18px; cursor:pointer; display:none; padding:4px 8px;" title="Clear">&times;</button>
+    <div class="search-row">
+      <div class="search-input-wrap">
+        <svg class="search-logo" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        <input class="search-input" id="searchInput" type="text" placeholder="Search for music...">
+        <button id="searchClear" title="Clear">&times;</button>
+      </div>
+      <button class="btn-mic" id="micBtn" title="Identify song with microphone">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      </button>
     </div>
-    <button class="btn-mic" id="micBtn" title="Identify song with microphone">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-    </button>
     <div class="mic-status" id="micStatus"></div>
     <div class="type-toggle">
       <button class="type-btn active" data-type="track">Tracks</button>
@@ -477,13 +772,13 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 <!-- ── Discover Page ── -->
 <main id="pageDiscover" style="display:none">
   <div id="tagCloudView">
-    <h2 style="margin-bottom:20px; font-size:22px;">Discover by Genre</h2>
+    <h2 class="page-title">Discover by Genre</h2>
     <div id="tagCloud" class="tag-cloud"></div>
   </div>
   <div id="tagDetailView" style="display:none;">
     <div class="tag-detail-header">
       <button class="tag-back-btn" id="backToTags">&larr; Back</button>
-      <h2 id="tagDetailName" style="font-size:20px;"></h2>
+      <h2 id="tagDetailName" style="font-size:20px; font-weight:700;"></h2>
     </div>
     <div style="display:flex; gap:12px; align-items:center; margin-bottom:20px; flex-wrap:wrap;">
       <div class="type-toggle">
@@ -491,7 +786,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
         <button class="type-btn" data-tagtype="album">Albums</button>
         <button class="type-btn" data-tagtype="artist">Artists</button>
       </div>
-      <input id="tagFilter" type="text" class="search-input" placeholder="Filter results..." style="flex:1; min-width:150px; max-width:300px; padding:8px 14px; font-size:14px;">
+      <input id="tagFilter" type="text" class="search-input" placeholder="Filter results..." style="flex:1; min-width:150px; max-width:300px; padding:10px 16px; font-size:14px;">
     </div>
     <div id="tagResults" class="grid"></div>
     <div id="tagLoadMore" style="text-align:center; padding:20px; display:none;">
@@ -502,20 +797,20 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 
 <!-- ── Playlists Page ── -->
 <main id="pagePlaylists" style="display:none">
-  <h2 style="margin-bottom:20px; font-size:22px;">My Spotify Playlists</h2>
+  <h2 class="page-title">My Spotify Playlists</h2>
   <div id="playlistsGrid" class="grid"></div>
   <div id="playlistDetail" style="display:none; margin-top:24px;">
-    <button id="backToPlaylists" class="nav-btn" style="margin-bottom:16px;">&larr; Back to Playlists</button>
-    <div style="display:flex; gap:16px; align-items:center; margin-bottom:20px;">
-      <img id="plDetailImg" style="width:80px; height:80px; border-radius:8px; object-fit:cover;">
-      <div>
-        <h2 id="plDetailName" style="font-size:20px;"></h2>
-        <p id="plDetailCount" style="color:var(--text-muted); font-size:14px; margin-top:4px;"></p>
+    <button id="backToPlaylists" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back to Playlists</button>
+    <div class="playlist-hero">
+      <img id="plDetailImg" class="playlist-hero-img" src="">
+      <div class="playlist-hero-info">
+        <h2 id="plDetailName"></h2>
+        <p id="plDetailCount"></p>
       </div>
-      <div style="margin-left:auto; display:flex; flex-direction:column; align-items:flex-end; gap:8px;">
-        <button class="btn-download" id="downloadPlaylist" style="width:auto; padding:10px 24px;">Download All</button>
-        <label style="font-size:12px; color:var(--text-muted); cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" id="createPlaylistCheck" checked style="width:14px; height:14px;">
+      <div class="playlist-hero-actions">
+        <button class="btn-download" id="downloadPlaylist" style="width:auto; padding:12px 28px;">Download All</button>
+        <label style="font-size: 12px; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; gap: 6px;">
+          <input type="checkbox" id="createPlaylistCheck" checked style="width: 14px; height: 14px; accent-color: var(--accent);">
           Create playlist in Navidrome
         </label>
       </div>
@@ -526,7 +821,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 
 <!-- ── Settings Page ── -->
 <main id="pageSettings" style="display:none">
-  <h2 style="margin-bottom:24px; font-size:22px;">Settings</h2>
+  <h2 class="page-title">Settings</h2>
   <div class="settings-form">
     <div class="setting-group">
       <label class="setting-label">Default Download Method</label>
@@ -579,7 +874,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
     <div class="add-user-form">
       <input id="newUsername" type="text" placeholder="Username">
       <input id="newPassword" type="password" placeholder="Password">
-      <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:var(--text-muted);"><input type="checkbox" id="newIsAdmin"> Admin</label>
+      <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:var(--text-muted);"><input type="checkbox" id="newIsAdmin" style="accent-color:var(--accent);"> Admin</label>
       <button class="btn-add-user" id="addUserBtn">Add User</button>
     </div>
   </div>
@@ -598,7 +893,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 24px; }
         <div class="modal-artist" id="modalArtist"></div>
       </div>
     </div>
-    <div id="modalLibraryNotice" style="display:none; background:var(--accent-dim); border:1px solid rgba(162,230,64,0.3); border-radius:8px; padding:10px 14px; margin-bottom:16px; font-size:13px; color:var(--accent);">
+    <div id="modalLibraryNotice" style="display:none;">
       Already in your library
     </div>
     <div class="modal-section">
@@ -639,7 +934,7 @@ const $ = (s, p) => (p || document).querySelector(s);
 const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
 
 // ── Version ──
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.8.0';
 let spotifySearch = true;
 let spotifyUser = true;
 
@@ -741,7 +1036,6 @@ async function initApp() {
     $('#usersSection').style.display = me.is_admin ? '' : 'none';
     // Show settings save only for admins (others can view)
     $('#saveSettings').style.display = me.is_admin ? '' : 'none';
-    // Navidrome fields visible to all (removed admin-only restriction)
 
     // Load defaults
     try {
@@ -751,9 +1045,14 @@ async function initApp() {
 
     // Grey out features when Spotify not configured
     const playlistsBtn = $('.nav-btn[data-page="playlists"]');
+    const playlistsBnavBtn = $('.bnav-btn[data-page="playlists"]');
     if (!spotifyUser) {
       playlistsBtn.style.opacity = '0.4';
       playlistsBtn.title = 'Spotify user token not configured';
+      if (playlistsBnavBtn) {
+        playlistsBnavBtn.style.opacity = '0.4';
+        playlistsBnavBtn.title = 'Spotify user token not configured';
+      }
     }
     if (!spotifySearch) {
       $('#searchInput').placeholder = 'Spotify API not configured...';
@@ -798,21 +1097,35 @@ let currentPlaylistTracks = [];
 let appSettings = { default_format: 'flac', default_method: 'yt-dlp', max_concurrent: 10 };
 
 // ── Navigation ──
+function switchPage(page) {
+  if (page === 'downloads') {
+    panelOpen ? closePanel() : openPanel();
+    return;
+  }
+  if (page === currentPage) return;
+  // Update desktop nav
+  $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
+  const deskBtn = $(`.nav-btn[data-page="${page}"]`);
+  if (deskBtn) deskBtn.classList.add('active');
+  // Update mobile nav
+  $$('.bnav-btn[data-page]').forEach(b => b.classList.remove('active'));
+  const mobBtn = $(`.bnav-btn[data-page="${page}"]`);
+  if (mobBtn) mobBtn.classList.add('active');
+  currentPage = page;
+  $('#pageSearch').style.display = page === 'search' ? '' : 'none';
+  $('#pageDiscover').style.display = page === 'discover' ? '' : 'none';
+  $('#pagePlaylists').style.display = page === 'playlists' ? '' : 'none';
+  $('#pageSettings').style.display = page === 'settings' ? '' : 'none';
+  if (page === 'discover') loadTags();
+  if (page === 'playlists') loadPlaylists();
+  if (page === 'settings') loadSettings();
+}
+
 $$('.nav-btn[data-page]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const page = btn.dataset.page;
-    if (page === currentPage) return;
-    $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentPage = page;
-    $('#pageSearch').style.display = page === 'search' ? '' : 'none';
-    $('#pageDiscover').style.display = page === 'discover' ? '' : 'none';
-    $('#pagePlaylists').style.display = page === 'playlists' ? '' : 'none';
-    $('#pageSettings').style.display = page === 'settings' ? '' : 'none';
-    if (page === 'discover') loadTags();
-    if (page === 'playlists') loadPlaylists();
-    if (page === 'settings') loadSettings();
-  });
+  btn.addEventListener('click', () => switchPage(btn.dataset.page));
+});
+$$('.bnav-btn[data-page]').forEach(btn => {
+  btn.addEventListener('click', () => switchPage(btn.dataset.page));
 });
 
 // ── Search ──
@@ -879,13 +1192,7 @@ async function doSearch(append) {
         card.addEventListener('click', () => {
           const item = JSON.parse(card.dataset.item);
           if (item.type === 'playlist' && item.id) {
-            $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
-            $('.nav-btn[data-page="playlists"]').classList.add('active');
-            currentPage = 'playlists';
-            $('#pageSearch').style.display = 'none';
-            $('#pageDiscover').style.display = 'none';
-            $('#pagePlaylists').style.display = '';
-            $('#pageSettings').style.display = 'none';
+            switchPage('playlists');
             loadPlaylistDetail(item.id, item.url);
           } else {
             openModal(item);
@@ -928,14 +1235,7 @@ function renderResults(items, container) {
     card.addEventListener('click', () => {
       const item = JSON.parse(card.dataset.item);
       if (item.type === 'playlist' && item.id) {
-        // Switch to Playlists page and load detail
-        $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
-        $('.nav-btn[data-page="playlists"]').classList.add('active');
-        currentPage = 'playlists';
-        $('#pageSearch').style.display = 'none';
-        $('#pageDiscover').style.display = 'none';
-        $('#pagePlaylists').style.display = '';
-        $('#pageSettings').style.display = 'none';
+        switchPage('playlists');
         loadPlaylistDetail(item.id, item.url);
       } else {
         openModal(item);
@@ -970,8 +1270,8 @@ async function checkLibrary(items, containerEl) {
 
 // ── Microphone Recognition ──
 let mediaRecorder = null;
-let micState = 'idle'; // idle | recording | identifying
-let micStream = null; // Global stream ref — must be cleaned up to unblock Firefox
+let micState = 'idle';
+let micStream = null;
 
 function micLog(msg) {
   $('#micStatus').textContent = msg;
@@ -1015,11 +1315,8 @@ $('#micBtn').addEventListener('click', async () => {
     return;
   }
 
-  // Clean up any previous stream
   stopMicStream();
 
-  // getUserMedia MUST be the first async call after user click — Firefox expires
-  // user activation if anything is awaited before it
   micLog('Requesting microphone...');
 
   try {
@@ -1035,7 +1332,6 @@ $('#micBtn').addEventListener('click', async () => {
 
     micLog('Mic active. Recording...');
 
-    // Pick a supported mime type — Firefox prefers audio/ogg;codecs=opus
     let mimeType = '';
     for (const type of ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm', 'audio/ogg']) {
       if (MediaRecorder.isTypeSupported(type)) { mimeType = type; break; }
@@ -1103,13 +1399,11 @@ $('#micBtn').addEventListener('click', async () => {
       }
     };
 
-    // Request data every second to ensure chunks are captured
     mediaRecorder.start(1000);
     micState = 'recording';
     $('#micBtn').classList.add('recording');
     $('#micBtn').title = 'Listening... Click to stop';
 
-    // Countdown timer
     let remaining = 12;
     micLog('Recording... ' + remaining + 's');
     micTimer = setInterval(() => {
@@ -1119,7 +1413,6 @@ $('#micBtn').addEventListener('click', async () => {
       }
     }, 1000);
 
-    // Auto-stop after 12 seconds
     setTimeout(() => {
       if (micState === 'recording' && mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
@@ -1140,7 +1433,6 @@ function showRecognizeResult(data) {
   $('#rrTitle').textContent = data.name || 'Unknown';
   $('#rrArtist').textContent = data.artist || '';
   $('#recognizeResult').style.display = '';
-  // Auto-search on Spotify and scroll into view
   $('#searchInput').value = `${data.artist || ''} ${data.name || ''}`.trim();
   doSearch();
   $('#recognizeResult').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1261,7 +1553,7 @@ function openModal(item) {
   dlBtn.textContent = 'Download';
   $('#downloadModal').classList.add('open');
 
-  // Last.fm items have no Spotify URL — resolve it (skip for playlists, they use playlist_tracks)
+  // Last.fm items have no Spotify URL — resolve it (skip for playlists)
   if (!item.url && item.type !== 'playlist') {
     dlBtn.disabled = true;
     dlBtn.textContent = 'Resolving...';
@@ -1269,7 +1561,7 @@ function openModal(item) {
       method: 'POST',
       body: { name: item.name, artist: item.artist || '', type: item.type || 'track' },
     }).then(resolved => {
-      if (!modalItem || modalItem.name !== item.name) return; // modal changed
+      if (!modalItem || modalItem.name !== item.name) return;
       modalItem.url = resolved.url;
       modalItem.id = resolved.id;
       if (resolved.image) $('#modalImg').src = resolved.image;
@@ -1341,6 +1633,8 @@ async function refreshJobs() {
     checkJobCompletions(jobs);
     const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
     $('#jobsBadge').textContent = active || '';
+    const mobileBadge = $('#jobsBadgeMobile');
+    if (mobileBadge) mobileBadge.textContent = active || '';
     if (!jobs.length) { $('#jobsList').innerHTML = '<div class="empty-state"><p>No downloads yet</p></div>'; return; }
     $('#jobsList').innerHTML = jobs.map(j => `
       <div class="job-item">
@@ -1458,7 +1752,6 @@ async function loadTagResults(tag, type, append) {
     if (!append) {
       renderResults(allTagResults, '#tagResults');
     } else {
-      // Append new cards
       const grid = $('#tagResults');
       const fragment = document.createElement('div');
       fragment.innerHTML = data.results.map(item => `
@@ -1605,13 +1898,7 @@ $('#addUserBtn').addEventListener('click', async () => {
 document.addEventListener('keydown', e => {
   if (e.key === '/' && !$('#loginScreen').style.display !== 'none' && document.activeElement.tagName !== 'INPUT') {
     e.preventDefault();
-    $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
-    $('.nav-btn[data-page="search"]').classList.add('active');
-    currentPage = 'search';
-    $('#pageSearch').style.display = '';
-    $('#pageDiscover').style.display = 'none';
-    $('#pagePlaylists').style.display = 'none';
-    $('#pageSettings').style.display = 'none';
+    switchPage('search');
     $('#searchInput').focus();
     requestNotificationPermission();
   }
@@ -1621,6 +1908,17 @@ document.addEventListener('keydown', e => {
 // ── Helpers ──
 function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 function formatDuration(ms) { const m = Math.floor(ms / 60000); const s = Math.floor((ms % 60000) / 1000); return `${m}:${s.toString().padStart(2, '0')}`; }
+
+// ── Virtual keyboard: keep bottom nav visible ──
+if (window.visualViewport) {
+  const bn = $('#bottomNav');
+  function adjustBottomNav() {
+    const offset = window.innerHeight - visualViewport.height - visualViewport.offsetTop;
+    if (bn) bn.style.transform = offset > 50 ? `translateY(-${offset}px)` : '';
+  }
+  visualViewport.addEventListener('resize', adjustBottomNav);
+  visualViewport.addEventListener('scroll', adjustBottomNav);
+}
 </script>
 </body>
 </html>

@@ -22,13 +22,13 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 - **Download Management** — Real-time progress tracking, retry failed downloads, cancel running downloads
 - **Browser Notifications** — Get notified when downloads complete (even in background tabs)
 - **User Management** — JWT authentication with admin/user roles
-- **Dark UI** — Clean, responsive dark theme with lime green accent
+- **Modern UI** — Spotify-inspired dark theme with lime green accent, Inter font, glassmorphism nav, bottom tab bar on mobile, bottom-sheet modals, and responsive card grid
 
 ## Screenshots
 
-| Login | Search | Discover | Download Modal | Settings |
-|-------|--------|----------|---------------|----------|
-| ![Login](screenshots/login.png) | ![Search](screenshots/search-results.png) | ![Discover](screenshots/discover.png) | ![Modal](screenshots/download-modal.png) | ![Settings](screenshots/settings.png) |
+| Login | Search | Download Modal | Settings | Mobile |
+|-------|--------|---------------|----------|--------|
+| ![Login](screenshots/login.png) | ![Search](screenshots/search-results.png) | ![Modal](screenshots/download-modal.png) | ![Settings](screenshots/settings.png) | ![Mobile](screenshots/mobile.png) |
 
 ## Requirements
 
