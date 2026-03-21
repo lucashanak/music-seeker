@@ -1,13 +1,15 @@
-"""Unified music search with multiple providers: Deezer, YouTube Music, Spotify."""
+"""Unified music search with multiple providers: Deezer, YouTube Music, Spotify, Apple/iTunes."""
 
 import asyncio
 import re
 import logging
+import xml.etree.ElementTree as ET
 import httpx
 
 logger = logging.getLogger(__name__)
 
 DEEZER_BASE = "https://api.deezer.com"
+ITUNES_BASE = "https://itunes.apple.com"
 
 # Lazy-init ytmusicapi
 _ytmusic = None
@@ -185,20 +187,252 @@ async def ytmusic_search(query: str, search_type: str = "track", limit: int = 20
     return await asyncio.to_thread(_ytmusic_search_sync, query, search_type, limit)
 
 
+# ── iTunes / Apple Music ──
+
+def _itunes_artwork(url: str, size: int = 600) -> str:
+    """Scale iTunes artwork URL to desired size."""
+    if not url:
+        return ""
+    return re.sub(r'/\d+x\d+bb\.', f'/{size}x{size}bb.', url)
+
+
+async def itunes_search(query: str, search_type: str = "track", limit: int = 20) -> list[dict]:
+    entity_map = {
+        "track": "song", "album": "album", "artist": "musicArtist",
+        "show": "podcast", "episode": "podcastEpisode",
+    }
+    entity = entity_map.get(search_type)
+    if not entity:
+        return []
+
+    media = "podcast" if search_type in ("show", "episode") else "music"
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{ITUNES_BASE}/search", params={
+            "term": query, "media": media, "entity": entity, "limit": limit,
+        })
+        resp.raise_for_status()
+        data = resp.json()
+
+    results = []
+    for item in data.get("results", []):
+        if search_type == "track":
+            results.append({
+                "id": str(item.get("trackId", "")),
+                "name": item.get("trackName", ""),
+                "artist": item.get("artistName", ""),
+                "album": item.get("collectionName", ""),
+                "year": (item.get("releaseDate", "") or "")[:4],
+                "image": _itunes_artwork(item.get("artworkUrl100", "")),
+                "url": item.get("trackViewUrl", ""),
+                "duration_ms": item.get("trackTimeMillis", 0),
+                "type": "track",
+            })
+        elif search_type == "album":
+            results.append({
+                "id": str(item.get("collectionId", "")),
+                "name": item.get("collectionName", ""),
+                "artist": item.get("artistName", ""),
+                "year": (item.get("releaseDate", "") or "")[:4],
+                "image": _itunes_artwork(item.get("artworkUrl100", "")),
+                "url": item.get("collectionViewUrl", ""),
+                "total_tracks": item.get("trackCount", 0),
+                "type": "album",
+            })
+        elif search_type == "artist":
+            results.append({
+                "id": str(item.get("artistId", "")),
+                "name": item.get("artistName", ""),
+                "artist": item.get("artistName", ""),
+                "image": "",
+                "url": item.get("artistLinkUrl", ""),
+                "type": "artist",
+            })
+        elif search_type == "show":
+            results.append({
+                "id": str(item.get("collectionId", "")),
+                "name": item.get("collectionName", ""),
+                "artist": item.get("artistName", ""),
+                "image": _itunes_artwork(item.get("artworkUrl100", "")),
+                "url": item.get("collectionViewUrl", ""),
+                "total_tracks": item.get("trackCount", 0),
+                "type": "show",
+                "description": (item.get("description", "") or "")[:200],
+                "feed_url": item.get("feedUrl", ""),
+            })
+        elif search_type == "episode":
+            results.append({
+                "id": str(item.get("trackId", "")),
+                "name": item.get("trackName", ""),
+                "artist": item.get("collectionName", ""),
+                "image": _itunes_artwork(item.get("artworkUrl100", "")),
+                "url": item.get("trackViewUrl", ""),
+                "duration_ms": item.get("trackTimeMillis", 0),
+                "release_date": (item.get("releaseDate", "") or "")[:10],
+                "type": "episode",
+                "show_id": str(item.get("collectionId", "")),
+                "description": (item.get("description", "") or "")[:200],
+            })
+    return results
+
+
+async def itunes_get_show_episodes(show_id: str) -> dict:
+    """Get show info and episode list via iTunes lookup + RSS feed."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{ITUNES_BASE}/lookup", params={"id": show_id, "entity": "podcast"})
+        resp.raise_for_status()
+        data = resp.json()
+
+    results = data.get("results", [])
+    if not results:
+        raise RuntimeError(f"Show {show_id} not found")
+
+    show = results[0]
+    show_name = show.get("collectionName", "")
+    show_image = _itunes_artwork(show.get("artworkUrl100", ""))
+    publisher = show.get("artistName", "")
+    feed_url = show.get("feedUrl", "")
+
+    if not feed_url:
+        return {"name": show_name, "image": show_image, "publisher": publisher, "episodes": [], "feed_url": ""}
+
+    episodes = await parse_podcast_rss(feed_url, show_name, show_image)
+
+    return {
+        "name": show_name,
+        "image": show_image,
+        "publisher": publisher,
+        "episodes": episodes,
+        "feed_url": feed_url,
+    }
+
+
+async def parse_podcast_rss(feed_url: str, show_name: str = "", show_image: str = "") -> list[dict]:
+    """Parse podcast RSS feed and return episodes in our format."""
+    headers = {"User-Agent": "MusicSeeker/1.0 (Podcast RSS Reader)"}
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers=headers) as client:
+        resp = await client.get(feed_url)
+        resp.raise_for_status()
+
+    # RSS feeds often contain HTML entities that XML parser can't handle
+    text = resp.text
+    # Replace common undefined HTML entities
+    text = re.sub(r'&(?!amp;|lt;|gt;|apos;|quot;|#\d+;|#x[0-9a-fA-F]+;)(\w+);', r'&amp;\1;', text)
+
+    root = ET.fromstring(text)
+    channel = root.find("channel")
+    if channel is None:
+        return []
+
+    itunes_ns = "http://www.itunes.com/dtds/podcast-1.0.dtd"
+
+    if not show_name:
+        show_name = channel.findtext("title") or ""
+    if not show_image:
+        ch_img = channel.find(f"{{{itunes_ns}}}image")
+        if ch_img is not None and ch_img.get("href"):
+            show_image = ch_img.get("href")
+
+    episodes = []
+    for item in channel.findall("item"):
+        title = (item.findtext("title") or "").strip()
+        if not title:
+            continue
+
+        ep_image = show_image
+        itunes_img = item.find(f"{{{itunes_ns}}}image")
+        if itunes_img is not None and itunes_img.get("href"):
+            ep_image = itunes_img.get("href")
+
+        duration_text = item.findtext(f"{{{itunes_ns}}}duration") or ""
+        duration_ms = _parse_duration(duration_text)
+
+        enclosure = item.find("enclosure")
+        url = enclosure.get("url", "") if enclosure is not None else ""
+        if not url:
+            url = item.findtext("link") or ""
+
+        pub_date = item.findtext("pubDate") or ""
+        description = item.findtext("description") or item.findtext(f"{{{itunes_ns}}}summary") or ""
+
+        episodes.append({
+            "id": title,
+            "name": title,
+            "artist": show_name,
+            "album": show_name,
+            "image": ep_image,
+            "url": url,
+            "duration_ms": duration_ms,
+            "release_date": pub_date,
+            "type": "episode",
+            "description": description[:200],
+        })
+
+    return episodes
+
+
+def _parse_duration(text: str) -> int:
+    """Parse iTunes duration (seconds or HH:MM:SS) to milliseconds."""
+    if not text:
+        return 0
+    text = text.strip()
+    if text.isdigit():
+        return int(text) * 1000
+    parts = text.split(":")
+    try:
+        if len(parts) == 3:
+            return (int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])) * 1000
+        elif len(parts) == 2:
+            return (int(parts[0]) * 60 + int(parts[1])) * 1000
+    except ValueError:
+        pass
+    return 0
+
+
 # ── Unified search ──
 
 async def search(query: str, search_type: str = "track", limit: int = 20, offset: int = 0,
                  provider: str = "deezer") -> list[dict]:
     """Search with the specified provider, falling back through the chain."""
 
-    # Podcasts: only Spotify supports show/episode search
+    # Podcasts: use iTunes (free) or Spotify depending on provider
     if search_type in ("show", "episode"):
-        import spotify
-        return await spotify.search(query, search_type, limit, offset)
+        if provider == "spotify":
+            import spotify
+            return await spotify.search(query, search_type, limit, offset)
+        # All other providers use iTunes for podcasts (free, no key)
+        try:
+            results = await itunes_search(query, search_type, limit)
+            if results:
+                return results
+        except Exception as e:
+            logger.warning(f"iTunes podcast search failed: {e}")
+        # Fallback to Spotify if available
+        try:
+            import spotify
+            if spotify.SPOTIFY_CLIENT_ID:
+                return await spotify.search(query, search_type, limit, offset)
+        except Exception as e:
+            logger.warning(f"Spotify podcast fallback failed: {e}")
+        return []
 
     if provider == "spotify":
         import spotify
         return await spotify.search(query, search_type, limit, offset)
+
+    if provider == "apple":
+        try:
+            results = await itunes_search(query, search_type, limit)
+            if results:
+                return results
+        except Exception as e:
+            logger.warning(f"iTunes search failed: {e}")
+        # Fallback to Deezer
+        try:
+            return await deezer_search(query, search_type, limit, offset)
+        except Exception as e:
+            logger.warning(f"Deezer fallback failed: {e}")
+        return []
 
     if provider == "deezer":
         try:

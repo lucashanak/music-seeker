@@ -37,6 +37,16 @@ async def startup():
     asyncio.create_task(_podcast_auto_sync())
 
 
+async def _fetch_show_episodes(sub: dict) -> list[dict]:
+    """Fetch episodes for a subscription via RSS feed or Spotify."""
+    if sub.get("feed_url"):
+        episodes = await search_providers.parse_podcast_rss(sub["feed_url"], sub["show_name"])
+        return episodes
+    # Fall back to Spotify
+    show_data = await spotify.get_show_episodes(sub["spotify_id"])
+    return show_data.get("episodes", [])
+
+
 async def _podcast_auto_sync():
     """Background task: sync subscribed podcasts every SYNC_INTERVAL seconds."""
     while True:
@@ -46,8 +56,7 @@ async def _podcast_auto_sync():
             continue
         for sub in subs:
             try:
-                show_data = await spotify.get_show_episodes(sub["spotify_id"])
-                episodes = show_data.get("episodes", [])
+                episodes = await _fetch_show_episodes(sub)
                 local = set(e.lower() for e in podcasts.get_local_episodes(sub["show_name"], username="system"))
                 missing = [ep for ep in episodes if ep["name"].lower().strip() not in local]
                 if missing:
@@ -155,8 +164,27 @@ async def get_playlist_tracks(playlist_id: str, user: dict = Depends(auth.get_cu
 
 @app.get("/api/spotify/show/{show_id}/episodes")
 async def get_show_episodes(show_id: str, user: dict = Depends(auth.get_current_user)):
+    provider = app_settings._settings.get("search_provider", "deezer")
+    if provider != "spotify":
+        # Use iTunes/RSS for non-Spotify providers
+        try:
+            data = await search_providers.itunes_get_show_episodes(show_id)
+            return data
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"iTunes show episodes failed: {e}")
+            # Only fall back to Spotify if credentials are available
+            if not spotify.SPOTIFY_CLIENT_ID:
+                raise HTTPException(500, f"Failed to load episodes: {e}")
     data = await spotify.get_show_episodes(show_id)
     return data
+
+
+@app.get("/api/podcasts/rss-episodes")
+async def get_rss_episodes(feed_url: str = Query(...), user: dict = Depends(auth.get_current_user)):
+    """Get episodes from an RSS feed URL directly."""
+    episodes = await search_providers.parse_podcast_rss(feed_url)
+    return {"episodes": episodes}
 
 
 # --- Discover (Last.fm) ---
@@ -494,11 +522,12 @@ class PodcastSubRequest(BaseModel):
     spotify_id: str
     image: str = ""
     max_episodes: int = 0
+    feed_url: str = ""
 
 
 @app.post("/api/podcasts/subs")
 async def subscribe_podcast(req: PodcastSubRequest, user: dict = Depends(auth.get_current_user)):
-    if not podcasts.subscribe(req.show_name, req.spotify_id, req.image, req.max_episodes):
+    if not podcasts.subscribe(req.show_name, req.spotify_id, req.image, req.max_episodes, req.feed_url):
         raise HTTPException(409, "Already subscribed")
     return {"status": "subscribed"}
 
@@ -530,8 +559,7 @@ async def sync_podcasts(user: dict = Depends(auth.get_current_user)):
     synced = 0
     for sub in subs:
         try:
-            show_data = await spotify.get_show_episodes(sub["spotify_id"])
-            episodes = show_data.get("episodes", [])
+            episodes = await _fetch_show_episodes(sub)
             uname = user["username"]
             local = set(e.lower() for e in podcasts.get_local_episodes(sub["show_name"], username=uname))
             missing = [ep for ep in episodes if ep["name"].lower().strip() not in local]

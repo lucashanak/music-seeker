@@ -9,7 +9,7 @@ DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 SUBS_FILE = os.path.join(DATA_DIR, "podcast_subs.json")
 
 _subs: list[dict] = []
-# Each sub: {"show_name": str, "spotify_id": str, "image": str, "max_episodes": 0 (0=unlimited), "added_at": float}
+# Each sub: {"show_name": str, "spotify_id": str, "image": str, "max_episodes": 0, "added_at": float, "feed_url": str}
 
 
 def _load():
@@ -35,16 +35,19 @@ def get_subs() -> list[dict]:
     return list(_subs)
 
 
-def subscribe(show_name: str, spotify_id: str, image: str = "", max_episodes: int = 0) -> bool:
+def subscribe(show_name: str, spotify_id: str, image: str = "", max_episodes: int = 0, feed_url: str = "") -> bool:
     if any(s["spotify_id"] == spotify_id for s in _subs):
         return False
-    _subs.append({
+    sub = {
         "show_name": show_name,
         "spotify_id": spotify_id,
         "image": image,
         "max_episodes": max_episodes,
         "added_at": time.time(),
-    })
+    }
+    if feed_url:
+        sub["feed_url"] = feed_url
+    _subs.append(sub)
     _save()
     return True
 
