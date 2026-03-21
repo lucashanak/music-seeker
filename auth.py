@@ -83,6 +83,19 @@ def _decode_token(token: str) -> dict | None:
         return None
 
 
+DEFAULT_PERMS = {
+    "allowed_formats": ["mp3", "flac"],
+    "allowed_methods": ["yt-dlp", "slskd", "lidarr"],
+}
+
+
+def _user_perms(user: dict) -> dict:
+    return {
+        "allowed_formats": user.get("allowed_formats", DEFAULT_PERMS["allowed_formats"]),
+        "allowed_methods": user.get("allowed_methods", DEFAULT_PERMS["allowed_methods"]),
+    }
+
+
 def init_admin(username: str, password: str):
     """Create admin user if no users exist."""
     users = _load_users()
@@ -90,6 +103,7 @@ def init_admin(username: str, password: str):
         users[username] = {
             "password": _hash_password(password),
             "is_admin": True,
+            **DEFAULT_PERMS,
         }
         _save_users(users)
 
@@ -104,9 +118,9 @@ def login(username: str, password: str) -> str | None:
 
 def get_current_user(request: Request) -> dict:
     """Extract and validate user from Authorization header."""
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        token = auth[7:]
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
     else:
         token = request.cookies.get("token", "")
 
@@ -117,7 +131,10 @@ def get_current_user(request: Request) -> dict:
     if not payload:
         raise HTTPException(401, "Invalid or expired token")
 
-    return {"username": payload["sub"], "is_admin": payload.get("admin", False)}
+    users = _load_users()
+    user_data = users.get(payload["sub"], {})
+    perms = _user_perms(user_data)
+    return {"username": payload["sub"], "is_admin": payload.get("admin", False), **perms}
 
 
 def require_admin(request: Request) -> dict:
@@ -130,19 +147,36 @@ def require_admin(request: Request) -> dict:
 def list_users() -> list[dict]:
     users = _load_users()
     return [
-        {"username": k, "is_admin": v.get("is_admin", False)}
+        {"username": k, "is_admin": v.get("is_admin", False), **_user_perms(v)}
         for k, v in users.items()
     ]
 
 
-def create_user(username: str, password: str, is_admin: bool = False) -> bool:
+def create_user(username: str, password: str, is_admin: bool = False,
+                allowed_formats: list[str] | None = None,
+                allowed_methods: list[str] | None = None) -> bool:
     users = _load_users()
     if username in users:
         return False
     users[username] = {
         "password": _hash_password(password),
         "is_admin": is_admin,
+        "allowed_formats": allowed_formats or DEFAULT_PERMS["allowed_formats"],
+        "allowed_methods": allowed_methods or DEFAULT_PERMS["allowed_methods"],
     }
+    _save_users(users)
+    return True
+
+
+def update_user_perms(username: str, allowed_formats: list[str] | None = None,
+                      allowed_methods: list[str] | None = None) -> bool:
+    users = _load_users()
+    if username not in users:
+        return False
+    if allowed_formats is not None:
+        users[username]["allowed_formats"] = allowed_formats
+    if allowed_methods is not None:
+        users[username]["allowed_methods"] = allowed_methods
     _save_users(users)
     return True
 

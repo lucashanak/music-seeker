@@ -101,13 +101,6 @@ nav {
   display: flex; align-items: center; height: var(--nav-height); gap: 6px;
 }
 
-.logo {
-  font-size: 20px; font-weight: 800; color: var(--accent);
-  margin-right: 12px; white-space: nowrap; letter-spacing: -0.5px;
-  display: flex; align-items: center; gap: 10px;
-}
-.logo svg { width: 24px; height: 24px; flex-shrink: 0; }
-
 .nav-btn {
   background: none; border: none; color: var(--text-muted);
   padding: 8px 16px; border-radius: var(--radius-sm); cursor: pointer;
@@ -458,13 +451,40 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
 /* ── Settings ── */
 .settings-form { max-width: 540px; }
 
-.setting-group {
-  margin-bottom: 20px;
+.setting-section {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 18px 20px;
+  margin-bottom: 12px;
+  overflow: hidden;
 }
+.setting-section-title {
+  padding: 16px 20px;
+  font-size: 15px; font-weight: 700; color: var(--text);
+  cursor: pointer; list-style: none;
+  display: flex; align-items: center; justify-content: space-between;
+  transition: color var(--transition);
+  user-select: none;
+}
+.setting-section-title::-webkit-details-marker { display: none; }
+.setting-section-title::after {
+  content: ''; width: 8px; height: 8px;
+  border-right: 2px solid var(--text-muted); border-bottom: 2px solid var(--text-muted);
+  transform: rotate(-45deg); transition: transform .25s ease;
+  flex-shrink: 0;
+}
+.setting-section[open] > .setting-section-title::after {
+  transform: rotate(45deg);
+}
+.setting-section-title:hover { color: var(--accent); }
+.setting-section-body {
+  padding: 0 20px 18px;
+}
+
+.setting-group {
+  margin-bottom: 16px;
+}
+.setting-group:last-child { margin-bottom: 0; }
 .setting-label {
   display: block; font-size: 11px; color: var(--text-dim);
   text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;
@@ -526,6 +546,47 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
   transition: all var(--transition);
 }
 .btn-add-user:hover { box-shadow: var(--shadow-glow); }
+.perm-section {
+  width: 100%; background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); overflow: hidden;
+}
+.perm-section-title {
+  padding: 10px 14px; font-size: 12px; font-weight: 600; color: var(--text-muted);
+  cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between;
+  user-select: none;
+}
+.perm-section-title::-webkit-details-marker { display: none; }
+.perm-section-title::after {
+  content: ''; width: 6px; height: 6px;
+  border-right: 1.5px solid var(--text-dim); border-bottom: 1.5px solid var(--text-dim);
+  transform: rotate(-45deg); transition: transform .2s;
+}
+.perm-section[open] > .perm-section-title::after { transform: rotate(45deg); }
+.perm-section-body {
+  padding: 0 14px 10px; display: flex; flex-direction: column; gap: 6px;
+}
+.perm-check {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 13px; color: var(--text);
+}
+.perm-check span { min-width: 64px; }
+.perm-check input { accent-color: var(--accent); }
+.user-row { flex-wrap: wrap; }
+.user-perms {
+  width: 100%; display: flex; gap: 6px; flex-wrap: wrap;
+  margin-top: 4px;
+}
+.user-perm-tag {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--text-muted); white-space: nowrap;
+}
+.user-perm-edit {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  cursor: pointer; font-size: 11px; padding: 2px 10px; border-radius: 10px;
+  font-family: inherit; transition: all var(--transition);
+}
+.user-perm-edit:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ── Playlist Detail ── */
 .playlist-hero {
@@ -558,16 +619,9 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
 @media (max-width: 640px) {
   :root { --nav-height: 52px; }
 
-  /* Top bar: logo only */
-  nav {
-    padding: 0 16px; height: var(--nav-height);
-    justify-content: space-between;
-  }
-  nav .logo { margin-right: 0; }
-  nav .nav-btn { display: none; }
-  nav .nav-spacer { display: none; }
-  nav .nav-user { display: none; }
-  nav .downloads-btn { display: none; }
+  /* Hide top nav on mobile — bottom nav handles navigation */
+  nav { display: none; }
+  :root { --nav-height: 0px; }
 
   /* Bottom nav bar */
   .bottom-nav {
@@ -679,16 +733,9 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
 <div id="appContainer" style="display:none;">
 
 <nav>
-  <div class="logo">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M9 18V5l12-2v13"/>
-      <circle cx="6" cy="18" r="3"/>
-      <circle cx="18" cy="16" r="3"/>
-    </svg>
-  </div>
   <button class="nav-btn active" data-page="search">Search</button>
   <button class="nav-btn" data-page="discover">Discover</button>
-  <button class="nav-btn" data-page="playlists">Playlists</button>
+  <button class="nav-btn" data-page="playlists">My Spotify</button>
   <button class="nav-btn" data-page="settings">Settings</button>
   <div class="nav-spacer"></div>
   <button class="downloads-btn" id="downloadsToggle">
@@ -714,7 +761,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
   </button>
   <button class="bnav-btn" data-page="playlists">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-    Playlists
+    Spotify
   </button>
   <button class="bnav-btn" data-page="downloads" id="bnavDownloads">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -823,61 +870,96 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
 <main id="pageSettings" style="display:none">
   <h2 class="page-title">Settings</h2>
   <div class="settings-form">
-    <div class="setting-group">
-      <label class="setting-label">Default Download Method</label>
-      <select class="setting-select" id="settingMethod">
-        <option value="yt-dlp">yt-dlp (YouTube, FLAC/MP3)</option>
-        <option value="slskd">Soulseek (P2P, lossless)</option>
-        <option value="lidarr">Lidarr (Torrent, monitors)</option>
-      </select>
-    </div>
-    <div class="setting-group">
-      <label class="setting-label">Default Format</label>
-      <select class="setting-select" id="settingFormat">
-        <option value="flac">FLAC</option>
-        <option value="mp3">MP3 320k</option>
-      </select>
-    </div>
-    <div class="setting-group">
-      <label class="setting-label">Max Concurrent Downloads</label>
-      <input class="setting-input" id="settingMaxConcurrent" type="number" min="1" max="20" value="10">
-    </div>
-    <div class="setting-group">
-      <label class="setting-label">slskd URL</label>
-      <input class="setting-input" id="settingSlskdUrl" type="text" placeholder="http://slskd:5030">
-    </div>
-    <div class="setting-group">
-      <label class="setting-label">slskd API Key</label>
-      <input class="setting-input" id="settingSlskdKey" type="password" placeholder="Enter API key...">
-    </div>
-    <div class="setting-group">
-      <label class="setting-label">Navidrome URL</label>
-      <input class="setting-input" id="settingNavidromeUrl" type="text" placeholder="http://navidrome:4533">
-    </div>
-    <div class="setting-group">
-      <label class="setting-label">Navidrome User</label>
-      <input class="setting-input" id="settingNavidromeUser" type="text" placeholder="lucas">
-    </div>
-    <div class="setting-group">
-      <label class="setting-label">Navidrome Password</label>
-      <input class="setting-input" id="settingNavidromePass" type="password" placeholder="Enter password...">
-    </div>
-    <div>
+    <details class="setting-section">
+      <summary class="setting-section-title">Downloads</summary>
+      <div class="setting-section-body">
+        <div class="setting-group">
+          <label class="setting-label">Default Download Method</label>
+          <select class="setting-select" id="settingMethod">
+            <option value="yt-dlp">yt-dlp (YouTube, FLAC/MP3)</option>
+            <option value="slskd">Soulseek (P2P, lossless)</option>
+            <option value="lidarr">Lidarr (Torrent, monitors)</option>
+          </select>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Default Format</label>
+          <select class="setting-select" id="settingFormat">
+            <option value="flac">FLAC</option>
+            <option value="mp3">MP3 320k</option>
+          </select>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Max Concurrent Downloads</label>
+          <input class="setting-input" id="settingMaxConcurrent" type="number" min="1" max="20" value="10">
+        </div>
+      </div>
+    </details>
+
+    <details class="setting-section">
+      <summary class="setting-section-title">Soulseek (slskd)</summary>
+      <div class="setting-section-body">
+        <div class="setting-group">
+          <label class="setting-label">slskd URL</label>
+          <input class="setting-input" id="settingSlskdUrl" type="text" placeholder="http://slskd:5030">
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">slskd API Key</label>
+          <input class="setting-input" id="settingSlskdKey" type="password" placeholder="Enter API key...">
+        </div>
+      </div>
+    </details>
+
+    <details class="setting-section">
+      <summary class="setting-section-title">Navidrome</summary>
+      <div class="setting-section-body">
+        <div class="setting-group">
+          <label class="setting-label">Navidrome URL</label>
+          <input class="setting-input" id="settingNavidromeUrl" type="text" placeholder="http://navidrome:4533">
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Navidrome User</label>
+          <input class="setting-input" id="settingNavidromeUser" type="text" placeholder="lucas">
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Navidrome Password</label>
+          <input class="setting-input" id="settingNavidromePass" type="password" placeholder="Enter password...">
+        </div>
+      </div>
+    </details>
+
+    <div style="margin-top: 8px;">
       <button class="btn-save" id="saveSettings">Save Settings</button>
       <span class="save-status" id="saveStatus"></span>
     </div>
   </div>
 
-  <div class="users-section" id="usersSection" style="display:none;">
-    <h3>User Management</h3>
-    <div id="usersList"></div>
-    <div class="add-user-form">
-      <input id="newUsername" type="text" placeholder="Username">
-      <input id="newPassword" type="password" placeholder="Password">
-      <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:var(--text-muted);"><input type="checkbox" id="newIsAdmin" style="accent-color:var(--accent);"> Admin</label>
-      <button class="btn-add-user" id="addUserBtn">Add User</button>
+  <details class="setting-section" id="usersSection" style="display:none;">
+    <summary class="setting-section-title">User Management</summary>
+    <div class="setting-section-body">
+      <div id="usersList"></div>
+      <div class="add-user-form">
+        <input id="newUsername" type="text" placeholder="Username">
+        <input id="newPassword" type="password" placeholder="Password">
+        <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:var(--text-muted);"><input type="checkbox" id="newIsAdmin" style="accent-color:var(--accent);"> Admin</label>
+        <details class="perm-section">
+          <summary class="perm-section-title">Formats</summary>
+          <div class="perm-section-body">
+            <label class="perm-check"><span>MP3</span> <input type="checkbox" id="newFmtMp3" checked></label>
+            <label class="perm-check"><span>FLAC</span> <input type="checkbox" id="newFmtFlac" checked></label>
+          </div>
+        </details>
+        <details class="perm-section">
+          <summary class="perm-section-title">Methods</summary>
+          <div class="perm-section-body">
+            <label class="perm-check" title="Stahuje audio z YouTube, metadata ze Spotify"><span>YouTube</span> <input type="checkbox" id="newMethYtdlp" checked></label>
+            <label class="perm-check" title="P2P stahování přes síť Soulseek, preferuje FLAC"><span>Soulseek</span> <input type="checkbox" id="newMethSlskd" checked></label>
+            <label class="perm-check" title="Torrent stahování přes Lidarr, monitoruje diskografie"><span>Torrent</span> <input type="checkbox" id="newMethLidarr" checked></label>
+          </div>
+        </details>
+        <button class="btn-add-user" id="addUserBtn">Add User</button>
+      </div>
     </div>
-  </div>
+  </details>
 </main>
 
 </div><!-- /appContainer -->
@@ -1097,12 +1179,13 @@ let currentPlaylistTracks = [];
 let appSettings = { default_format: 'flac', default_method: 'yt-dlp', max_concurrent: 10 };
 
 // ── Navigation ──
-function switchPage(page) {
+function switchPage(page, fromPopstate) {
   if (page === 'downloads') {
     panelOpen ? closePanel() : openPanel();
     return;
   }
   if (page === currentPage) return;
+  if (!fromPopstate) history.pushState({page}, '');
   // Update desktop nav
   $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
   const deskBtn = $(`.nav-btn[data-page="${page}"]`);
@@ -1170,7 +1253,7 @@ async function doSearch(append) {
     const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=${searchType}&limit=20&offset=${searchOffset}`);
     if (data.results.length < 20) searchHasMore = false;
     if (!append) {
-      renderResults(data.results, '#searchResults');
+      renderResults(data.results, '#searchResults', 'search');
     } else {
       const grid = $('#searchResults');
       const fragment = document.createElement('div');
@@ -1192,8 +1275,7 @@ async function doSearch(append) {
         card.addEventListener('click', () => {
           const item = JSON.parse(card.dataset.item);
           if (item.type === 'playlist' && item.id) {
-            switchPage('playlists');
-            loadPlaylistDetail(item.id, item.url);
+            loadPlaylistDetail(item.id, item.url, 'search');
           } else {
             openModal(item);
           }
@@ -1210,7 +1292,7 @@ async function doSearch(append) {
   $('#searchLoadMore').style.display = 'none';
 }
 
-function renderResults(items, container) {
+function renderResults(items, container, fromPage) {
   const el = $(container);
   if (!items.length) {
     el.innerHTML = '<div class="empty-state"><p>No results found</p></div>';
@@ -1235,8 +1317,7 @@ function renderResults(items, container) {
     card.addEventListener('click', () => {
       const item = JSON.parse(card.dataset.item);
       if (item.type === 'playlist' && item.id) {
-        switchPage('playlists');
-        loadPlaylistDetail(item.id, item.url);
+        loadPlaylistDetail(item.id, item.url, fromPage);
       } else {
         openModal(item);
       }
@@ -1495,11 +1576,22 @@ async function loadPlaylists() {
   }
 }
 
-async function loadPlaylistDetail(id, url) {
+let playlistDetailSource = null;
+async function loadPlaylistDetail(id, url, fromPage) {
   currentPlaylistId = id;
   currentPlaylistUrl = url;
+  playlistDetailSource = fromPage || null;
+  if (fromPage) {
+    // Show playlists page without pushing history — source page stays as back target
+    currentPage = 'playlists';
+    $('#pageSearch').style.display = 'none';
+    $('#pageDiscover').style.display = 'none';
+    $('#pagePlaylists').style.display = '';
+    $('#pageSettings').style.display = 'none';
+  }
   $('#playlistsGrid').style.display = 'none';
   $('#playlistDetail').style.display = '';
+  history.pushState({layer: 'playlistDetail'}, '');
   const tracksEl = $('#playlistTracks');
   tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
@@ -1523,9 +1615,18 @@ async function loadPlaylistDetail(id, url) {
 }
 
 $('#backToPlaylists').addEventListener('click', () => {
+  closePlaylistDetail();
+});
+function closePlaylistDetail(fromPopstate) {
   $('#playlistDetail').style.display = 'none';
   $('#playlistsGrid').style.display = '';
-});
+  const src = playlistDetailSource;
+  playlistDetailSource = null;
+  if (src) {
+    switchPage(src, true);
+  }
+  if (!fromPopstate) history.back();
+}
 
 $('#downloadPlaylist').addEventListener('click', () => {
   if (!currentPlaylistId) return;
@@ -1540,12 +1641,17 @@ $('#downloadPlaylist').addEventListener('click', () => {
 
 // ── Download Modal ──
 function openModal(item) {
+  history.pushState({layer: 'modal'}, '');
   modalItem = item;
   $('#modalImg').src = item.image || '';
   $('#modalTitle').textContent = item.name;
   $('#modalArtist').textContent = item.artist || '';
-  selectedMethod = appSettings.default_method || 'yt-dlp';
-  selectedFormat = appSettings.default_format || 'flac';
+  const allowedMethods = currentUser?.allowed_methods || ['yt-dlp','slskd','lidarr'];
+  const allowedFormats = currentUser?.allowed_formats || ['mp3','flac'];
+  const defMethod = appSettings.default_method || 'yt-dlp';
+  const defFormat = appSettings.default_format || 'flac';
+  selectedMethod = allowedMethods.includes(defMethod) ? defMethod : allowedMethods[0];
+  selectedFormat = allowedFormats.includes(defFormat) ? defFormat : allowedFormats[0];
   updateOptionGroups();
   $('#modalLibraryNotice').style.display = item.inLibrary ? '' : 'none';
   const dlBtn = $('#modalDownload');
@@ -1574,7 +1680,11 @@ function openModal(item) {
   }
 }
 
-function closeModal() { $('#downloadModal').classList.remove('open'); modalItem = null; }
+function closeModal(fromPopstate) {
+  if (!modalItem) return;
+  $('#downloadModal').classList.remove('open'); modalItem = null;
+  if (!fromPopstate) history.back();
+}
 
 $('#modalClose').addEventListener('click', closeModal);
 $('#downloadModal').addEventListener('click', e => { if (e.target === $('#downloadModal')) closeModal(); });
@@ -1587,8 +1697,16 @@ $$('#formatGroup .option-btn').forEach(btn => {
 });
 
 function updateOptionGroups() {
-  $$('#methodGroup .option-btn').forEach(b => b.classList.toggle('selected', b.dataset.value === selectedMethod));
-  $$('#formatGroup .option-btn').forEach(b => b.classList.toggle('selected', b.dataset.value === selectedFormat));
+  const allowedMethods = currentUser?.allowed_methods || ['yt-dlp','slskd','lidarr'];
+  const allowedFormats = currentUser?.allowed_formats || ['mp3','flac'];
+  $$('#methodGroup .option-btn').forEach(b => {
+    b.classList.toggle('selected', b.dataset.value === selectedMethod);
+    b.style.display = allowedMethods.includes(b.dataset.value) ? '' : 'none';
+  });
+  $$('#formatGroup .option-btn').forEach(b => {
+    b.classList.toggle('selected', b.dataset.value === selectedFormat);
+    b.style.display = allowedFormats.includes(b.dataset.value) ? '' : 'none';
+  });
   $('#formatSection').style.display = selectedMethod === 'yt-dlp' ? '' : 'none';
 }
 
@@ -1615,8 +1733,15 @@ $('#modalDownload').addEventListener('click', async () => {
 });
 
 // ── Downloads Panel ──
-function openPanel() { panelOpen = true; $('#downloadsPanel').classList.add('open'); }
-function closePanel() { panelOpen = false; $('#downloadsPanel').classList.remove('open'); }
+function openPanel() {
+  panelOpen = true; $('#downloadsPanel').classList.add('open');
+  history.pushState({layer: 'panel'}, '');
+}
+function closePanel(fromPopstate) {
+  if (!panelOpen) return;
+  panelOpen = false; $('#downloadsPanel').classList.remove('open');
+  if (!fromPopstate) history.back();
+}
 
 $('#downloadsToggle').addEventListener('click', () => panelOpen ? closePanel() : openPanel());
 $('#panelClose').addEventListener('click', closePanel);
@@ -1738,6 +1863,7 @@ async function loadTagResults(tag, type, append) {
     allTagResults = [];
     $('#tagCloudView').style.display = 'none';
     $('#tagDetailView').style.display = '';
+    history.pushState({layer: 'tagDetail'}, '');
     $('#tagDetailName').textContent = tag;
     $('#tagFilter').value = '';
     $$('[data-tagtype]').forEach(b => b.classList.toggle('active', b.dataset.tagtype === discoverTagType));
@@ -1750,7 +1876,7 @@ async function loadTagResults(tag, type, append) {
     if (data.results.length < 20) tagHasMore = false;
     allTagResults = allTagResults.concat(data.results);
     if (!append) {
-      renderResults(allTagResults, '#tagResults');
+      renderResults(allTagResults, '#tagResults', 'discover');
     } else {
       const grid = $('#tagResults');
       const fragment = document.createElement('div');
@@ -1805,10 +1931,14 @@ window.addEventListener('scroll', () => {
 });
 
 $('#backToTags').addEventListener('click', () => {
+  closeTagDetail();
+});
+function closeTagDetail(fromPopstate) {
   $('#tagCloudView').style.display = '';
   $('#tagDetailView').style.display = 'none';
   currentTag = null;
-});
+  if (!fromPopstate) history.back();
+}
 
 $$('[data-tagtype]').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -1864,14 +1994,71 @@ $('#saveSettings').addEventListener('click', async () => {
 async function loadUsers() {
   try {
     const data = await apiJson('/api/users');
-    $('#usersList').innerHTML = data.users.map(u => `
-      <div class="user-row">
+    $('#usersList').innerHTML = data.users.map(u => {
+      const fmts = (u.allowed_formats || ['mp3','flac']).map(f => `<span class="user-perm-tag">${esc(f)}</span>`).join('');
+      const methLabels = {'yt-dlp':'YouTube','slskd':'Soulseek','lidarr':'Torrent'};
+      const meths = (u.allowed_methods || ['yt-dlp','slskd','lidarr']).map(m => `<span class="user-perm-tag">${esc(methLabels[m]||m)}</span>`).join('');
+      return `<div class="user-row">
         <span class="user-name">${esc(u.username)}</span>
         ${u.is_admin ? '<span class="user-badge">Admin</span>' : ''}
+        <button class="user-perm-edit" onclick="editPerms('${u.username}')">Edit</button>
         ${u.username !== currentUser.username ? `<button class="btn-delete-user" onclick="deleteUser('${u.username}')">&times;</button>` : ''}
-      </div>
-    `).join('');
+        <div class="user-perms">${fmts}${meths}</div>
+      </div>`;
+    }).join('');
   } catch { }
+}
+
+async function editPerms(username) {
+  const data = await apiJson('/api/users');
+  const u = data.users.find(x => x.username === username);
+  if (!u) return;
+  const fmts = u.allowed_formats || ['mp3','flac'];
+  const meths = u.allowed_methods || ['yt-dlp','slskd','lidarr'];
+  const html = `<div style="display:flex;flex-direction:column;gap:12px;">
+    <div style="font-weight:700;font-size:15px;">Permissions for ${esc(username)}</div>
+    <details class="perm-section" open>
+      <summary class="perm-section-title">Formats</summary>
+      <div class="perm-section-body">
+        <label class="perm-check"><span>MP3</span> <input type="checkbox" id="ep_mp3" ${fmts.includes('mp3')?'checked':''}></label>
+        <label class="perm-check"><span>FLAC</span> <input type="checkbox" id="ep_flac" ${fmts.includes('flac')?'checked':''}></label>
+      </div>
+    </details>
+    <details class="perm-section" open>
+      <summary class="perm-section-title">Methods</summary>
+      <div class="perm-section-body">
+        <label class="perm-check" title="Stahuje audio z YouTube, metadata ze Spotify"><span>YouTube</span> <input type="checkbox" id="ep_ytdlp" ${meths.includes('yt-dlp')?'checked':''}></label>
+        <label class="perm-check" title="P2P stahování přes síť Soulseek, preferuje FLAC"><span>Soulseek</span> <input type="checkbox" id="ep_slskd" ${meths.includes('slskd')?'checked':''}></label>
+        <label class="perm-check" title="Torrent stahování přes Lidarr, monitoruje diskografie"><span>Torrent</span> <input type="checkbox" id="ep_lidarr" ${meths.includes('lidarr')?'checked':''}></label>
+      </div>
+    </details>
+  </div>`;
+  const dialog = document.createElement('div');
+  dialog.className = 'modal-overlay open';
+  dialog.innerHTML = `<div class="modal" style="max-width:340px;position:relative;">
+    <button class="btn-close" style="position:absolute;top:12px;right:12px;">&times;</button>
+    ${html}
+    <button class="btn-save" style="margin-top:16px;width:100%;" id="epSave">Save</button>
+  </div>`;
+  document.body.appendChild(dialog);
+  dialog.querySelector('.btn-close').onclick = () => dialog.remove();
+  dialog.addEventListener('click', e => { if (e.target === dialog) dialog.remove(); });
+  dialog.querySelector('#epSave').onclick = async () => {
+    const newFmts = [];
+    if (dialog.querySelector('#ep_mp3').checked) newFmts.push('mp3');
+    if (dialog.querySelector('#ep_flac').checked) newFmts.push('flac');
+    const newMeths = [];
+    if (dialog.querySelector('#ep_ytdlp').checked) newMeths.push('yt-dlp');
+    if (dialog.querySelector('#ep_slskd').checked) newMeths.push('slskd');
+    if (dialog.querySelector('#ep_lidarr').checked) newMeths.push('lidarr');
+    if (!newFmts.length) { alert('Select at least one format'); return; }
+    if (!newMeths.length) { alert('Select at least one method'); return; }
+    try {
+      await apiJson(`/api/users/${username}/perms`, { method: 'PUT', body: { allowed_formats: newFmts, allowed_methods: newMeths } });
+      dialog.remove();
+      loadUsers();
+    } catch (e) { alert('Failed: ' + e.message); }
+  };
 }
 
 async function deleteUser(username) {
@@ -1887,11 +2074,38 @@ $('#addUserBtn').addEventListener('click', async () => {
   const p = $('#newPassword').value;
   const admin = $('#newIsAdmin').checked;
   if (!u || !p) return;
+  const allowed_formats = [];
+  if ($('#newFmtMp3').checked) allowed_formats.push('mp3');
+  if ($('#newFmtFlac').checked) allowed_formats.push('flac');
+  const allowed_methods = [];
+  if ($('#newMethYtdlp').checked) allowed_methods.push('yt-dlp');
+  if ($('#newMethSlskd').checked) allowed_methods.push('slskd');
+  if ($('#newMethLidarr').checked) allowed_methods.push('lidarr');
+  if (!allowed_formats.length || !allowed_methods.length) { alert('Select at least one format and method'); return; }
   try {
-    await apiJson('/api/users', { method: 'POST', body: { username: u, password: p, is_admin: admin } });
+    await apiJson('/api/users', { method: 'POST', body: { username: u, password: p, is_admin: admin, allowed_formats, allowed_methods } });
     $('#newUsername').value = ''; $('#newPassword').value = ''; $('#newIsAdmin').checked = false;
+    $('#newFmtMp3').checked = true; $('#newFmtFlac').checked = true;
+    $('#newMethYtdlp').checked = true; $('#newMethSlskd').checked = true; $('#newMethLidarr').checked = true;
     loadUsers();
   } catch (e) { alert('Failed: ' + e.message); }
+});
+
+// ── Back button / Android gesture ──
+history.replaceState({page: 'search'}, '');
+window.addEventListener('popstate', e => {
+  const state = e.state;
+  // Close overlays first (highest priority)
+  if (modalItem) { closeModal(true); return; }
+  if (panelOpen) { closePanel(true); return; }
+  // Close any edit perms dialog
+  const epDialog = document.querySelector('.modal-overlay:not(#downloadModal)');
+  if (epDialog) { epDialog.remove(); return; }
+  // Sub-page navigation
+  if ($('#playlistDetail').style.display !== 'none') { closePlaylistDetail(true); return; }
+  if ($('#tagDetailView').style.display !== 'none') { closeTagDetail(true); return; }
+  // Page navigation
+  if (state && state.page) { switchPage(state.page, true); }
 });
 
 // ── Keyboard shortcuts ──

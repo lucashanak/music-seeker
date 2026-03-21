@@ -154,6 +154,10 @@ async def discover_resolve(req: ResolveRequest, user: dict = Depends(auth.get_cu
 
 @app.post("/api/download")
 async def start_download(req: DownloadRequest, user: dict = Depends(auth.get_current_user)):
+    if req.method not in user.get("allowed_methods", ["yt-dlp", "slskd", "lidarr"]):
+        raise HTTPException(403, f"Method '{req.method}' not allowed for your account")
+    if req.format not in user.get("allowed_formats", ["mp3", "flac"]):
+        raise HTTPException(403, f"Format '{req.format}' not allowed for your account")
     job = jobs.create_job(
         type_=req.type,
         title=req.title or req.url,
@@ -282,13 +286,28 @@ class CreateUserRequest(BaseModel):
     username: str
     password: str
     is_admin: bool = False
+    allowed_formats: list[str] = ["mp3", "flac"]
+    allowed_methods: list[str] = ["yt-dlp", "slskd", "lidarr"]
 
 
 @app.post("/api/users")
 async def create_user(req: CreateUserRequest, user: dict = Depends(auth.require_admin)):
-    if not auth.create_user(req.username, req.password, req.is_admin):
+    if not auth.create_user(req.username, req.password, req.is_admin,
+                            req.allowed_formats, req.allowed_methods):
         raise HTTPException(409, "User already exists")
     return {"status": "created", "username": req.username}
+
+
+class UpdateUserPermsRequest(BaseModel):
+    allowed_formats: list[str] | None = None
+    allowed_methods: list[str] | None = None
+
+
+@app.put("/api/users/{username}/perms")
+async def update_user_perms(username: str, req: UpdateUserPermsRequest, user: dict = Depends(auth.require_admin)):
+    if not auth.update_user_perms(username, req.allowed_formats, req.allowed_methods):
+        raise HTTPException(404, "User not found")
+    return {"status": "updated"}
 
 
 @app.delete("/api/users/{username}")

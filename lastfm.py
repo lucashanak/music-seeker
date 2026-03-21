@@ -1,18 +1,37 @@
 import os
+import time
 import httpx
 
 LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY", "")
 LASTFM_URL = "http://ws.audioscrobbler.com/2.0/"
 
+# In-memory cache: key -> (timestamp, data)
+_cache: dict[str, tuple[float, object]] = {}
+_CACHE_TTL = 600  # 10 minutes
+
+
+def _cache_key(method: str, params: dict | None) -> str:
+    parts = [method]
+    if params:
+        parts.extend(f"{k}={v}" for k, v in sorted(params.items()))
+    return "|".join(parts)
+
 
 async def _get(method: str, params: dict = None) -> dict:
+    key = _cache_key(method, params)
+    now = time.time()
+    cached = _cache.get(key)
+    if cached and now - cached[0] < _CACHE_TTL:
+        return cached[1]
     p = {"method": method, "api_key": LASTFM_API_KEY, "format": "json"}
     if params:
         p.update(params)
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(LASTFM_URL, params=p)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+    _cache[key] = (now, data)
+    return data
 
 
 def _pick_image(images: list) -> str:
