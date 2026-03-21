@@ -22,6 +22,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 - **Library Detection** — Shows "In Library" badge for tracks already in your Navidrome collection (fuzzy matching handles remasters, feat. tags, etc.)
 - **Per-User Download Folders** — Each user's downloads go to `/music/{username}/`, with disk usage tracking and per-user cleanup in Settings
 - **Download Management** — Real-time progress tracking, retry failed downloads, cancel running downloads
+- **In-Browser Player** — Preview tracks before downloading with a built-in streaming player. Streams from Navidrome (library-first) or YouTube via yt-dlp/ffmpeg proxy. Per-user persistent queue with position syncs across devices. Play/pause/next/prev controls, volume, Media Session API for lock screen controls. Download current track directly from the player bar
 - **Browser Notifications** — Get notified when downloads complete (even in background tabs)
 - **User Management** — JWT authentication with admin/user roles, per-user format/method permissions
 - **Modern UI** — Spotify-inspired dark theme with lime green accent, Inter font, glassmorphism nav, bottom tab bar on mobile, bottom-sheet modals, and responsive card grid
@@ -250,6 +251,7 @@ services:
 │ library.py  │ Subsonic API   │
 │ recognize.py│ shazamio+acoustid│
 │ podcasts.py │ Subscriptions   │
+│ player.py   │ Streaming+Queue │
 │ auth.py     │ HMAC tokens    │
 │ jobs.py     │ Job queue      │
 └──────────────────────────────┘
@@ -293,6 +295,11 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `DELETE` | `/api/podcasts/subs/:id` | Unsubscribe from a podcast |
 | `PUT` | `/api/podcasts/subs/:id` | Update subscription settings |
 | `POST` | `/api/podcasts/sync` | Manually sync all subscriptions |
+| `GET` | `/api/player/stream?name=..&artist=..` | Stream audio (Navidrome or YouTube proxy) |
+| `GET` | `/api/player/queue` | Get user's player queue |
+| `PUT` | `/api/player/queue` | Save player queue state |
+| `POST` | `/api/player/queue/add` | Add tracks to queue |
+| `DELETE` | `/api/player/queue` | Clear player queue |
 | `GET` | `/api/settings` | Get app settings |
 | `PUT` | `/api/settings` | Update settings (admin only) |
 | `GET` | `/api/users` | List users (admin only) |
