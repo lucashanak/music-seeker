@@ -69,21 +69,23 @@ def update_sub(spotify_id: str, max_episodes: int | None = None) -> bool:
     return False
 
 
-def get_local_episodes(show_name: str) -> list[str]:
+def get_local_episodes(show_name: str, username: str = "") -> list[str]:
     """Get list of downloaded episode filenames (without extension) for a show."""
     music_dir = os.environ.get("MUSIC_DIR", "/music")
-    show_dir = os.path.join(music_dir, "Podcasts", show_name)
+    base = os.path.join(music_dir, username) if username else music_dir
+    show_dir = os.path.join(base, "Podcasts", show_name)
     if not os.path.isdir(show_dir):
         return []
     return [os.path.splitext(f)[0] for f in os.listdir(show_dir) if os.path.isfile(os.path.join(show_dir, f))]
 
 
-def cleanup_old_episodes(show_name: str, max_episodes: int) -> int:
+def cleanup_old_episodes(show_name: str, max_episodes: int, username: str = "") -> int:
     """Delete oldest episodes beyond the limit. Returns number deleted."""
     if max_episodes <= 0:
         return 0
     music_dir = os.environ.get("MUSIC_DIR", "/music")
-    show_dir = os.path.join(music_dir, "Podcasts", show_name)
+    base = os.path.join(music_dir, username) if username else music_dir
+    show_dir = os.path.join(base, "Podcasts", show_name)
     if not os.path.isdir(show_dir):
         return 0
     files = []

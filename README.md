@@ -17,18 +17,24 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 - **Song Recognition** — Identify songs via your microphone using Shazam, with AcoustID fingerprinting as fallback, then download them instantly
 - **Spotify Playlists** — Browse your own or search public Spotify playlists and download individual tracks or full playlists with optional Navidrome playlist creation
 - **Liked Songs** — Access and download your Spotify Liked Songs as a playlist, with Navidrome playlist sync
+- **Podcasts** — Search and download podcast episodes from Spotify, manage downloaded shows, subscribe for auto-sync of new episodes
 - **Smart Downloads** — Checks your Navidrome library before downloading and skips tracks you already have
 - **Library Detection** — Shows "In Library" badge for tracks already in your Navidrome collection (fuzzy matching handles remasters, feat. tags, etc.)
+- **Per-User Download Folders** — Each user's downloads go to `/music/{username}/`, with disk usage tracking and per-user cleanup in Settings
 - **Download Management** — Real-time progress tracking, retry failed downloads, cancel running downloads
 - **Browser Notifications** — Get notified when downloads complete (even in background tabs)
-- **User Management** — JWT authentication with admin/user roles
+- **User Management** — JWT authentication with admin/user roles, per-user format/method permissions
 - **Modern UI** — Spotify-inspired dark theme with lime green accent, Inter font, glassmorphism nav, bottom tab bar on mobile, bottom-sheet modals, and responsive card grid
 
 ## Screenshots
 
-| Login | Search | Download Modal | Settings | Mobile |
-|-------|--------|---------------|----------|--------|
-| ![Login](screenshots/login.png) | ![Search](screenshots/search-results.png) | ![Modal](screenshots/download-modal.png) | ![Settings](screenshots/settings.png) | ![Mobile](screenshots/mobile.png) |
+| Login | Search | Download Modal |
+|-------|--------|---------------|
+| ![Login](screenshots/login.png) | ![Search](screenshots/search-results.png) | ![Modal](screenshots/download-modal.png) |
+
+| Discover | Podcasts | Settings (Disk Usage) | Mobile |
+|----------|----------|-----------------------|--------|
+| ![Discover](screenshots/discover.png) | ![Podcasts](screenshots/podcasts.png) | ![Settings](screenshots/settings.png) | ![Mobile](screenshots/mobile.png) |
 
 ## Requirements
 
@@ -237,6 +243,7 @@ services:
 │ downloader.py │ yt-dlp / slskd / Lidarr│
 │ library.py  │ Subsonic API   │
 │ recognize.py│ shazamio+acoustid│
+│ podcasts.py │ Subscriptions   │
 │ auth.py     │ HMAC tokens    │
 │ jobs.py     │ Job queue      │
 └──────────────────────────────┘
@@ -271,12 +278,23 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `GET` | `/api/discover/tags` | Get popular Last.fm genre tags |
 | `GET` | `/api/discover/tag/:tag?type=track` | Get top items for a tag |
 | `POST` | `/api/discover/resolve` | Resolve Last.fm item to Spotify URL |
+| `GET` | `/api/podcasts` | List downloaded podcast shows |
+| `GET` | `/api/podcasts/:show` | List episodes for a show |
+| `DELETE` | `/api/podcasts/:show` | Delete entire show |
+| `DELETE` | `/api/podcasts/:show/:episode` | Delete single episode |
+| `GET` | `/api/podcasts/subs` | List podcast subscriptions |
+| `POST` | `/api/podcasts/subs` | Subscribe to a podcast |
+| `DELETE` | `/api/podcasts/subs/:id` | Unsubscribe from a podcast |
+| `PUT` | `/api/podcasts/subs/:id` | Update subscription settings |
+| `POST` | `/api/podcasts/sync` | Manually sync all subscriptions |
 | `GET` | `/api/settings` | Get app settings |
 | `PUT` | `/api/settings` | Update settings (admin only) |
 | `GET` | `/api/users` | List users (admin only) |
 | `POST` | `/api/users` | Create user (admin only) |
 | `DELETE` | `/api/users/:username` | Delete user (admin only) |
 | `PUT` | `/api/users/:username/password` | Change password |
+| `GET` | `/api/admin/disk-usage` | Get per-folder disk usage (admin) |
+| `DELETE` | `/api/admin/disk-usage/:dirname` | Delete a download folder (admin) |
 
 ## Environment Variables
 
@@ -297,6 +315,8 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `SLSKD_API_KEY` | No | — | slskd API key (set in `slskd-data/slskd.yml`) |
 | `LASTFM_API_KEY` | No | — | Last.fm API key for Discover tab |
 | `ACOUSTID_API_KEY` | No | — | AcoustID API key for fingerprint recognition fallback |
+| `LIDARR_ROOT_FOLDER` | No | `{MUSIC_DIR}/_lidarr` | Root folder path as seen by Lidarr |
+| `PODCAST_SYNC_HOURS` | No | `6` | Auto-sync interval for podcast subscriptions (hours) |
 | `JWT_SECRET` | No | auto-generated | Secret for signing auth tokens |
 
 ## License

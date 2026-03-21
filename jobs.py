@@ -32,6 +32,7 @@ class Job:
     error: str | None = None
     playlist_name: str = ""
     playlist_tracks: list = field(default_factory=list)  # [{name, artist}]
+    username: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -88,10 +89,12 @@ _load_history()
 
 
 def create_job(type_: str, title: str, url: str, method: str, fmt: str,
-               playlist_name: str = "", playlist_tracks: list | None = None) -> Job:
+               playlist_name: str = "", playlist_tracks: list | None = None,
+               username: str = "") -> Job:
     job_id = str(uuid.uuid4())[:8]
     job = Job(id=job_id, type=type_, title=title, url=url, method=method, format=fmt,
-              playlist_name=playlist_name, playlist_tracks=playlist_tracks or [])
+              playlist_name=playlist_name, playlist_tracks=playlist_tracks or [],
+              username=username)
     _jobs[job_id] = job
     return job
 
@@ -155,4 +158,5 @@ def get_retry_data(job_id: str) -> dict | None:
         "url": job.url,
         "method": job.method,
         "format": job.format,
+        "username": job.username,
     }

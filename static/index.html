@@ -660,6 +660,17 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
 .podcast-sub-actions select { background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 6px; font-size: 12px; }
 .btn-unsub { background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 12px; padding: 4px 10px; cursor: pointer; }
 .btn-unsub:hover { border-color: #e74c3c; color: #e74c3c; }
+.disk-usage-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.disk-usage-row:last-child { border-bottom: none; }
+.disk-usage-name { flex: 1; font-weight: 600; font-size: 14px; }
+.disk-usage-stats { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.disk-usage-bar { width: 80px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.disk-usage-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.btn-delete-dir { background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 12px; padding: 4px 10px; cursor: pointer; }
+.btn-delete-dir:hover { border-color: #e74c3c; color: #e74c3c; }
 
 /* ── Animations ── */
 @keyframes slideUp {
@@ -1069,6 +1080,13 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
       </div>
     </div>
   </details>
+  <details class="setting-section" id="diskUsageSection" style="display:none;">
+    <summary class="setting-section-title">Disk Usage</summary>
+    <div class="setting-section-body">
+      <div id="diskUsageList"></div>
+      <button class="btn-save" id="refreshDiskUsage" style="margin-top:8px;">Refresh</button>
+    </div>
+  </details>
 </main>
 
 </div><!-- /appContainer -->
@@ -1223,8 +1241,9 @@ async function initApp() {
     $('#loginScreen').style.display = 'none';
     $('#appContainer').style.display = '';
 
-    // Show user management only for admins
+    // Show admin sections
     $('#usersSection').style.display = me.is_admin ? '' : 'none';
+    $('#diskUsageSection').style.display = me.is_admin ? '' : 'none';
     // Show settings save only for admins (others can view)
     $('#saveSettings').style.display = me.is_admin ? '' : 'none';
 
@@ -2520,6 +2539,49 @@ $('#saveSettings').addEventListener('click', async () => {
     $('#saveStatus').textContent = 'Failed to save';
     $('#saveStatus').style.color = 'var(--red)';
   } finally { btn.disabled = false; }
+});
+
+// ── Disk Usage ──
+async function loadDiskUsage() {
+  const container = $('#diskUsageList');
+  container.innerHTML = '<div class="skeleton" style="height:80px;"></div>';
+  try {
+    const data = await apiJson('/api/admin/disk-usage');
+    const items = data.usage || [];
+    if (!items.length) {
+      container.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">No data</div>';
+      return;
+    }
+    const maxSize = Math.max(...items.map(i => i.size_bytes), 1);
+    const totalSize = items.reduce((s, i) => s + i.size_bytes, 0);
+    container.innerHTML = `<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Total: ${formatSize(totalSize)}</div>` +
+      items.map(item => `
+        <div class="disk-usage-row" data-dir="${esc(item.name)}">
+          <div class="disk-usage-name">${esc(item.name)}</div>
+          <div class="disk-usage-bar"><div class="disk-usage-bar-fill" style="width:${(item.size_bytes / maxSize * 100).toFixed(1)}%"></div></div>
+          <div class="disk-usage-stats">${item.file_count} files &middot; ${formatSize(item.size_bytes)}</div>
+          <button class="btn-delete-dir" title="Delete this directory">Delete</button>
+        </div>
+      `).join('');
+    $$('.btn-delete-dir', container).forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const row = btn.closest('.disk-usage-row');
+        const dirName = row.dataset.dir;
+        if (!confirm(`Delete ALL files in "${dirName}"? This cannot be undone.`)) return;
+        try {
+          await apiJson(`/api/admin/disk-usage/${encodeURIComponent(dirName)}`, { method: 'DELETE' });
+          row.remove();
+        } catch (e) { alert('Failed: ' + e.message); }
+      });
+    });
+  } catch (e) {
+    container.innerHTML = `<div style="color:#e74c3c;font-size:13px;">Failed to load: ${e.message}</div>`;
+  }
+}
+
+$('#refreshDiskUsage').addEventListener('click', loadDiskUsage);
+$('#diskUsageSection').addEventListener('toggle', (e) => {
+  if (e.target.open) loadDiskUsage();
 });
 
 // ── User Management ──

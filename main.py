@@ -15,7 +15,7 @@ import recognize
 import lastfm
 import podcasts
 
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.10.0"
 
 app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
@@ -47,7 +47,7 @@ async def _podcast_auto_sync():
             try:
                 show_data = await spotify.get_show_episodes(sub["spotify_id"])
                 episodes = show_data.get("episodes", [])
-                local = set(e.lower() for e in podcasts.get_local_episodes(sub["show_name"]))
+                local = set(e.lower() for e in podcasts.get_local_episodes(sub["show_name"], username="system"))
                 missing = [ep for ep in episodes if ep["name"].lower().strip() not in local]
                 if missing:
                     if sub.get("max_episodes", 0) > 0:
@@ -65,11 +65,12 @@ async def _podcast_auto_sync():
                             fmt="mp3",
                             playlist_name="",
                             playlist_tracks=playlist_tracks,
+                            username="system",
                         )
                         task = asyncio.create_task(downloader.run_download(job))
                         jobs.register_task(job.id, task)
                 if sub.get("max_episodes", 0) > 0:
-                    podcasts.cleanup_old_episodes(sub["show_name"], sub["max_episodes"])
+                    podcasts.cleanup_old_episodes(sub["show_name"], sub["max_episodes"], username="system")
             except Exception:
                 pass
 
@@ -215,6 +216,7 @@ async def start_download(req: DownloadRequest, user: dict = Depends(auth.get_cur
         fmt=req.format,
         playlist_name=req.playlist_name,
         playlist_tracks=req.playlist_tracks,
+        username=user["username"],
     )
     task = asyncio.create_task(downloader.run_download(job))
     jobs.register_task(job.id, task)
@@ -257,6 +259,7 @@ async def retry_job(job_id: str, user: dict = Depends(auth.get_current_user)):
         url=data['url'],
         method=data['method'],
         fmt=data['format'],
+        username=user["username"],
     )
     task = asyncio.create_task(downloader.run_download(job))
     jobs.register_task(job.id, task)
@@ -386,7 +389,12 @@ async def change_password(username: str, req: ChangePasswordRequest, user: dict 
 @app.get("/api/podcasts")
 async def list_podcasts(user: dict = Depends(auth.get_current_user)):
     """List downloaded podcast shows and their episodes."""
-    podcasts_dir = os.path.join(os.environ.get("MUSIC_DIR", "/music"), "Podcasts")
+    music_dir = os.environ.get("MUSIC_DIR", "/music")
+    podcasts_dir = os.path.join(music_dir, user["username"], "Podcasts")
+    # Also check legacy path
+    legacy_dir = os.path.join(music_dir, "Podcasts")
+    if not os.path.isdir(podcasts_dir) and os.path.isdir(legacy_dir):
+        podcasts_dir = legacy_dir
     if not os.path.isdir(podcasts_dir):
         return {"shows": [], "total_size": 0}
     shows = []
@@ -424,7 +432,10 @@ async def list_podcasts(user: dict = Depends(auth.get_current_user)):
 @app.delete("/api/podcasts/{show_name}/{filename}")
 async def delete_podcast_episode(show_name: str, filename: str, user: dict = Depends(auth.get_current_user)):
     """Delete a single podcast episode file."""
-    podcasts_dir = os.path.join(os.environ.get("MUSIC_DIR", "/music"), "Podcasts")
+    music_dir = os.environ.get("MUSIC_DIR", "/music")
+    podcasts_dir = os.path.join(music_dir, user["username"], "Podcasts")
+    if not os.path.isfile(os.path.join(podcasts_dir, show_name, filename)):
+        podcasts_dir = os.path.join(music_dir, "Podcasts")
     fpath = os.path.join(podcasts_dir, show_name, filename)
     if not os.path.isfile(fpath):
         raise HTTPException(404, "Episode not found")
@@ -440,7 +451,10 @@ async def delete_podcast_episode(show_name: str, filename: str, user: dict = Dep
 async def delete_podcast_show(show_name: str, user: dict = Depends(auth.get_current_user)):
     """Delete all episodes of a podcast show."""
     import shutil
-    podcasts_dir = os.path.join(os.environ.get("MUSIC_DIR", "/music"), "Podcasts")
+    music_dir = os.environ.get("MUSIC_DIR", "/music")
+    podcasts_dir = os.path.join(music_dir, user["username"], "Podcasts")
+    if not os.path.isdir(os.path.join(podcasts_dir, show_name)):
+        podcasts_dir = os.path.join(music_dir, "Podcasts")
     show_dir = os.path.join(podcasts_dir, show_name)
     if not os.path.isdir(show_dir):
         raise HTTPException(404, "Show not found")
@@ -498,7 +512,8 @@ async def sync_podcasts(user: dict = Depends(auth.get_current_user)):
         try:
             show_data = await spotify.get_show_episodes(sub["spotify_id"])
             episodes = show_data.get("episodes", [])
-            local = set(e.lower() for e in podcasts.get_local_episodes(sub["show_name"]))
+            uname = user["username"]
+            local = set(e.lower() for e in podcasts.get_local_episodes(sub["show_name"], username=uname))
             missing = [ep for ep in episodes if ep["name"].lower().strip() not in local]
             if missing:
                 # Respect max_episodes limit
@@ -517,16 +532,53 @@ async def sync_podcasts(user: dict = Depends(auth.get_current_user)):
                         fmt="mp3",
                         playlist_name="",
                         playlist_tracks=playlist_tracks,
+                        username=uname,
                     )
                     task = asyncio.create_task(downloader.run_download(job))
                     jobs.register_task(job.id, task)
                     synced += len(missing)
             # Cleanup old episodes
             if sub.get("max_episodes", 0) > 0:
-                podcasts.cleanup_old_episodes(sub["show_name"], sub["max_episodes"])
+                podcasts.cleanup_old_episodes(sub["show_name"], sub["max_episodes"], username=uname)
         except Exception:
             pass
     return {"status": "synced", "synced": synced}
+
+
+# --- Disk Usage (admin) ---
+
+@app.get("/api/admin/disk-usage")
+async def get_disk_usage(user: dict = Depends(auth.require_admin)):
+    music_dir = os.environ.get("MUSIC_DIR", "/music")
+    usage = []
+    for entry in sorted(os.scandir(music_dir), key=lambda e: e.name):
+        if not entry.is_dir() or entry.name.startswith('.'):
+            continue
+        total = 0
+        file_count = 0
+        for root, dirs, files in os.walk(entry.path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                    file_count += 1
+                except OSError:
+                    pass
+        usage.append({"name": entry.name, "size_bytes": total, "file_count": file_count})
+    return {"usage": usage}
+
+
+@app.delete("/api/admin/disk-usage/{dirname}")
+async def delete_user_downloads(dirname: str, user: dict = Depends(auth.require_admin)):
+    import shutil
+    if dirname.startswith('.') or '/' in dirname or '\\' in dirname:
+        raise HTTPException(400, "Invalid directory name")
+    music_dir = os.environ.get("MUSIC_DIR", "/music")
+    target = os.path.join(music_dir, dirname)
+    if not os.path.isdir(target):
+        raise HTTPException(404, "Directory not found")
+    shutil.rmtree(target)
+    await downloader._trigger_navidrome_scan()
+    return {"status": "deleted", "name": dirname}
 
 
 # --- Static files ---

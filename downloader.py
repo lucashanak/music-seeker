@@ -137,15 +137,17 @@ async def _download_cover(image_url: str, dest_path: str) -> bool:
 
 
 async def _download_track_ytdlp(artist: str, title: str, album: str, fmt: str,
-                                 image_url: str = "", is_podcast: bool = False) -> bool:
+                                 image_url: str = "", is_podcast: bool = False,
+                                 username: str = "") -> bool:
     """Download a single track via yt-dlp, then overwrite metadata from Spotify."""
     safe_artist = _sanitize(artist) or "Unknown Artist"
     safe_album = _sanitize(album) or "Unknown Album"
     safe_title = _sanitize(title) or "Unknown"
+    base = f"{MUSIC_DIR}/{_sanitize(username)}" if username else MUSIC_DIR
     if is_podcast:
-        out_dir = f"{MUSIC_DIR}/Podcasts/{safe_artist}"
+        out_dir = f"{base}/Podcasts/{safe_artist}"
     else:
-        out_dir = f"{MUSIC_DIR}/{safe_artist}/{safe_album}"
+        out_dir = f"{base}/{safe_artist}/{safe_album}"
     out_template = f"{out_dir}/{safe_title}.%(ext)s"
     final_file = f"{out_dir}/{safe_title}.{fmt}"
 
@@ -280,7 +282,7 @@ async def _run_ytdlp(job: Job):
         job.progress = int((i - 1) / total * 100)
 
         image = track.get("image", "")
-        ok = await _download_track_ytdlp(artist, name, album, job.format, image, is_podcast=is_podcast)
+        ok = await _download_track_ytdlp(artist, name, album, job.format, image, is_podcast=is_podcast, username=job.username)
         if not ok:
             failed.append(f"{artist} - {name}")
 
@@ -339,7 +341,7 @@ def _pick_best_slskd_file(responses: list, preferred_format: str = "flac") -> tu
     return (candidates[0][1], candidates[0][2]) if candidates else None
 
 
-async def _download_track_slskd(artist: str, title: str, album: str) -> bool:
+async def _download_track_slskd(artist: str, title: str, album: str, username: str = "") -> bool:
     """Search and download a single track via slskd. Returns True if successful."""
     # Use only primary artist for search (avoid "Artist1, Artist2" cluttering results)
     search_artist = artist.split(",")[0].strip() if artist else ""
@@ -372,16 +374,16 @@ async def _download_track_slskd(artist: str, title: str, album: str) -> bool:
     if not result:
         return False
 
-    username, file_info = result
+    peer, file_info = result
 
     # Queue download
-    await _slskd_api("POST", f"transfers/downloads/{username}", [file_info])
+    await _slskd_api("POST", f"transfers/downloads/{peer}", [file_info])
 
     # Poll until download completes
     filename = file_info.get("filename", "")
     for _ in range(300):  # 10min timeout (P2P can be slow)
         await asyncio.sleep(2)
-        data = await _slskd_api("GET", f"transfers/downloads/{username}")
+        data = await _slskd_api("GET", f"transfers/downloads/{peer}")
         if not data:
             continue
         # Navigate directories[].files[] structure
@@ -395,7 +397,8 @@ async def _download_track_slskd(artist: str, title: str, album: str) -> bool:
                     # Move file from slskd download dir to music library
                     safe_artist = _sanitize(artist) or "Unknown Artist"
                     safe_album = _sanitize(album) or "Unknown Album"
-                    dest_dir = f"{MUSIC_DIR}/{safe_artist}/{safe_album}"
+                    base = f"{MUSIC_DIR}/{_sanitize(username)}" if username else MUSIC_DIR
+                    dest_dir = f"{base}/{safe_artist}/{safe_album}"
                     os.makedirs(dest_dir, exist_ok=True)
                     # slskd saves to {downloads_dir}/{remote_dir}/{filename}
                     # Find the file in slskd downloads directory
@@ -409,7 +412,8 @@ async def _download_track_slskd(artist: str, title: str, album: str) -> bool:
                     if found:
                         dest = os.path.join(dest_dir, f"{_sanitize(title)}.{basename.rsplit('.', 1)[-1]}")
                         shutil.move(found, dest)
-                    return True
+                        return True
+                    return False  # download succeeded but file not found locally
                 if any(s in state for s in ("Failed", "Cancelled", "Errored")):
                     return False
     return False
@@ -449,7 +453,7 @@ async def _run_slskd(job: Job):
         job.progress_text = f"{i}/{total} — Searching Soulseek for {artist} - {name}"
         job.progress = int((i - 1) / total * 100)
 
-        ok = await _download_track_slskd(artist, name, album)
+        ok = await _download_track_slskd(artist, name, album, username=job.username)
         if not ok:
             failed.append(f"{artist} - {name}")
 
@@ -464,6 +468,8 @@ async def _run_slskd(job: Job):
 
 async def _run_lidarr(job: Job):
     headers = {"X-Api-Key": LIDARR_API_KEY, "Content-Type": "application/json"}
+    lidarr_dir = f"{MUSIC_DIR}/_lidarr"
+    os.makedirs(lidarr_dir, exist_ok=True)
 
     artist_name = job.title.split(" - ")[0] if " - " in job.title else job.title
 
@@ -498,7 +504,7 @@ async def _run_lidarr(job: Job):
                 "artistName": artist_data.get("artistName", artist_name),
                 "qualityProfileId": 1,
                 "metadataProfileId": 1,
-                "rootFolderPath": MUSIC_DIR,
+                "rootFolderPath": os.environ.get("LIDARR_ROOT_FOLDER", f"{MUSIC_DIR}/_lidarr"),
                 "monitored": True,
                 "addOptions": {"searchForMissingAlbums": True},
             }
