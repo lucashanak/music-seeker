@@ -16,6 +16,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
   - **Lidarr** — Torrent-based downloads with automatic artist monitoring
 - **Song Recognition** — Identify songs via your microphone using Shazam, with AcoustID fingerprinting as fallback, then download them instantly
 - **Spotify Playlists** — Browse your own or search public Spotify playlists and download individual tracks or full playlists with optional Navidrome playlist creation
+- **Liked Songs** — Access and download your Spotify Liked Songs as a playlist, with Navidrome playlist sync
 - **Smart Downloads** — Checks your Navidrome library before downloading and skips tracks you already have
 - **Library Detection** — Shows "In Library" badge for tracks already in your Navidrome collection (fuzzy matching handles remasters, feat. tags, etc.)
 - **Download Management** — Real-time progress tracking, retry failed downloads, cancel running downloads
@@ -115,7 +116,7 @@ Adds the artist to Lidarr and triggers a search. Lidarr handles the actual downl
 
 ## Getting a Spotify Refresh Token
 
-Search and downloads work with just Client ID + Client Secret (Client Credentials flow). A refresh token is only needed if you want to browse your personal Spotify playlists. Public playlists can be searched and downloaded without one.
+Search and downloads work with just Client ID + Client Secret (Client Credentials flow). A refresh token is only needed if you want to browse your personal Spotify playlists and Liked Songs. Public playlists can be searched and downloaded without one. When Spotify credentials are missing, dependent features are gracefully greyed out.
 
 1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and create an app
 2. Set the Redirect URI to `http://localhost:8888/callback`
@@ -123,7 +124,7 @@ Search and downloads work with just Client ID + Client Secret (Client Credential
 4. Open this URL in your browser (replace `YOUR_CLIENT_ID`):
 
 ```
-https://accounts.spotify.com/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost:8888/callback&scope=user-read-private%20playlist-read-private%20playlist-read-collaborative
+https://accounts.spotify.com/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost:8888/callback&scope=user-read-private%20playlist-read-private%20playlist-read-collaborative%20user-library-read
 ```
 
 5. After authorizing, you'll be redirected to `http://localhost:8888/callback?code=AUTHORIZATION_CODE`
@@ -265,6 +266,7 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `POST` | `/api/library/check` | Check if items exist in Navidrome |
 | `POST` | `/api/recognize` | Identify song from audio (multipart) |
 | `GET` | `/api/spotify/playlists` | Get user's Spotify playlists |
+| `GET` | `/api/spotify/liked` | Get user's Liked Songs |
 | `GET` | `/api/spotify/playlist/:id/tracks` | Get playlist tracks |
 | `GET` | `/api/discover/tags` | Get popular Last.fm genre tags |
 | `GET` | `/api/discover/tag/:tag?type=track` | Get top items for a tag |
