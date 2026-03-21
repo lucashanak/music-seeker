@@ -14,6 +14,7 @@ import auth
 import recognize
 import lastfm
 import podcasts
+import search_providers
 
 APP_VERSION = "1.10.0"
 
@@ -81,7 +82,8 @@ async def _podcast_auto_sync():
 async def get_version():
     return {
         "version": APP_VERSION,
-        "spotify_search": bool(spotify.SPOTIFY_CLIENT_ID and spotify.SPOTIFY_CLIENT_SECRET),
+        "search_provider": app_settings._settings.get("search_provider", "deezer"),
+        "spotify_available": bool(spotify.SPOTIFY_CLIENT_ID and spotify.SPOTIFY_CLIENT_SECRET),
         "spotify_user": bool(spotify.SPOTIFY_REFRESH_TOKEN),
     }
 
@@ -128,7 +130,8 @@ async def search(
     offset: int = Query(0, ge=0),
     user: dict = Depends(auth.get_current_user),
 ):
-    results = await spotify.search(q, type, limit, offset)
+    provider = app_settings._settings.get("search_provider", "deezer")
+    results = await search_providers.search(q, type, limit, offset, provider=provider)
     return {"results": results, "query": q, "type": type}
 
 
@@ -196,9 +199,10 @@ class ResolveRequest(BaseModel):
 
 @app.post("/api/discover/resolve")
 async def discover_resolve(req: ResolveRequest, user: dict = Depends(auth.get_current_user)):
-    result = await spotify.resolve_url(req.name, req.artist, req.type)
+    provider = app_settings._settings.get("search_provider", "deezer")
+    result = await search_providers.resolve(req.name, req.artist, req.type, provider=provider)
     if not result:
-        raise HTTPException(404, "Not found on Spotify")
+        raise HTTPException(404, "Not found")
     return result
 
 
@@ -302,12 +306,12 @@ async def recognize_song(audio: UploadFile = File(...), user: dict = Depends(aut
     if not result:
         raise HTTPException(404, "Could not identify the song")
 
-    # Search Spotify for the recognized track
+    # Enrich with cover art from search provider
     if result.get("name"):
         try:
-            tracks = await spotify.search(f"{result['artist']} {result['name']}", "track", 1)
+            provider = app_settings._settings.get("search_provider", "deezer")
+            tracks = await search_providers.search(f"{result['artist']} {result['name']}", "track", 1, provider=provider)
             if tracks:
-                result["spotify_url"] = tracks[0].get("url", "")
                 result["image"] = result.get("image") or tracks[0].get("image", "")
                 result["id"] = tracks[0].get("id", "")
                 result["url"] = tracks[0].get("url", "")
@@ -327,6 +331,7 @@ async def get_settings(user: dict = Depends(auth.get_current_user)):
 class SettingsUpdate(BaseModel):
     default_format: str | None = None
     default_method: str | None = None
+    search_provider: str | None = None
     max_concurrent: int | None = None
     navidrome_url: str | None = None
     navidrome_user: str | None = None

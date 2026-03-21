@@ -1001,6 +1001,15 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
       <summary class="setting-section-title">Downloads</summary>
       <div class="setting-section-body">
         <div class="setting-group">
+          <label class="setting-label">Search Provider</label>
+          <select class="setting-select" id="settingSearchProvider">
+            <option value="deezer">Deezer (free, no key needed)</option>
+            <option value="ytmusic">YouTube Music (free, no key needed)</option>
+            <option value="spotify">Spotify (requires API credentials)</option>
+          </select>
+          <div id="searchProviderNote" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>
+        </div>
+        <div class="setting-group">
           <label class="setting-label">Default Download Method</label>
           <select class="setting-select" id="settingMethod">
             <option value="yt-dlp">yt-dlp (YouTube, FLAC/MP3)</option>
@@ -1151,14 +1160,16 @@ const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
 
 // ── Version ──
 const APP_VERSION = '1.8.0';
-let spotifySearch = true;
+let searchProvider = 'deezer';
+let spotifyAvailable = false;
 let spotifyUser = true;
 
 (async function checkVersion() {
   try {
     const r = await fetch('/api/version');
     const d = await r.json();
-    spotifySearch = d.spotify_search !== false;
+    searchProvider = d.search_provider || 'deezer';
+    spotifyAvailable = d.spotify_available === true;
     spotifyUser = d.spotify_user !== false;
     const stored = localStorage.getItem('ms_version');
     if (stored && stored !== d.version) {
@@ -1271,10 +1282,9 @@ async function initApp() {
         playlistsBnavBtn.title = 'Spotify user token not configured';
       }
     }
-    if (!spotifySearch) {
-      $('#searchInput').placeholder = 'Spotify API not configured...';
-      $('#searchInput').disabled = true;
-    }
+    // Search is always available (Deezer/YTMusic don't need credentials)
+    const providerLabels = {deezer: 'Deezer', ytmusic: 'YouTube Music', spotify: 'Spotify'};
+    $('#searchInput').placeholder = `Search for music (${providerLabels[searchProvider] || searchProvider})...`;
 
     // Start jobs polling
     refreshJobs();
@@ -1311,7 +1321,7 @@ let searchLoading = false;
 let searchHasMore = true;
 let searchQuery = '';
 let currentPlaylistTracks = [];
-let appSettings = { default_format: 'flac', default_method: 'yt-dlp', max_concurrent: 10 };
+let appSettings = { default_format: 'flac', default_method: 'yt-dlp', search_provider: 'deezer', max_concurrent: 10 };
 
 // ── Navigation ──
 function switchPage(page, fromPopstate) {
@@ -2509,6 +2519,20 @@ async function loadSettings() {
   try {
     const data = await apiJson('/api/settings');
     appSettings = data;
+    $('#settingSearchProvider').value = data.search_provider || 'deezer';
+    const spNote = $('#searchProviderNote');
+    if (data.search_provider === 'spotify' && !spotifyAvailable) {
+      spNote.textContent = 'Warning: Spotify credentials not configured. Search will not work.';
+      spNote.style.color = '#e74c3c';
+    } else if (data.search_provider === 'deezer') {
+      spNote.textContent = 'Falls back to YouTube Music if Deezer is unavailable.';
+      spNote.style.color = 'var(--text-muted)';
+    } else if (data.search_provider === 'ytmusic') {
+      spNote.textContent = 'Falls back to Deezer if YouTube Music is unavailable.';
+      spNote.style.color = 'var(--text-muted)';
+    } else {
+      spNote.textContent = '';
+    }
     $('#settingMethod').value = data.default_method || 'yt-dlp';
     $('#settingFormat').value = data.default_format || 'flac';
     $('#settingMaxConcurrent').value = data.max_concurrent || 10;
@@ -2527,6 +2551,7 @@ $('#saveSettings').addEventListener('click', async () => {
   const btn = $('#saveSettings');
   btn.disabled = true; $('#saveStatus').textContent = '';
   const payload = {
+    search_provider: $('#settingSearchProvider').value,
     default_method: $('#settingMethod').value,
     default_format: $('#settingFormat').value,
     max_concurrent: parseInt($('#settingMaxConcurrent').value) || 10,

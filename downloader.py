@@ -58,6 +58,7 @@ def _sanitize(name: str) -> str:
 async def _resolve_tracks(job: Job) -> list[dict]:
     """Resolve job into a list of {name, artist, album} dicts for downloading."""
     from spotify import parse_spotify_url, get_track_metadata, get_album_tracks, get_episode_metadata, get_show_episodes
+    from search_providers import parse_deezer_url, deezer_get_track, deezer_get_album_tracks
 
     # Playlists: already have track data
     if job.type == "playlist" and job.playlist_tracks:
@@ -84,6 +85,22 @@ async def _resolve_tracks(job: Job) -> list[dict]:
             try:
                 data = await get_show_episodes(parsed[1])
                 return data.get("episodes", [])
+            except Exception:
+                pass
+
+    # Try Deezer URL resolution
+    deezer_parsed = parse_deezer_url(job.url) if job.url else None
+    if deezer_parsed:
+        dtype, did = deezer_parsed
+        if dtype == "album" and job.type == "album":
+            try:
+                return await deezer_get_album_tracks(did)
+            except Exception:
+                pass
+        elif dtype == "track":
+            try:
+                meta = await deezer_get_track(did)
+                return [meta]
             except Exception:
                 pass
 

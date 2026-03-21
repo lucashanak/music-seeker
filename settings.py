@@ -8,6 +8,7 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 _defaults = {
     "default_format": os.environ.get("DEFAULT_FORMAT", "flac"),
     "default_method": os.environ.get("DEFAULT_METHOD", "yt-dlp"),
+    "search_provider": os.environ.get("SEARCH_PROVIDER", "deezer"),
     "max_concurrent": int(os.environ.get("MAX_CONCURRENT", "10")),
     "navidrome_url": os.environ.get("NAVIDROME_URL", "http://navidrome:4533"),
     "navidrome_user": os.environ.get("NAVIDROME_USER", "lucas"),
