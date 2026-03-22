@@ -29,13 +29,13 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 
 ## Screenshots
 
-| Login | Search | Download Modal |
-|-------|--------|---------------|
-| ![Login](screenshots/login.png) | ![Search](screenshots/search-results.png) | ![Modal](screenshots/download-modal.png) |
+| Search Results | Download Modal | Discover |
+|----------------|----------------|----------|
+| ![Search](screenshots/search-tracks.png) | ![Modal](screenshots/download-modal.png) | ![Discover](screenshots/discover.png) |
 
-| Discover | Podcasts | Settings (Disk Usage) | Mobile |
-|----------|----------|-----------------------|--------|
-| ![Discover](screenshots/discover.png) | ![Podcasts](screenshots/podcasts.png) | ![Settings](screenshots/settings.png) | ![Mobile](screenshots/mobile.png) |
+| Full Player (Desktop) | My Spotify Library | Mobile |
+|-----------------------|-------------------|--------|
+| ![Player](screenshots/full-player.png) | ![Spotify](screenshots/my-spotify.png) | ![Mobile](screenshots/mobile.png) |
 
 ## Requirements
 

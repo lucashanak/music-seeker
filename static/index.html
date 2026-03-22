@@ -740,15 +740,19 @@ body.player-active .player-bar { display: flex; }
 .player-actions .player-vol-wrap { display: flex; align-items: center; gap: 4px; }
 .player-actions .player-vol { width: 80px; height: 4px; accent-color: var(--accent); cursor: pointer; }
 /* ── Full Player ── */
-.full-player-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.7); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); opacity: 0; pointer-events: none; transition: opacity .3s; }
-.full-player-backdrop.open { opacity: 1; pointer-events: auto; }
+.full-player-backdrop { display: none; }
 .full-player {
-  position: fixed; z-index: 201; display: flex; flex-direction: column; align-items: center;
+  position: fixed; inset: 0; z-index: 201; display: flex; flex-direction: column;
   background: linear-gradient(180deg, rgba(28,28,40,0.99) 0%, rgba(10,10,16,0.99) 100%);
-  transform: translateY(100%); transition: transform .35s cubic-bezier(.4,0,.2,1);
+  transform: translateY(100%); transition: transform .35s cubic-bezier(.32,.72,0,1);
   overflow: hidden;
 }
 .full-player.open { transform: translateY(0); }
+.fp-drag-handle { width: 40px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.25); margin: 10px auto 0; flex-shrink: 0; }
+.fp-player-side { flex: 1; display: flex; flex-direction: column; align-items: center; min-height: 0; overflow: hidden; }
+.fp-queue-side { display: none; flex-direction: column; border-left: 1px solid var(--border); background: rgba(10,10,16,0.6); }
+.fp-queue-side .panel-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; font-weight: 600; flex-shrink: 0; }
+.fp-queue-side .queue-list { flex: 1; overflow-y: auto; padding: 8px; }
 .fp-header { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; flex-shrink: 0; }
 .fp-header button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
 .fp-header button:hover { color: var(--text); background: rgba(255,255,255,.05); }
@@ -787,16 +791,16 @@ body.player-active .player-bar { display: flex; }
 .fp-vol { flex: 1; height: 4px; accent-color: var(--accent); cursor: pointer; }
 /* Mobile full player */
 @media (max-width: 640px) {
-  .full-player { left: 0; right: 0; top: 0; bottom: 0; border-radius: 0; }
   .fp-art { max-width: 280px; }
   .fp-title { font-size: 18px; }
   .fp-artist { font-size: 13px; }
   .fp-actions .fp-vol-wrap { display: none; }
 }
-/* Desktop full player */
+/* Desktop full player — split layout */
 @media (min-width: 641px) {
-  .full-player { left: 50%; top: 50%; width: 420px; height: 640px; border-radius: 20px; border: 1px solid var(--border); transform: translate(-50%, -50%) scale(0.9); opacity: 0; transition: transform .3s cubic-bezier(.4,0,.2,1), opacity .3s; }
-  .full-player.open { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  .full-player { flex-direction: row; }
+  .fp-player-side { flex: 1; max-width: 60%; }
+  .fp-queue-side { display: flex; flex: 1; min-width: 320px; max-width: 40%; }
   .fp-art { max-width: 280px; }
 }
 
@@ -815,8 +819,15 @@ body.player-active .player-bar { display: flex; }
 .card-fav-btn.following { color: #ef4444; opacity: 1; }
 .new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
 .fav-new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
-.queue-panel { position: fixed; right: 0; top: 0; bottom: var(--player-height); width: 400px; z-index: 150; background: var(--bg-card); border-left: 1px solid var(--border); transform: translateX(100%); transition: transform .3s cubic-bezier(.4,0,.2,1); display: flex; flex-direction: column; box-shadow: -8px 0 40px rgba(0,0,0,.4); }
-.queue-panel.open { transform: translateX(0); }
+.queue-backdrop { position: fixed; inset: 0; z-index: 249; background: rgba(0,0,0,.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); opacity: 0; pointer-events: none; transition: opacity .3s; }
+.queue-backdrop.open { opacity: 1; pointer-events: auto; }
+.queue-panel { position: fixed; left: 0; right: 0; top: 0; height: 70vh; max-height: 600px; z-index: 250; background: var(--bg-card); border-radius: 0 0 20px 20px; transform: translateY(-100%); transition: transform .35s cubic-bezier(.32,.72,0,1); display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+.queue-panel.open { transform: translateY(0); }
+.queue-panel.from-bottom { top: auto; bottom: 0; border-radius: 20px 20px 0 0; transform: translateY(100%); box-shadow: 0 -8px 40px rgba(0,0,0,.5); }
+.queue-panel.from-bottom.open { transform: translateY(0); }
+.queue-panel.from-bottom .queue-drag-handle { order: -1; margin: 8px auto 0; }
+.queue-panel.from-bottom .panel-header { order: 0; }
+.queue-drag-handle { width: 40px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.25); margin: 8px auto 0; flex-shrink: 0; }
 .queue-list { flex: 1; overflow-y: auto; padding: 8px; }
 .queue-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; cursor: pointer; transition: background .15s; }
 .queue-item:hover { background: rgba(255,255,255,.04); }
@@ -897,7 +908,7 @@ body.player-active .player-bar { display: flex; }
   .player-bar .player-img { width: 42px; height: 42px; }
   .card-play-btn { opacity: .85; transform: translateY(0); }
   .card-dl-btn { opacity: .85; transform: translateY(0); }
-  .queue-panel { width: 100%; border-radius: 0; border-left: none; }
+  .queue-panel { height: 80vh; border-radius: 0 0 16px 16px; }
 
   .grid {
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -1481,46 +1492,53 @@ body.player-active .player-bar { display: flex; }
 </div>
 
 <!-- ── Full Player ── -->
-<div class="full-player-backdrop" id="fullPlayerBackdrop"></div>
 <div class="full-player" id="fullPlayer">
-  <div class="fp-header">
-    <button id="fpClose" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></button>
-    <span class="fp-source">Now Playing</span>
-    <button id="fpQueueTop" title="Queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
-  </div>
-  <div class="fp-art-wrap">
-    <img class="fp-art" id="fpImg" src="" alt="">
-  </div>
-  <div class="fp-info">
-    <div class="fp-title" id="fpTitle"></div>
-    <div class="fp-artist" id="fpArtist"></div>
-  </div>
-  <div class="fp-progress">
-    <div class="fp-progress-bar" id="fpProgressBar">
-      <div class="fp-progress-fill" id="fpProgressFill"></div>
+  <div class="fp-player-side" id="fpPlayerSide">
+    <div class="fp-drag-handle"></div>
+    <div class="fp-header">
+      <button id="fpClose" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+      <span class="fp-source">Now Playing</span>
+      <button id="fpQueueTop" title="Queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
     </div>
-    <div class="fp-times">
-      <span id="fpTimeCurrent">0:00</span>
-      <span id="fpTimeTotal">0:00</span>
+    <div class="fp-art-wrap">
+      <img class="fp-art" id="fpImg" src="" alt="">
+    </div>
+    <div class="fp-info">
+      <div class="fp-title" id="fpTitle"></div>
+      <div class="fp-artist" id="fpArtist"></div>
+    </div>
+    <div class="fp-progress">
+      <div class="fp-progress-bar" id="fpProgressBar">
+        <div class="fp-progress-fill" id="fpProgressFill"></div>
+      </div>
+      <div class="fp-times">
+        <span id="fpTimeCurrent">0:00</span>
+        <span id="fpTimeTotal">0:00</span>
+      </div>
+    </div>
+    <div class="fp-controls">
+      <button class="fp-mode-btn" id="fpShuffle" title="Shuffle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg></button>
+      <button id="fpPrev" title="Previous"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6V6zm3.5 6 8.5 6V6l-8.5 6z"/></svg></button>
+      <button class="fp-play-btn" id="fpPlayPause" title="Play"><svg viewBox="0 0 24 24" fill="currentColor" id="fpPlayPauseIcon"><path d="M8 5v14l11-7z"/></svg></button>
+      <button id="fpNext" title="Next"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 18h2V6h-2v12zM6 18l8.5-6L6 6v12z"/></svg></button>
+      <button class="fp-mode-btn" id="fpRepeat" title="Repeat off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg><span class="fp-repeat-badge" id="fpRepeatBadge"></span></button>
+    </div>
+    <div class="fp-actions">
+      <button id="fpDownload" title="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+      <div class="fp-vol-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
+        <input type="range" class="fp-vol" id="fpVolume" min="0" max="100" value="100">
+      </div>
     </div>
   </div>
-  <div class="fp-controls">
-    <button class="fp-mode-btn" id="fpShuffle" title="Shuffle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg></button>
-    <button id="fpPrev" title="Previous"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6V6zm3.5 6 8.5 6V6l-8.5 6z"/></svg></button>
-    <button class="fp-play-btn" id="fpPlayPause" title="Play"><svg viewBox="0 0 24 24" fill="currentColor" id="fpPlayPauseIcon"><path d="M8 5v14l11-7z"/></svg></button>
-    <button id="fpNext" title="Next"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 18h2V6h-2v12zM6 18l8.5-6L6 6v12z"/></svg></button>
-    <button class="fp-mode-btn" id="fpRepeat" title="Repeat off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg><span class="fp-repeat-badge" id="fpRepeatBadge"></span></button>
-  </div>
-  <div class="fp-actions">
-    <button id="fpDownload" title="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
-    <div class="fp-vol-wrap">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
-      <input type="range" class="fp-vol" id="fpVolume" min="0" max="100" value="100">
-    </div>
+  <div class="fp-queue-side" id="fpQueueSide">
+    <div class="panel-header">Queue <div style="display:flex;gap:8px;align-items:center;"><button class="btn-logout" id="fpClearQueue" style="font-size:11px;">Clear</button></div></div>
+    <div class="queue-list" id="fpQueueList"></div>
   </div>
 </div>
 
 <!-- ── Queue Panel ── -->
+<div class="queue-backdrop" id="queueBackdrop"></div>
 <div class="queue-panel" id="queuePanel">
   <div class="panel-header">
     Queue
@@ -1532,6 +1550,7 @@ body.player-active .player-bar { display: flex; }
   <div class="queue-list" id="queueList">
     <div class="empty-state"><p>Queue is empty</p></div>
   </div>
+  <div class="queue-drag-handle"></div>
 </div>
 
 <!-- ── Downloads Panel ── -->
@@ -3693,8 +3712,8 @@ window.addEventListener('popstate', e => {
   if (_ignorePopstate) { _ignorePopstate = false; return; }
   const state = e.state;
   // Close overlays first (highest priority)
-  if (fullPlayerOpen) { closeFullPlayer(true); return; }
   if (queuePanelOpen) { closeQueuePanel(true); return; }
+  if (fullPlayerOpen) { closeFullPlayer(true); return; }
   if (modalItem) { closeModal(true); return; }
   if (panelOpen) { closePanel(true); return; }
   // Close any edit perms dialog
@@ -3718,7 +3737,7 @@ document.addEventListener('keydown', e => {
     $('#searchInput').focus();
     requestNotificationPermission();
   }
-  if (e.key === 'Escape') { if (fullPlayerOpen) { closeFullPlayer(); return; } closeModal(); closePanel(); closeQueuePanel(); }
+  if (e.key === 'Escape') { if (queuePanelOpen) { closeQueuePanel(); return; } if (fullPlayerOpen) { closeFullPlayer(); return; } closeModal(); closePanel(); }
 });
 
 // ── Helpers ──
@@ -4049,25 +4068,33 @@ $('#clearQueue').addEventListener('click', () => {
   saveQueueDebounced();
 });
 
-let queueOpenedFromFullPlayer = false;
-function openQueuePanel() {
+let queueFromBottom = false;
+function openQueuePanel(fromBottom) {
+  queueFromBottom = !!fromBottom;
   renderQueue();
-  $('#queuePanel').classList.add('open');
+  const qp = $('#queuePanel');
+  qp.classList.toggle('from-bottom', queueFromBottom);
+  $('#queueBackdrop').classList.add('open');
+  qp.classList.add('open');
   queuePanelOpen = true;
   history.pushState({layer: 'queuePanel'}, '');
 }
 function closeQueuePanel(fromPopstate) {
   if (!queuePanelOpen) return;
-  $('#queuePanel').classList.remove('open');
+  $('#queueBackdrop').classList.remove('open');
+  const qp = $('#queuePanel');
+  qp.classList.remove('open');
+  qp.style.transform = '';
+  qp.style.transition = '';
+  // Remove from-bottom after transition ends so closing animation uses correct direction
+  setTimeout(() => { qp.classList.remove('from-bottom'); }, 350);
   queuePanelOpen = false;
-  const returnToFP = queueOpenedFromFullPlayer;
-  queueOpenedFromFullPlayer = false;
+  queueFromBottom = false;
   if (!fromPopstate) historyBack();
-  if (returnToFP) setTimeout(() => openFullPlayer(), 50);
 }
 
-function renderQueue() {
-  const el = $('#queueList');
+function renderQueueInto(el) {
+  if (!el) return;
   if (!playerQueue.length) {
     el.innerHTML = '<div class="empty-state"><p>Queue is empty</p></div>';
     return;
@@ -4105,6 +4132,10 @@ function renderQueue() {
       saveQueueDebounced();
     });
   });
+}
+function renderQueue() {
+  renderQueueInto($('#queueList'));
+  if (fullPlayerOpen && window.innerWidth > 640) renderQueueInto($('#fpQueueList'));
 }
 
 // Queue persistence
@@ -4251,16 +4282,19 @@ function openFullPlayer() {
     $('#fpTimeTotal').textContent = fmtTime(audio.duration);
   }
   updatePlayPauseIcon(playerPlaying);
-  $('#fullPlayerBackdrop').classList.add('open');
   $('#fullPlayer').classList.add('open');
   fullPlayerOpen = true;
+  // Populate desktop inline queue
+  if (window.innerWidth > 640) renderQueueInto($('#fpQueueList'));
   history.pushState({layer: 'fullPlayer'}, '');
 }
 
 function closeFullPlayer(fromPopstate) {
   if (!fullPlayerOpen) return;
-  $('#fullPlayerBackdrop').classList.remove('open');
-  $('#fullPlayer').classList.remove('open');
+  const fp = $('#fullPlayer');
+  fp.classList.remove('open');
+  fp.style.transform = '';
+  fp.style.transition = '';
   fullPlayerOpen = false;
   if (!fromPopstate) historyBack();
 }
@@ -4274,7 +4308,18 @@ $('#bnavNowPlaying').addEventListener('click', openFullPlayer);
 
 // Full player close button
 $('#fpClose').addEventListener('click', () => closeFullPlayer());
-$('#fullPlayerBackdrop').addEventListener('click', () => closeFullPlayer());
+// Queue backdrop closes queue
+$('#queueBackdrop').addEventListener('click', () => closeQueuePanel());
+// Desktop inline queue clear button
+$('#fpClearQueue').addEventListener('click', () => {
+  audio.pause();
+  playerQueue = [];
+  playerIndex = -1;
+  hidePlayerBar();
+  renderQueue();
+  closeFullPlayer();
+  saveQueueDebounced();
+});
 
 // Full player controls
 $('#fpPlayPause').addEventListener('click', () => {
@@ -4337,28 +4382,42 @@ $('#fpVolume').addEventListener('input', (e) => {
     if (!tracking) return;
     tracking = false;
     art.classList.remove('swiping');
+    // Tap (minimal movement) → toggle play/pause
+    if (Math.abs(dx) < 5) {
+      art.style.transform = '';
+      art.style.opacity = '';
+      if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+      return;
+    }
     if (Math.abs(dx) >= THRESHOLD) {
       // Swipe out animation
       art.classList.add(dx < 0 ? 'swipe-out-left' : 'swipe-out-right');
       art.style.transform = '';
       art.style.opacity = '';
       const goNext = dx < 0;
+      // New art enters from the opposite side: swipe left → enter from right, swipe right → enter from left
+      const enterFrom = goNext ? 100 : -100;
       setTimeout(() => {
+        // Position new art at entry point before loading new track
+        art.classList.remove('swipe-out-left', 'swipe-out-right');
+        art.style.transition = 'none';
+        art.style.transform = `translateX(${enterFrom}px)`;
+        art.style.opacity = '0';
+        // Now change track (updates image src via syncFullPlayer)
         if (goNext) {
           nextTrack();
         } else if (playerIndex > 0) {
           playerIndex--;
           loadAndPlay();
         }
-        // Reset and animate new art in
-        art.classList.remove('swipe-out-left', 'swipe-out-right');
-        art.style.transform = `translateX(${dx < 0 ? '80px' : '-80px'})`;
-        art.style.opacity = '0';
+        // Animate new art sliding in
         requestAnimationFrame(() => {
-          art.classList.add('swipe-in');
-          art.style.transform = '';
-          art.style.opacity = '';
-          setTimeout(() => art.classList.remove('swipe-in'), 300);
+          requestAnimationFrame(() => {
+            art.style.transition = 'transform .3s ease, opacity .3s ease';
+            art.style.transform = 'translateX(0)';
+            art.style.opacity = '1';
+            setTimeout(() => { art.style.transition = ''; art.style.transform = ''; art.style.opacity = ''; }, 300);
+          });
         });
       }, 250);
     } else {
@@ -4376,6 +4435,203 @@ $('#fpVolume').addEventListener('input', (e) => {
     art.style.transform = '';
     art.style.opacity = '';
   }, { passive: true });
+})();
+
+// ── Swipe Gestures ──
+(function() {
+  // 1. Swipe up on mini player → open full player
+  const playerBar = document.getElementById('playerBar');
+  if (playerBar) {
+    let sy = 0, tracking = false;
+    playerBar.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      sy = e.touches[0].clientY;
+      tracking = true;
+    }, { passive: true });
+    playerBar.addEventListener('touchmove', (e) => {
+      if (!tracking) return;
+      const dy = sy - e.touches[0].clientY;
+      if (dy > 40) { tracking = false; openFullPlayer(); }
+    }, { passive: true });
+    playerBar.addEventListener('touchend', () => { tracking = false; }, { passive: true });
+    playerBar.addEventListener('touchcancel', () => { tracking = false; }, { passive: true });
+  }
+
+  // 2. Swipe down on full player → close (on fp-player-side, non-scrollable areas)
+  const fpSide = document.getElementById('fpPlayerSide');
+  if (fpSide) {
+    let sy = 0, dy = 0, tracking = false, locked = null;
+    const fp = document.getElementById('fullPlayer');
+
+    fpSide.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      // Only start tracking on non-scrollable areas or at scroll top
+      const tag = e.target.tagName;
+      const isInteractive = e.target.closest('button, input, .fp-progress-bar, .fp-art-wrap');
+      if (isInteractive) { tracking = false; return; }
+      sy = e.touches[0].clientY;
+      dy = 0;
+      tracking = true;
+      locked = null;
+    }, { passive: true });
+
+    fpSide.addEventListener('touchmove', (e) => {
+      if (!tracking) return;
+      const cx = e.touches[0].clientX;
+      const cy = e.touches[0].clientY;
+      dy = cy - sy;
+
+      // Direction lock: first 10px determines horizontal vs vertical
+      if (!locked) {
+        const ax = Math.abs(cx - (fpSide._sx || cx));
+        const ay = Math.abs(dy);
+        if (ax + ay > 10) locked = ay > ax ? 'v' : 'h';
+        fpSide._sx = fpSide._sx || cx;
+        if (locked === 'h') { tracking = false; return; }
+      }
+
+      if (dy > 0) {
+        e.preventDefault();
+        fp.style.transition = 'none';
+        fp.style.transform = `translateY(${dy}px)`;
+      }
+    }, { passive: false });
+
+    fpSide.addEventListener('touchend', () => {
+      if (!tracking) { fpSide._sx = undefined; return; }
+      tracking = false;
+      fpSide._sx = undefined;
+      if (dy > 80) {
+        fp.style.transition = 'transform .3s cubic-bezier(.32,.72,0,1)';
+        fp.style.transform = 'translateY(100%)';
+        setTimeout(() => closeFullPlayer(), 300);
+      } else {
+        fp.style.transition = 'transform .25s ease';
+        fp.style.transform = 'translateY(0)';
+        setTimeout(() => { fp.style.transition = ''; fp.style.transform = ''; }, 250);
+      }
+    }, { passive: true });
+
+    fpSide.addEventListener('touchcancel', () => {
+      tracking = false;
+      fpSide._sx = undefined;
+      fp.style.transition = '';
+      fp.style.transform = '';
+    }, { passive: true });
+  }
+
+  // 3. Swipe down from top edge → open queue (not inside full player)
+  let edgeSy = 0, edgeTracking = false;
+  document.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    if (e.touches[0].clientY <= 25 && !queuePanelOpen && !fullPlayerOpen) {
+      edgeSy = e.touches[0].clientY;
+      edgeTracking = true;
+    }
+  }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    if (!edgeTracking) return;
+    const dy = e.touches[0].clientY - edgeSy;
+    if (dy > 50) {
+      edgeTracking = false;
+      e.preventDefault();
+      openQueuePanel(false);
+    }
+  }, { passive: false });
+  document.addEventListener('touchend', () => { edgeTracking = false; }, { passive: true });
+  document.addEventListener('touchcancel', () => { edgeTracking = false; }, { passive: true });
+
+  // 4. Swipe to close queue panel (direction depends on from-bottom mode)
+  const qPanel = document.getElementById('queuePanel');
+  if (qPanel) {
+    let sy = 0, dy = 0, tracking = false;
+    qPanel.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      const qList = qPanel.querySelector('.queue-list');
+      if (queueFromBottom) {
+        // From-bottom: swipe down to close — only when scrolled to top
+        if (qList && qList.scrollTop > 0) return;
+      } else {
+        // From-top: swipe up to close — only when scrolled to top
+        if (qList && qList.scrollTop > 0) return;
+      }
+      sy = e.touches[0].clientY;
+      dy = 0;
+      tracking = true;
+    }, { passive: true });
+
+    qPanel.addEventListener('touchmove', (e) => {
+      if (!tracking) return;
+      const raw = e.touches[0].clientY - sy;
+      if (queueFromBottom) {
+        // From-bottom: drag downward (positive raw) to dismiss
+        dy = raw;
+        if (dy > 0) {
+          e.preventDefault();
+          qPanel.style.transition = 'none';
+          qPanel.style.transform = `translateY(${dy}px)`;
+        }
+      } else {
+        // From-top: drag upward (negative raw) to dismiss
+        dy = -raw;
+        if (dy > 0) {
+          e.preventDefault();
+          qPanel.style.transition = 'none';
+          qPanel.style.transform = `translateY(${-dy}px)`;
+        }
+      }
+    }, { passive: false });
+
+    qPanel.addEventListener('touchend', () => {
+      if (!tracking) return;
+      tracking = false;
+      if (dy > 60) {
+        const dismissDir = queueFromBottom ? '100%' : '-100%';
+        qPanel.style.transition = 'transform .3s cubic-bezier(.32,.72,0,1)';
+        qPanel.style.transform = `translateY(${dismissDir})`;
+        setTimeout(() => closeQueuePanel(), 300);
+      } else {
+        qPanel.style.transition = 'transform .25s ease';
+        qPanel.style.transform = 'translateY(0)';
+        setTimeout(() => { qPanel.style.transition = ''; qPanel.style.transform = ''; }, 250);
+      }
+    }, { passive: true });
+
+    qPanel.addEventListener('touchcancel', () => {
+      tracking = false;
+      qPanel.style.transition = '';
+      qPanel.style.transform = '';
+    }, { passive: true });
+  }
+
+  // 5. Swipe up in full player (bottom area, below controls) → open queue from bottom
+  if (fpSide) {
+    let qsy = 0, qdy = 0, qTracking = false;
+    fpSide.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1 || !fullPlayerOpen || queuePanelOpen) return;
+      // Only activate in bottom 1/3 of the player (actions/controls area)
+      const rect = fpSide.getBoundingClientRect();
+      const touchY = e.touches[0].clientY;
+      if (touchY < rect.top + rect.height * 0.65) return;
+      const isInteractive = e.target.closest('button, input, .fp-progress-bar');
+      if (isInteractive) return;
+      qsy = touchY;
+      qdy = 0;
+      qTracking = true;
+    }, { passive: true });
+
+    fpSide.addEventListener('touchmove', (e) => {
+      if (!qTracking) return;
+      qdy = qsy - e.touches[0].clientY;
+      if (qdy > 40) {
+        qTracking = false;
+        openQueuePanel(true);
+      }
+    }, { passive: true });
+
+    fpSide.addEventListener('touchend', () => { qTracking = false; }, { passive: true });
+    fpSide.addEventListener('touchcancel', () => { qTracking = false; }, { passive: true });
+  }
 })();
 
 // Full player download
@@ -4397,9 +4653,13 @@ $('#fpDownload').addEventListener('click', async () => {
 
 // Full player queue button
 $('#fpQueueTop').addEventListener('click', () => {
-  queueOpenedFromFullPlayer = true;
-  closeFullPlayer();
-  setTimeout(() => openQueuePanel(), 350);
+  if (window.innerWidth > 640) {
+    // Desktop: queue is inline, just refresh it
+    renderQueueInto($('#fpQueueList'));
+  } else {
+    // Mobile: open queue from bottom on top of full player
+    openQueuePanel(true);
+  }
 });
 
 // Shuffle toggle
