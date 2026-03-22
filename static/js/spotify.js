@@ -113,6 +113,7 @@ async function searchForArtistDetail(item) {
     const data = await apiJson(`/api/search?q=${encodeURIComponent(item.name)}&type=artist`);
     const match = (data.results || []).find(r => r.name.toLowerCase() === item.name.toLowerCase()) || (data.results || [])[0];
     if (match && match.id) {
+      switchPage('search', true);
       loadArtistDetail(match.id, 'playlists');
     } else {
       showToast('Artist not found on Deezer');
