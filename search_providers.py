@@ -149,6 +149,58 @@ async def deezer_get_artist_albums(artist_id: str) -> dict:
     }
 
 
+async def deezer_artist_radio(artist_id: str) -> list[dict]:
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}/radio")
+        resp.raise_for_status()
+        data = resp.json()
+    return [
+        {
+            "id": str(item["id"]),
+            "name": item.get("title", ""),
+            "artist": item.get("artist", {}).get("name", ""),
+            "album": item.get("album", {}).get("title", ""),
+            "image": item.get("album", {}).get("cover_big", ""),
+            "url": item.get("link", ""),
+            "type": "track",
+        }
+        for item in data.get("data", [])
+    ]
+
+
+async def deezer_related_artists(artist_id: str) -> list[dict]:
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}/related")
+        resp.raise_for_status()
+        data = resp.json()
+    return [
+        {
+            "id": str(item["id"]),
+            "name": item.get("name", ""),
+            "artist": item.get("name", ""),
+            "image": item.get("picture_big", ""),
+            "type": "artist",
+        }
+        for item in data.get("data", [])
+    ]
+
+
+async def deezer_artist_latest_album(artist_id: str) -> dict | None:
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}/albums", params={"limit": 1, "order": "date"})
+        resp.raise_for_status()
+        data = resp.json()
+    albums = data.get("data", [])
+    if not albums:
+        return None
+    a = albums[0]
+    return {
+        "id": str(a["id"]),
+        "name": a.get("title", ""),
+        "release_date": a.get("release_date", ""),
+    }
+
+
 def parse_deezer_url(url: str) -> tuple[str, str] | None:
     m = re.search(r"deezer\.com/(track|album|playlist|artist)/(\d+)", url)
     if m:

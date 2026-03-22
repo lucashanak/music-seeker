@@ -16,8 +16,10 @@ import lastfm
 import podcasts
 import search_providers
 import player
+import radio
+import favorites
 
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.11.0"
 
 app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
@@ -36,6 +38,7 @@ async def startup():
         return
     auth.init_admin(ADMIN_USER, ADMIN_PASS)
     asyncio.create_task(_podcast_auto_sync())
+    asyncio.create_task(_favorites_release_check())
 
 
 async def _fetch_show_episodes(sub: dict) -> list[dict]:
@@ -84,6 +87,20 @@ async def _podcast_auto_sync():
                     podcasts.cleanup_old_episodes(sub["show_name"], sub["max_episodes"], username="system")
             except Exception:
                 pass
+
+
+RELEASE_CHECK_INTERVAL = 7 * 24 * 3600  # weekly
+
+
+async def _favorites_release_check():
+    """Background task: check for new releases from favorite artists weekly."""
+    await asyncio.sleep(60)  # initial delay
+    while True:
+        try:
+            await favorites.check_new_releases()
+        except Exception:
+            pass
+        await asyncio.sleep(RELEASE_CHECK_INTERVAL)
 
 
 # --- Version (public) ---
@@ -269,6 +286,76 @@ async def discover_resolve(req: ResolveRequest, user: dict = Depends(auth.get_cu
     return result
 
 
+# --- Radio ---
+
+@app.get("/api/radio")
+async def get_radio(
+    track: str = "",
+    artist: str = "",
+    artist_id: str = "",
+    limit: int = Query(25, ge=1, le=50),
+    user: dict = Depends(auth.get_current_user),
+):
+    source = app_settings._settings.get("recommendation_source", "combined")
+    tracks = await radio.get_radio_tracks(source, track, artist, artist_id, limit)
+    if not tracks:
+        raise HTTPException(404, "No radio tracks found")
+    return {"tracks": tracks, "source": source}
+
+
+# --- Favorites ---
+
+@app.get("/api/favorites")
+async def get_favorites_list(user: dict = Depends(auth.get_current_user)):
+    artists = favorites.get_favorites(user["username"])
+    return {"artists": artists}
+
+
+class FollowArtistRequest(BaseModel):
+    artist_id: str
+    name: str
+    image: str = ""
+
+
+@app.post("/api/favorites")
+async def follow_artist(req: FollowArtistRequest, user: dict = Depends(auth.get_current_user)):
+    ok = await favorites.follow_artist(user["username"], req.artist_id, req.name, req.image)
+    if not ok:
+        raise HTTPException(409, "Already following this artist")
+    return {"status": "followed"}
+
+
+@app.delete("/api/favorites/{artist_id}")
+async def unfollow_artist(artist_id: str, user: dict = Depends(auth.get_current_user)):
+    if not favorites.unfollow_artist(user["username"], artist_id):
+        raise HTTPException(404, "Not following this artist")
+    return {"status": "unfollowed"}
+
+
+class UpdateFavoriteRequest(BaseModel):
+    auto_download: bool | None = None
+
+
+@app.put("/api/favorites/{artist_id}")
+async def update_favorite(artist_id: str, req: UpdateFavoriteRequest, user: dict = Depends(auth.get_current_user)):
+    updates = req.model_dump(exclude_none=True)
+    if not favorites.update_artist(user["username"], artist_id, updates):
+        raise HTTPException(404, "Not following this artist")
+    return {"status": "updated"}
+
+
+@app.post("/api/favorites/{artist_id}/clear")
+async def clear_favorite_release(artist_id: str, user: dict = Depends(auth.get_current_user)):
+    favorites.clear_new_release(user["username"], artist_id)
+    return {"status": "cleared"}
+
+
+@app.post("/api/favorites/check")
+async def check_favorites_now(user: dict = Depends(auth.get_current_user)):
+    new_count = await favorites.check_new_releases()
+    return {"new_count": new_count}
+
+
 @app.post("/api/download")
 async def start_download(req: DownloadRequest, user: dict = Depends(auth.get_current_user)):
     if req.method not in user.get("allowed_methods", ["yt-dlp", "slskd", "lidarr"]):
@@ -404,6 +491,7 @@ class SettingsUpdate(BaseModel):
     navidrome_password: str | None = None
     slskd_url: str | None = None
     slskd_api_key: str | None = None
+    recommendation_source: str | None = None
 
 
 @app.put("/api/settings")

@@ -78,6 +78,50 @@ async def get_tag_albums(tag: str, limit: int = 20, page: int = 1) -> list[dict]
     ]
 
 
+async def get_similar_tracks(track: str, artist: str, limit: int = 25) -> list[dict]:
+    data = await _get("track.getSimilar", {"track": track, "artist": artist, "limit": limit})
+    tracks = data.get("similartracks", {}).get("track", [])
+    return [
+        {
+            "name": t.get("name", ""),
+            "artist": t.get("artist", {}).get("name", ""),
+            "image": _pick_image(t.get("image", [])),
+            "type": "track",
+            "match": float(t.get("match", 0)),
+        }
+        for t in tracks
+    ]
+
+
+async def get_similar_artists(artist: str, limit: int = 20) -> list[dict]:
+    data = await _get("artist.getSimilar", {"artist": artist, "limit": limit})
+    artists = data.get("similarartists", {}).get("artist", [])
+    return [
+        {
+            "name": a.get("name", ""),
+            "artist": a.get("name", ""),
+            "image": _pick_image(a.get("image", [])),
+            "type": "artist",
+            "match": float(a.get("match", 0)),
+        }
+        for a in artists
+    ]
+
+
+async def get_artist_top_tracks(artist: str, limit: int = 10) -> list[dict]:
+    data = await _get("artist.getTopTracks", {"artist": artist, "limit": limit})
+    tracks = data.get("toptracks", {}).get("track", [])
+    return [
+        {
+            "name": t.get("name", ""),
+            "artist": t.get("artist", {}).get("name", ""),
+            "image": _pick_image(t.get("image", [])),
+            "type": "track",
+        }
+        for t in tracks
+    ]
+
+
 async def get_tag_artists(tag: str, limit: int = 20, page: int = 1) -> list[dict]:
     data = await _get("tag.getTopArtists", {"tag": tag, "limit": limit, "page": page})
     artists = data.get("topartists", {}).get("artist", [])

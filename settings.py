@@ -17,6 +17,7 @@ _defaults = {
     "navidrome_password": os.environ.get("NAVIDROME_PASSWORD", ""),
     "slskd_url": os.environ.get("SLSKD_URL", "http://slskd:5030"),
     "slskd_api_key": os.environ.get("SLSKD_API_KEY", ""),
+    "recommendation_source": os.environ.get("RECOMMENDATION_SOURCE", "combined"),
 }
 
 _settings = {**_defaults}

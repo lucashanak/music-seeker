@@ -787,6 +787,15 @@ body.player-active .player-bar { display: flex; }
 .card-dl-btn { position: absolute; bottom: 8px; left: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
 .card:hover .card-dl-btn { opacity: 1; transform: translateY(0); }
 .card-dl-btn:hover { transform: scale(1.1) !important; box-shadow: 0 4px 16px rgba(0,0,0,.5), var(--shadow-glow); }
+.card-radio-btn { position: absolute; bottom: 8px; left: 52px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; font-size: 16px; }
+.card:hover .card-radio-btn { opacity: 1; transform: translateY(0); }
+.card-radio-btn:hover { transform: scale(1.1) !important; background: var(--accent); color: #000; border-color: var(--accent); }
+.card-fav-btn { position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: rgba(0,0,0,.6); color: var(--text); border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transition: all .2s; cursor: pointer; z-index: 3; font-size: 18px; }
+.card:hover .card-fav-btn { opacity: 1; }
+.card-fav-btn:hover { color: #ef4444; transform: scale(1.1); }
+.card-fav-btn.following { color: #ef4444; opacity: 1; }
+.new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
+.fav-new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
 .queue-panel { position: fixed; right: 0; top: 0; bottom: var(--player-height); width: 400px; z-index: 150; background: var(--bg-card); border-left: 1px solid var(--border); transform: translateX(100%); transition: transform .3s cubic-bezier(.4,0,.2,1); display: flex; flex-direction: column; box-shadow: -8px 0 40px rgba(0,0,0,.4); }
 .queue-panel.open { transform: translateX(0); }
 .queue-list { flex: 1; overflow-y: auto; padding: 8px; }
@@ -954,6 +963,7 @@ body.player-active .player-bar { display: flex; }
   <button class="nav-btn" data-page="discover">Discover</button>
   <button class="nav-btn" data-page="playlists">My Spotify</button>
   <button class="nav-btn" data-page="podcasts">My Podcasts</button>
+  <button class="nav-btn" data-page="favorites">Favorites</button>
   <button class="nav-btn" data-page="settings">Settings</button>
   <div class="nav-spacer"></div>
   <button class="downloads-btn" id="downloadsToggle">
@@ -984,6 +994,10 @@ body.player-active .player-bar { display: flex; }
   <button class="bnav-btn" data-page="podcasts">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
     Podcasts
+  </button>
+  <button class="bnav-btn" data-page="favorites">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
+    Favorites
   </button>
   <button class="bnav-btn" data-page="downloads" id="bnavDownloads">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -1160,6 +1174,18 @@ body.player-active .player-bar { display: flex; }
   </div>
 </main>
 
+<!-- ── Favorites Page ── -->
+<main id="pageFavorites" style="display:none">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
+    <h2 class="page-title" style="margin:0;">Favorites</h2>
+    <button id="checkReleasesBtn" class="btn-check-new" title="Check for new releases now">Check Now</button>
+  </div>
+  <div id="favoritesGrid" class="grid"></div>
+  <div id="favoritesEmpty" class="empty-state" style="display:none;">
+    <p>No favorite artists yet. Click the heart icon on any artist to follow them.</p>
+  </div>
+</main>
+
 <!-- ── Settings Page ── -->
 <main id="pageSettings" style="display:none">
   <h2 class="page-title">Settings</h2>
@@ -1213,6 +1239,20 @@ body.player-active .player-bar { display: flex; }
         <div class="setting-group">
           <label class="setting-label">Max Concurrent Downloads</label>
           <input class="setting-input" id="settingMaxConcurrent" type="number" min="1" max="20" value="10">
+        </div>
+      </div>
+    </details>
+
+    <details class="setting-section">
+      <summary class="setting-section-title">Radio Recommendations</summary>
+      <div class="setting-section-body">
+        <div class="setting-group">
+          <label class="setting-label">Recommendation Source</label>
+          <select class="setting-select" id="settingRecommendation">
+            <option value="combined">Combined (Deezer + Last.fm)</option>
+            <option value="deezer">Deezer (artist radio — fast)</option>
+            <option value="lastfm">Last.fm (track similarity — precise)</option>
+          </select>
         </div>
       </div>
     </details>
@@ -1354,10 +1394,14 @@ body.player-active .player-bar { display: flex; }
         <button class="option-btn" data-value="mp3">MP3 320k</button>
       </div>
     </div>
-    <div style="display:flex; gap:8px;">
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="btn-download" id="modalPlay" style="background:var(--accent);color:#000;flex:1;">&#9654; Play</button>
       <button class="btn-download" id="modalAddQueue" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);flex:1;">+ Queue</button>
       <button class="btn-download" id="modalDownload" style="flex:1;">Download</button>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button class="btn-download" id="modalRadio" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);flex:1;">&#x1f4fb; Radio</button>
+      <button class="btn-download" id="modalFavToggle" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);flex:1;">&#x2661; Follow</button>
     </div>
   </div>
 </div>
@@ -1611,6 +1655,9 @@ async function initApp() {
     // Restore player queue
     loadQueueState();
 
+    // Load favorited artist IDs
+    loadFavoritedArtistIds();
+
     $('#searchInput').focus();
     requestNotificationPermission();
   } catch {
@@ -1642,7 +1689,12 @@ let searchLoading = false;
 let searchHasMore = true;
 let searchQuery = '';
 let currentPlaylistTracks = [];
-let appSettings = { default_format: 'flac', default_method: 'yt-dlp', search_provider: 'deezer', search_fallback: '', podcast_provider: 'itunes', max_concurrent: 10 };
+let appSettings = { default_format: 'flac', default_method: 'yt-dlp', search_provider: 'deezer', search_fallback: '', podcast_provider: 'itunes', max_concurrent: 10, recommendation_source: 'combined' };
+let radioMode = false;
+let radioSeedTrack = null;
+let radioLoading = false;
+let favoritedArtistIds = new Set();
+let currentArtistId = null;
 
 // ── Navigation ──
 function switchPage(page, fromPopstate) {
@@ -1665,6 +1717,7 @@ function switchPage(page, fromPopstate) {
   $('#pageDiscover').style.display = page === 'discover' ? '' : 'none';
   $('#pagePlaylists').style.display = page === 'playlists' ? '' : 'none';
   $('#pagePodcasts').style.display = page === 'podcasts' ? '' : 'none';
+  $('#pageFavorites').style.display = page === 'favorites' ? '' : 'none';
   $('#pageSettings').style.display = page === 'settings' ? '' : 'none';
   if (page === 'search') {
     $('#showDetail').style.display = 'none';
@@ -1673,6 +1726,7 @@ function switchPage(page, fromPopstate) {
   if (page === 'discover') loadTags();
   if (page === 'playlists') loadPlaylists();
   if (page === 'podcasts') loadPodcasts();
+  if (page === 'favorites') loadFavorites();
   if (page === 'settings') loadSettings();
 }
 
@@ -1750,7 +1804,7 @@ async function doSearch(append) {
       const fragment = document.createElement('div');
       fragment.innerHTML = data.results.map(item => `
         <div class="card" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
-          ${cardPlayBtn(item)}${cardDlBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+          ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
           <div class="card-body">
             <div class="card-title">${esc(item.name)}</div>
             <div class="card-sub">${cardSubHtml(item)}</div>
@@ -1765,7 +1819,7 @@ async function doSearch(append) {
       `).join('');
       Array.from(fragment.children).forEach(card => {
         card.addEventListener('click', (e) => {
-          if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn')) return;
+          if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-fav-btn')) return;
           const item = JSON.parse(card.dataset.item);
           if (item.type === 'playlist' && item.id) {
             loadPlaylistDetail(item.id, item.url, 'search');
@@ -1799,6 +1853,16 @@ function cardDlBtn(item) {
   if (type === 'playlist' || type === 'show' || type === 'artist') return '';
   return '<button class="card-dl-btn" title="Download"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>';
 }
+function cardRadioBtn(item) {
+  const type = item.type || 'track';
+  if (type === 'playlist' || type === 'show' || type === 'episode') return '';
+  return '<button class="card-radio-btn" title="Play Radio">&#x1f4fb;</button>';
+}
+function cardFavBtn(item) {
+  if ((item.type || 'track') !== 'artist') return '';
+  const isFav = favoritedArtistIds.has(item.id);
+  return `<button class="card-fav-btn${isFav ? ' following' : ''}" title="${isFav ? 'Unfollow' : 'Follow'}">${isFav ? '&#x2665;' : '&#x2661;'}</button>`;
+}
 
 function cardSubHtml(item) {
   const artist = item.artist || '';
@@ -1824,7 +1888,7 @@ function renderResults(items, container, fromPage) {
   }
   el.innerHTML = items.map(item => `
     <div class="card" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
-      ${cardPlayBtn(item)}${cardDlBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="card-body">
         <div class="card-title">${esc(item.name)}</div>
         <div class="card-sub">${cardSubHtml(item)}</div>
@@ -1840,7 +1904,7 @@ function renderResults(items, container, fromPage) {
 
   $$('.card', el).forEach(card => {
     card.addEventListener('click', (e) => {
-      if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn')) return;
+      if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-fav-btn')) return;
       const item = JSON.parse(card.dataset.item);
       if (item.type === 'playlist' && item.id) {
         loadPlaylistDetail(item.id, item.url, fromPage);
@@ -2117,6 +2181,7 @@ async function loadPlaylistDetail(id, url, fromPage) {
     $('#pageSearch').style.display = 'none';
     $('#pageDiscover').style.display = 'none';
     $('#pagePlaylists').style.display = '';
+    $('#pageFavorites').style.display = 'none';
     $('#pageSettings').style.display = 'none';
   }
   $('#playlistsGrid').style.display = 'none';
@@ -2227,6 +2292,7 @@ let currentArtistAlbums = [];
 
 async function loadArtistDetail(id, fromPage) {
   artistDetailSource = fromPage || null;
+  currentArtistId = id;
   $('#searchResults').style.display = 'none';
   $('#searchLoadMore').style.display = 'none';
   $('#artistDetail').style.display = '';
@@ -2681,6 +2747,22 @@ function openModal(item) {
   dlBtn.textContent = 'Download';
   $('#downloadModal').classList.add('open');
 
+  // Update radio/favorite buttons visibility
+  const isRadioable = type === 'track' || type === 'album' || type === 'artist';
+  $('#modalRadio').style.display = isRadioable ? '' : 'none';
+  const isFavable = type === 'artist' || (type === 'album' && item.id) || type === 'track';
+  $('#modalFavToggle').style.display = isFavable ? '' : 'none';
+  // Show follow state for artists
+  if (type === 'artist' && item.id && favoritedArtistIds.has(item.id)) {
+    $('#modalFavToggle').innerHTML = '&#x2665; Unfollow';
+    $('#modalFavToggle').style.color = '#ef4444';
+  } else if (type === 'artist') {
+    $('#modalFavToggle').innerHTML = '&#x2661; Follow';
+    $('#modalFavToggle').style.color = '';
+  } else {
+    $('#modalFavToggle').style.display = 'none';
+  }
+
   // Last.fm items have no Spotify URL — resolve it (skip for playlists/podcasts)
   if (!item.url && item.type !== 'playlist' && !isPodcast) {
     dlBtn.disabled = true;
@@ -2907,7 +2989,7 @@ async function loadTagResults(tag, type, append) {
       const fragment = document.createElement('div');
       fragment.innerHTML = data.results.map(item => `
         <div class="card" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
-          ${cardPlayBtn(item)}${cardDlBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+          ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
           <div class="card-body">
             <div class="card-title">${esc(item.name)}</div>
             <div class="card-sub">${cardSubHtml(item)}</div>
@@ -2917,7 +2999,7 @@ async function loadTagResults(tag, type, append) {
       `).join('');
       Array.from(fragment.children).forEach(card => {
         card.addEventListener('click', (e) => {
-          if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn')) return;
+          if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-fav-btn')) return;
           openModal(JSON.parse(card.dataset.item));
         });
         grid.appendChild(card);
@@ -2996,6 +3078,7 @@ async function loadSettings() {
     $('#settingMethod').value = data.default_method || 'yt-dlp';
     $('#settingFormat').value = data.default_format || 'flac';
     $('#settingMaxConcurrent').value = data.max_concurrent || 10;
+    $('#settingRecommendation').value = data.recommendation_source || 'combined';
     $('#settingSlskdUrl').value = data.slskd_url || '';
     $('#settingSlskdKey').value = '';
     $('#settingSlskdKey').placeholder = data.slskd_api_key ? '(set) Enter new...' : 'Enter API key...';
@@ -3049,6 +3132,7 @@ $('#saveSettings').addEventListener('click', async () => {
     default_method: $('#settingMethod').value,
     default_format: $('#settingFormat').value,
     max_concurrent: parseInt($('#settingMaxConcurrent').value) || 10,
+    recommendation_source: $('#settingRecommendation').value,
     slskd_url: $('#settingSlskdUrl').value,
     navidrome_url: $('#settingNavidromeUrl').value,
     navidrome_user: $('#settingNavidromeUser').value,
@@ -3530,6 +3614,35 @@ function nextTrack() {
   } else if (repeatMode === 'all') {
     playerIndex = 0;
     loadAndPlay();
+  } else if (radioMode && !radioLoading) {
+    // Auto-fill queue with more radio tracks
+    radioLoading = true;
+    const seed = playerQueue[playerQueue.length - 1] || radioSeedTrack;
+    if (seed) {
+      showToast('Loading more similar tracks...');
+      const params = new URLSearchParams({ track: seed.name || '', artist: seed.artist || '', artist_id: seed.id || currentArtistId || '' });
+      apiJson(`/api/radio?${params}`).then(data => {
+        const newTracks = (data.tracks || []).filter(t => {
+          const key = (t.name || '').toLowerCase() + '|' + (t.artist || '').toLowerCase();
+          return !playerQueue.some(q => (q.name || '').toLowerCase() + '|' + (q.artist || '').toLowerCase() === key);
+        });
+        if (newTracks.length) {
+          playerQueue = playerQueue.concat(newTracks);
+          playerIndex++;
+          loadAndPlay();
+          renderQueue();
+          saveQueueDebounced();
+        } else {
+          showToast('No more similar tracks found');
+          audio.pause();
+          updatePlayPauseIcon(false);
+        }
+      }).catch(() => {
+        showToast('Failed to load more tracks');
+        audio.pause();
+        updatePlayPauseIcon(false);
+      }).finally(() => { radioLoading = false; });
+    }
   } else {
     audio.pause();
     updatePlayPauseIcon(false);
@@ -4091,6 +4204,234 @@ $('#fpRepeat').addEventListener('click', () => {
   badge.textContent = repeatMode === 'one' ? '1' : '';
   btn.title = repeatMode === 'off' ? 'Repeat off' : repeatMode === 'all' ? 'Repeat all' : 'Repeat one';
 });
+
+// ── Radio ──
+
+async function startRadio(item) {
+  const params = new URLSearchParams({
+    track: item.name || '',
+    artist: item.artist || '',
+    artist_id: item.id || currentArtistId || '',
+  });
+  showToast('Starting radio...');
+  try {
+    const data = await apiJson(`/api/radio?${params}`);
+    const tracks = data.tracks || [];
+    if (!tracks.length) { showToast('No radio tracks found'); return; }
+    playerQueue = tracks;
+    playerIndex = 0;
+    radioMode = true;
+    radioSeedTrack = item;
+    radioLoading = false;
+    loadAndPlay();
+    showToast(`Playing radio based on ${item.artist || item.name}`);
+  } catch (e) {
+    showToast('Radio failed: ' + e.message);
+  }
+}
+
+// Radio button on cards (event delegation)
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.card-radio-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  const card = btn.closest('.card');
+  if (!card) return;
+  const item = JSON.parse(card.dataset.item);
+  startRadio(item);
+});
+
+// Favorite button on cards (event delegation)
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.card-fav-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  const card = btn.closest('.card');
+  if (!card) return;
+  const item = JSON.parse(card.dataset.item);
+  if (item.type !== 'artist' || !item.id) return;
+  await toggleFavoriteArtist(item, btn);
+});
+
+async function toggleFavoriteArtist(item, btnEl) {
+  const isFollowing = favoritedArtistIds.has(item.id);
+  try {
+    if (isFollowing) {
+      await apiJson(`/api/favorites/${item.id}`, { method: 'DELETE' });
+      favoritedArtistIds.delete(item.id);
+      if (btnEl) { btnEl.classList.remove('following'); btnEl.innerHTML = '&#x2661;'; btnEl.title = 'Follow'; }
+      showToast(`Unfollowed ${item.name}`);
+    } else {
+      await apiJson('/api/favorites', { method: 'POST', body: { artist_id: item.id, name: item.name, image: item.image || '' } });
+      favoritedArtistIds.add(item.id);
+      if (btnEl) { btnEl.classList.add('following'); btnEl.innerHTML = '&#x2665;'; btnEl.title = 'Unfollow'; }
+      showToast(`Following ${item.name}`);
+    }
+  } catch (e) {
+    showToast('Failed: ' + e.message);
+  }
+}
+
+// Modal radio button
+$('#modalRadio').addEventListener('click', () => {
+  if (!modalItem) return;
+  const item = {...modalItem};
+  closeModal();
+  startRadio(item);
+});
+
+// Modal favorite toggle
+$('#modalFavToggle').addEventListener('click', async () => {
+  if (!modalItem || modalItem.type !== 'artist') return;
+  const item = {...modalItem};
+  const isFollowing = favoritedArtistIds.has(item.id);
+  try {
+    if (isFollowing) {
+      await apiJson(`/api/favorites/${item.id}`, { method: 'DELETE' });
+      favoritedArtistIds.delete(item.id);
+      $('#modalFavToggle').innerHTML = '&#x2661; Follow';
+      $('#modalFavToggle').style.color = '';
+      showToast(`Unfollowed ${item.name}`);
+    } else {
+      await apiJson('/api/favorites', { method: 'POST', body: { artist_id: item.id, name: item.name, image: item.image || '' } });
+      favoritedArtistIds.add(item.id);
+      $('#modalFavToggle').innerHTML = '&#x2665; Unfollow';
+      $('#modalFavToggle').style.color = '#ef4444';
+      showToast(`Following ${item.name}`);
+    }
+  } catch (e) {
+    showToast('Failed: ' + e.message);
+  }
+});
+
+// Reset radio mode when user manually changes queue
+const _origPlayTrack = playTrack;
+playTrack = function(item) {
+  radioMode = false;
+  _origPlayTrack(item);
+};
+
+// ── Favorites Page ──
+
+async function loadFavoritedArtistIds() {
+  try {
+    const data = await apiJson('/api/favorites');
+    favoritedArtistIds = new Set((data.artists || []).map(a => a.id));
+  } catch { }
+}
+
+async function loadFavorites() {
+  const grid = $('#favoritesGrid');
+  const empty = $('#favoritesEmpty');
+  grid.innerHTML = Array(6).fill('<div class="skeleton skeleton-card"></div>').join('');
+  empty.style.display = 'none';
+  try {
+    const data = await apiJson('/api/favorites');
+    const artists = data.artists || [];
+    favoritedArtistIds = new Set(artists.map(a => a.id));
+    if (!artists.length) {
+      grid.innerHTML = '';
+      empty.style.display = '';
+      return;
+    }
+    grid.innerHTML = artists.map(a => `
+      <div class="card fav-card" data-artist-id="${a.id}" data-item='${JSON.stringify({id: a.id, name: a.name, artist: a.name, image: a.image, type: "artist"}).replace(/'/g, "&#39;")}'>
+        <img class="card-img" src="${a.image || ''}" alt="" loading="lazy" style="border-radius:50%;" onerror="this.style.background='var(--bg-elevated)'">
+        ${a.new_release ? '<div class="fav-new-badge">NEW</div>' : ''}
+        <div class="card-body">
+          <div class="card-title">${esc(a.name)}</div>
+          <div class="card-sub">${a.new_release ? esc(a.new_release.name) : (a.last_album_name ? esc(a.last_album_name) : '')}</div>
+        </div>
+      </div>
+    `).join('');
+    $$('.fav-card', grid).forEach(card => {
+      card.addEventListener('click', () => {
+        const artistId = card.dataset.artistId;
+        const artist = artists.find(a => a.id === artistId);
+        if (artist) openFavoriteModal(artist);
+      });
+    });
+  } catch (e) {
+    grid.innerHTML = `<div class="empty-state"><p>Failed to load favorites: ${e.message}</p></div>`;
+  }
+}
+
+function openFavoriteModal(artist) {
+  openModal({
+    id: artist.id,
+    name: artist.name,
+    artist: artist.name,
+    image: artist.image,
+    type: 'artist',
+  });
+}
+
+// Check new releases button
+$('#checkReleasesBtn').addEventListener('click', async () => {
+  const btn = $('#checkReleasesBtn');
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  try {
+    const data = await apiJson('/api/favorites/check', { method: 'POST' });
+    showToast(data.new_count ? `Found ${data.new_count} new release(s)!` : 'No new releases');
+    loadFavorites();
+  } catch (e) {
+    showToast('Check failed: ' + e.message);
+  } finally {
+    btn.textContent = 'Check Now';
+    btn.disabled = false;
+  }
+});
+
+// Artist detail: radio + follow buttons
+$('#downloadArtist').insertAdjacentHTML('afterend', `
+  <button class="btn-download" id="radioArtist" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">&#x1f4fb; Radio</button>
+  <button class="btn-download" id="followArtist" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">&#x2661; Follow</button>
+`);
+
+$('#radioArtist').addEventListener('click', () => {
+  const name = $('#artistDetailName').textContent;
+  const img = $('#artistDetailImg').src;
+  startRadio({ name, artist: name, image: img, id: currentArtistId, type: 'artist' });
+});
+
+$('#followArtist').addEventListener('click', async () => {
+  const name = $('#artistDetailName').textContent;
+  const img = $('#artistDetailImg').src;
+  const item = { id: currentArtistId, name, artist: name, image: img, type: 'artist' };
+  const btn = $('#followArtist');
+  const isFollowing = favoritedArtistIds.has(currentArtistId);
+  if (isFollowing) {
+    await apiJson(`/api/favorites/${currentArtistId}`, { method: 'DELETE' });
+    favoritedArtistIds.delete(currentArtistId);
+    btn.innerHTML = '&#x2661; Follow';
+    btn.style.color = '';
+    showToast(`Unfollowed ${name}`);
+  } else {
+    await apiJson('/api/favorites', { method: 'POST', body: { artist_id: currentArtistId, name, image: img } });
+    favoritedArtistIds.add(currentArtistId);
+    btn.innerHTML = '&#x2665; Following';
+    btn.style.color = '#ef4444';
+    showToast(`Following ${name}`);
+  }
+});
+
+// Update follow button state when loading artist detail
+const _origLoadArtistDetail = loadArtistDetail;
+loadArtistDetail = async function(id, fromPage) {
+  currentArtistId = id;
+  await _origLoadArtistDetail(id, fromPage);
+  const btn = $('#followArtist');
+  if (favoritedArtistIds.has(id)) {
+    btn.innerHTML = '&#x2665; Following';
+    btn.style.color = '#ef4444';
+  } else {
+    btn.innerHTML = '&#x2661; Follow';
+    btn.style.color = '';
+  }
+};
+
+// loadFavoritedArtistIds is called from initApp()
 </script>
 </body>
 </html>
