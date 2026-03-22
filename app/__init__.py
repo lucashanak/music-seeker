@@ -27,7 +27,7 @@ def create_app() -> FastAPI:
     from app.background import startup
     app.on_event("startup")(startup)
 
-    # Version endpoint (uses settings, keep in factory)
+    # Version endpoint — kept unauthenticated for pre-login cache busting
     @app.get("/api/version")
     async def get_version():
         return {

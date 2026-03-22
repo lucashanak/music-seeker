@@ -9,6 +9,14 @@ from app.services import auth, podcasts, search_providers, jobs, downloader
 router = APIRouter(prefix="/api/podcasts", tags=["podcasts"])
 
 
+def _safe_path_component(name: str) -> str:
+    """Sanitize path component to prevent traversal attacks."""
+    name = os.path.basename(name)
+    if not name or name in (".", ".."):
+        raise HTTPException(400, "Invalid name")
+    return name
+
+
 @router.get("")
 async def list_podcasts(user: dict = Depends(auth.get_current_user)):
     """List downloaded podcast shows and their episodes."""
@@ -55,6 +63,8 @@ async def list_podcasts(user: dict = Depends(auth.get_current_user)):
 @router.delete("/{show_name}/{filename}")
 async def delete_podcast_episode(show_name: str, filename: str, user: dict = Depends(auth.get_current_user)):
     """Delete a single podcast episode file."""
+    show_name = _safe_path_component(show_name)
+    filename = _safe_path_component(filename)
     music_dir = os.environ.get("MUSIC_DIR", "/music")
     podcasts_dir = os.path.join(music_dir, user["username"], "Podcasts")
     if not os.path.isfile(os.path.join(podcasts_dir, show_name, filename)):
@@ -73,6 +83,7 @@ async def delete_podcast_episode(show_name: str, filename: str, user: dict = Dep
 @router.delete("/{show_name}")
 async def delete_podcast_show(show_name: str, user: dict = Depends(auth.get_current_user)):
     """Delete all episodes of a podcast show."""
+    show_name = _safe_path_component(show_name)
     import shutil
     music_dir = os.environ.get("MUSIC_DIR", "/music")
     podcasts_dir = os.path.join(music_dir, user["username"], "Podcasts")
@@ -88,6 +99,15 @@ async def delete_podcast_show(show_name: str, user: dict = Depends(auth.get_curr
 @router.get("/rss-episodes")
 async def get_rss_episodes(feed_url: str = Query(...), user: dict = Depends(auth.get_current_user)):
     """Get episodes from an RSS feed URL directly."""
+    from urllib.parse import urlparse
+    parsed = urlparse(feed_url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "Only HTTP/HTTPS URLs are allowed")
+    hostname = parsed.hostname or ""
+    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1") or hostname.endswith(".local") \
+            or hostname.startswith("10.") or hostname.startswith("192.168.") \
+            or hostname.startswith("172.") or hostname in ("navidrome", "slskd", "lidarr", "music-seeker"):
+        raise HTTPException(400, "Internal URLs are not allowed")
     episodes = await search_providers.parse_podcast_rss(feed_url)
     return {"episodes": episodes}
 

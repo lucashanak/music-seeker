@@ -60,6 +60,19 @@ def get_all() -> dict:
     }
 
 
+def get_public() -> dict:
+    """Settings safe for non-admin users — no internal URLs or credentials."""
+    return {
+        "default_format": _settings["default_format"],
+        "default_method": _settings["default_method"],
+        "search_provider": _settings["search_provider"],
+        "search_fallback": _settings["search_fallback"],
+        "podcast_provider": _settings["podcast_provider"],
+        "max_concurrent": _settings["max_concurrent"],
+        "recommendation_source": _settings["recommendation_source"],
+    }
+
+
 def update(data: dict) -> dict:
     for key, value in data.items():
         if key in _settings:

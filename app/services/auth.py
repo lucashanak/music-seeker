@@ -21,6 +21,7 @@ def _get_jwt_secret():
         return secret_file.read_text().strip()
     secret = secrets.token_hex(32)
     secret_file.write_text(secret)
+    os.chmod(secret_file, 0o600)
     return secret
 
 JWT_SECRET = _get_jwt_secret()
@@ -43,16 +44,23 @@ def _save_users(users: dict):
     USERS_FILE.write_text(json.dumps(users, indent=2))
 
 
+PBKDF2_ITERATIONS = 600_000  # OWASP 2023 recommendation for SHA-256
+
+
 def _hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100000)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ITERATIONS)
     return f"{salt}:{h.hex()}"
 
 
 def _verify_password(password: str, stored: str) -> bool:
     salt, h = stored.split(":", 1)
-    check = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100000)
-    return hmac.compare_digest(check.hex(), h)
+    # Try new iteration count first, fallback to legacy 100k
+    check = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ITERATIONS)
+    if hmac.compare_digest(check.hex(), h):
+        return True
+    check_legacy = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100_000)
+    return hmac.compare_digest(check_legacy.hex(), h)
 
 
 def _create_token(username: str, is_admin: bool) -> str:
@@ -117,6 +125,12 @@ def login(username: str, password: str) -> str | None:
     user = users.get(username)
     if not user or not _verify_password(password, user["password"]):
         return None
+    # Auto-upgrade legacy hashes (100k iterations → 600k)
+    salt = user["password"].split(":")[0]
+    new_hash = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ITERATIONS)
+    if not hmac.compare_digest(new_hash.hex(), user["password"].split(":")[1]):
+        user["password"] = _hash_password(password)
+        _save_users(users)
     return _create_token(username, user.get("is_admin", False))
 
 
@@ -136,9 +150,11 @@ def get_current_user(request: Request) -> dict:
         raise HTTPException(401, "Invalid or expired token")
 
     users = _load_users()
-    user_data = users.get(payload["sub"], {})
+    user_data = users.get(payload["sub"])
+    if user_data is None:
+        raise HTTPException(401, "User no longer exists")
     perms = _user_perms(user_data)
-    return {"username": payload["sub"], "is_admin": payload.get("admin", False), **perms}
+    return {"username": payload["sub"], "is_admin": user_data.get("is_admin", False), **perms}
 
 
 def require_admin(request: Request) -> dict:
@@ -156,9 +172,14 @@ def list_users() -> list[dict]:
     ]
 
 
+MIN_PASSWORD_LENGTH = 8
+
+
 def create_user(username: str, password: str, is_admin: bool = False,
                 allowed_formats: list[str] | None = None,
                 allowed_methods: list[str] | None = None) -> bool:
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
     users = _load_users()
     if username in users:
         return False
@@ -198,6 +219,8 @@ def delete_user(username: str) -> bool:
 
 
 def change_password(username: str, new_password: str) -> bool:
+    if len(new_password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
     users = _load_users()
     if username not in users:
         return False

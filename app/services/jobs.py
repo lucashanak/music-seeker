@@ -103,13 +103,18 @@ def get_job(job_id: str) -> Job | None:
     return _jobs.get(job_id)
 
 
-def get_all_jobs() -> list[dict]:
-    return [j.to_dict() for j in sorted(_jobs.values(), key=lambda j: j.started_at, reverse=True)]
+def get_all_jobs(username: str = "", is_admin: bool = False) -> list[dict]:
+    jobs = _jobs.values()
+    if username and not is_admin:
+        jobs = [j for j in jobs if j.username == username]
+    return [j.to_dict() for j in sorted(jobs, key=lambda j: j.started_at, reverse=True)]
 
 
-def cancel_job(job_id: str) -> bool:
+def cancel_job(job_id: str, username: str = "", is_admin: bool = False) -> bool:
     job = _jobs.get(job_id)
     if not job:
+        return False
+    if username and not is_admin and job.username != username:
         return False
     task = _tasks.get(job_id)
     if task and not task.done():
@@ -120,11 +125,12 @@ def cancel_job(job_id: str) -> bool:
     return True
 
 
-def clear_history() -> int:
-    """Remove all finished jobs. Returns count removed."""
+def clear_history(username: str = "", is_admin: bool = False) -> int:
+    """Remove finished jobs. Non-admins only clear their own."""
     to_remove = [
         jid for jid, j in _jobs.items()
         if j.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
+        and (is_admin or not username or j.username == username)
     ]
     for jid in to_remove:
         del _jobs[jid]

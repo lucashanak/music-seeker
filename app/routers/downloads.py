@@ -47,7 +47,7 @@ async def start_download(req: DownloadRequest, user: dict = Depends(auth.get_cur
 
 @router.get("/jobs")
 async def list_jobs(user: dict = Depends(auth.get_current_user)):
-    return {"jobs": jobs.get_all_jobs()}
+    return {"jobs": jobs.get_all_jobs(username=user["username"], is_admin=user.get("is_admin", False))}
 
 
 @router.get("/jobs/{job_id}")
@@ -55,19 +55,21 @@ async def get_job(job_id: str, user: dict = Depends(auth.get_current_user)):
     job = jobs.get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
+    if not user.get("is_admin") and job.username != user["username"]:
+        raise HTTPException(404, "Job not found")
     return job.to_dict()
 
 
 @router.delete("/jobs/{job_id}")
 async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
-    if not jobs.cancel_job(job_id):
+    if not jobs.cancel_job(job_id, username=user["username"], is_admin=user.get("is_admin", False)):
         raise HTTPException(404, "Job not found")
     return {"status": "cancelled"}
 
 
 @router.delete("/jobs")
 async def clear_history(user: dict = Depends(auth.get_current_user)):
-    count = jobs.clear_history()
+    count = jobs.clear_history(username=user["username"], is_admin=user.get("is_admin", False))
     return {"status": "cleared", "count": count}
 
 

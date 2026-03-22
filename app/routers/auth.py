@@ -1,16 +1,34 @@
-from fastapi import APIRouter, HTTPException, Depends
+import asyncio
+import time
+
+from fastapi import APIRouter, HTTPException, Depends, Request
 
 from app.models import LoginRequest, SpotifyConnectRequest, UserSettingRequest, ChangePasswordRequest
 from app.services import auth as auth_service, spotify as spotify_service
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
+# Simple rate limiter: {ip: [timestamps]}
+_login_attempts: dict[str, list[float]] = {}
+_MAX_ATTEMPTS = 5
+_WINDOW_SECONDS = 300  # 5 minutes
+
 
 @router.post("/auth/login")
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, request: Request):
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    # Clean old attempts
+    attempts = [t for t in _login_attempts.get(ip, []) if now - t < _WINDOW_SECONDS]
+    if len(attempts) >= _MAX_ATTEMPTS:
+        raise HTTPException(429, "Too many login attempts. Try again later.")
     token = auth_service.login(req.username, req.password)
     if not token:
+        attempts.append(now)
+        _login_attempts[ip] = attempts
+        await asyncio.sleep(1)  # slow down brute force
         raise HTTPException(401, "Invalid username or password")
+    _login_attempts.pop(ip, None)  # clear on success
     return {"token": token}
 
 
@@ -26,7 +44,7 @@ async def connect_user_spotify(req: SpotifyConnectRequest, user: dict = Depends(
         creds = {"client_id": req.client_id, "client_secret": req.client_secret, "refresh_token": req.refresh_token}
         await spotify_service.get_user_token(creds)
     except Exception as e:
-        raise HTTPException(400, f"Invalid Spotify credentials: {e}")
+        raise HTTPException(400, "Invalid Spotify credentials")
     auth_service.update_user_spotify(user["username"], req.client_id, req.client_secret, req.refresh_token)
     return {"status": "connected"}
 

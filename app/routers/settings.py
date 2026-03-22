@@ -8,7 +8,9 @@ router = APIRouter(prefix="/api", tags=["settings"])
 
 @router.get("/settings")
 async def get_settings(user: dict = Depends(auth.get_current_user)):
-    return app_settings.get_all()
+    if user.get("is_admin"):
+        return app_settings.get_all()
+    return app_settings.get_public()
 
 
 @router.put("/settings")

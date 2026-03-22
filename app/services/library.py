@@ -1,5 +1,7 @@
+import hashlib
 import os
 import re
+import secrets
 import unicodedata
 import httpx
 
@@ -9,11 +11,15 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "")
 
 
 def _params(**extra) -> dict:
+    """Use Subsonic token auth (salt + md5) instead of plaintext password."""
+    salt = secrets.token_hex(8)
+    token = hashlib.md5((NAVIDROME_PASSWORD + salt).encode()).hexdigest()
     p = {
         "v": "1.16.1",
         "c": "music-seeker",
         "u": NAVIDROME_USER,
-        "p": NAVIDROME_PASSWORD,
+        "t": token,
+        "s": salt,
         "f": "json",
     }
     p.update(extra)
