@@ -66,15 +66,20 @@ export function historyBack() {
   history.back();
 }
 
-// ── Virtual keyboard: keep bottom nav visible ──
+// ── Virtual keyboard: hide bottom nav + player bar when keyboard is open ──
 export function initVirtualKeyboard() {
+  const inputTags = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+  const app = document.getElementById('appContainer');
+
   if (window.visualViewport) {
-    const bn = $('#bottomNav');
-    function adjustBottomNav() {
+    function adjust() {
       const offset = window.innerHeight - visualViewport.height - visualViewport.offsetTop;
-      if (bn) bn.style.transform = offset > 50 ? `translateY(-${offset}px)` : '';
+      // Only consider keyboard open if viewport shrank significantly AND an input is focused
+      const active = document.activeElement;
+      const inputFocused = active && inputTags.has(active.tagName) && app && app.contains(active);
+      document.body.classList.toggle('keyboard-open', offset > 150 && inputFocused);
     }
-    visualViewport.addEventListener('resize', adjustBottomNav);
-    visualViewport.addEventListener('scroll', adjustBottomNav);
+    visualViewport.addEventListener('resize', adjust);
+    visualViewport.addEventListener('scroll', adjust);
   }
 }

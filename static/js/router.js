@@ -101,8 +101,13 @@ function handlePopstate(e) {
   if ($('#podcastEpisodes').style.display !== 'none' && closePodcastShow) { closePodcastShow(true); return; }
   if ($('#tagDetailView').style.display !== 'none' && closeTagDetail) { closeTagDetail(true); return; }
   if ($('#artistDetail').style.display !== 'none' && closeArtistDetail) { closeArtistDetail(true); return; }
+  // Guard: prevent exiting the app
+  if (!state || state.guard) {
+    history.pushState({ page: store.currentPage }, '');
+    return;
+  }
   // Page navigation
-  if (state && state.page) { switchPage(state.page, true); }
+  if (state.page) { switchPage(state.page, true); }
 }
 
 // ── Keyboard shortcuts ──
@@ -123,7 +128,9 @@ function handleKeydown(e) {
 
 // ── Init ──
 export function init() {
-  history.replaceState({ page: 'search' }, '');
+  // Push a guard entry so back button never exits the app
+  history.replaceState({ guard: true }, '');
+  history.pushState({ page: 'search' }, '');
 
   document.addEventListener('click', handleClickableSearch);
 

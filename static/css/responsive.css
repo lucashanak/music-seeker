@@ -64,8 +64,10 @@
     padding: 16px 16px calc(var(--bottom-nav-height) + 16px);
   }
   body.player-active main { padding-bottom: calc(var(--bottom-nav-height) + 68px + 16px); }
-  body.player-active .bottom-nav { bottom: 68px; }
-  .player-bar { padding: 0 12px; gap: 10px; height: 68px; }
+  body.player-active .bottom-nav { bottom: calc(67px + env(safe-area-inset-bottom, 0)); }
+  body.keyboard-open .bottom-nav { display: none !important; }
+  body.keyboard-open .player-bar { display: none !important; }
+  .player-bar { padding: 0 12px; padding-bottom: env(safe-area-inset-bottom, 0); gap: 10px; height: calc(68px + env(safe-area-inset-bottom, 0)); }
   .player-progress-wrap { display: none; }
   .player-volume { display: none !important; }
   .player-bar .player-img { width: 42px; height: 42px; }
