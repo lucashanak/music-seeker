@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 
 from app.models import FollowArtistRequest, UpdateFavoriteRequest
-from app.services import auth, favorites
+from app.services import auth, favorites, settings as app_settings
 
 router = APIRouter(prefix="/api/favorites", tags=["favorites"])
 
@@ -14,7 +14,8 @@ async def get_favorites_list(user: dict = Depends(auth.get_current_user)):
 
 @router.post("")
 async def follow_artist(req: FollowArtistRequest, user: dict = Depends(auth.get_current_user)):
-    ok = await favorites.follow_artist(user["username"], req.artist_id, req.name, req.image)
+    provider = app_settings._settings.get("search_provider", "deezer")
+    ok = await favorites.follow_artist(user["username"], req.artist_id, req.name, req.image, provider=provider)
     if not ok:
         raise HTTPException(409, "Already following this artist")
     return {"status": "followed"}

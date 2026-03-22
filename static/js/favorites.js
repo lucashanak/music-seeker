@@ -92,7 +92,7 @@ export function init() {
     btn.textContent = 'Checking...';
     try {
       const data = await apiJson('/api/favorites/check', { method: 'POST' });
-      showToast(data.new_count ? `Found ${data.new_count} new release(s)!` : 'No new releases');
+      showToast(data.new_count ? `Downloading ${data.new_count} missing album(s)` : 'All albums up to date');
       loadFavorites();
     } catch (e) {
       showToast('Check failed: ' + e.message);

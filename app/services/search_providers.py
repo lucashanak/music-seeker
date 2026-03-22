@@ -358,6 +358,86 @@ async def itunes_search(query: str, search_type: str = "track", limit: int = 20)
     return results
 
 
+async def itunes_get_artist_albums(artist_id: str) -> dict:
+    """Get all albums for an iTunes artist."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{ITUNES_BASE}/lookup", params={
+            "id": artist_id, "entity": "album", "limit": 200,
+        })
+        resp.raise_for_status()
+        data = resp.json()
+
+    artist_name = ""
+    artist_image = ""
+    albums = []
+    for item in data.get("results", []):
+        if item.get("wrapperType") == "artist":
+            artist_name = item.get("artistName", "")
+            continue
+        if item.get("wrapperType") != "collection":
+            continue
+        albums.append({
+            "id": str(item.get("collectionId", "")),
+            "name": item.get("collectionName", ""),
+            "artist": item.get("artistName", artist_name),
+            "image": _itunes_artwork(item.get("artworkUrl100", "")),
+            "url": item.get("collectionViewUrl", ""),
+            "total_tracks": item.get("trackCount", 0),
+            "release_date": (item.get("releaseDate", "") or "")[:10],
+            "type": "album",
+        })
+    return {
+        "name": artist_name,
+        "image": _itunes_artwork(albums[0].get("image", "")) if albums else "",
+        "albums": albums,
+    }
+
+
+async def itunes_get_album_tracks(album_id: str) -> list[dict]:
+    """Get all tracks for an iTunes album."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{ITUNES_BASE}/lookup", params={
+            "id": album_id, "entity": "song", "limit": 200,
+        })
+        resp.raise_for_status()
+        data = resp.json()
+
+    album_name = ""
+    album_image = ""
+    tracks = []
+    for item in data.get("results", []):
+        if item.get("wrapperType") == "collection":
+            album_name = item.get("collectionName", "")
+            album_image = _itunes_artwork(item.get("artworkUrl100", ""))
+            continue
+        if item.get("wrapperType") != "track":
+            continue
+        tracks.append({
+            "name": item.get("trackName", ""),
+            "artist": item.get("artistName", ""),
+            "album": album_name,
+            "image": album_image,
+            "url": item.get("trackViewUrl", ""),
+        })
+    return tracks
+
+
+async def itunes_artist_latest_album(artist_id: str) -> dict | None:
+    """Get the latest album from an iTunes artist."""
+    data = await itunes_get_artist_albums(artist_id)
+    albums = data.get("albums", [])
+    if not albums:
+        return None
+    # Sort by release_date descending, pick newest
+    albums.sort(key=lambda a: a.get("release_date", ""), reverse=True)
+    a = albums[0]
+    return {
+        "id": a["id"],
+        "name": a["name"],
+        "release_date": a.get("release_date", ""),
+    }
+
+
 async def itunes_get_show_episodes(show_id: str) -> dict:
     """Get show info and episode list via iTunes lookup + RSS feed."""
     async with httpx.AsyncClient(timeout=10) as client:
@@ -536,3 +616,26 @@ async def resolve(name: str, artist: str, item_type: str = "track", provider: st
     query = f"{artist} {name}" if artist else name
     results = await search(query, item_type, 1, provider=provider, fallback=fallback)
     return results[0] if results else None
+
+
+# ── Provider-aware artist/album functions ──
+
+async def get_artist_albums(artist_id: str, provider: str = "deezer") -> dict:
+    """Get artist albums using the appropriate provider."""
+    if provider in ("apple", "itunes"):
+        return await itunes_get_artist_albums(artist_id)
+    return await deezer_get_artist_albums(artist_id)
+
+
+async def get_album_tracks(album_id: str, provider: str = "deezer") -> list[dict]:
+    """Get album tracks using the appropriate provider."""
+    if provider in ("apple", "itunes"):
+        return await itunes_get_album_tracks(album_id)
+    return await deezer_get_album_tracks(album_id)
+
+
+async def artist_latest_album(artist_id: str, provider: str = "deezer") -> dict | None:
+    """Get latest album from an artist using the appropriate provider."""
+    if provider in ("apple", "itunes"):
+        return await itunes_artist_latest_album(artist_id)
+    return await deezer_artist_latest_album(artist_id)

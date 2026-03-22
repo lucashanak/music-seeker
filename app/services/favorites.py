@@ -3,6 +3,7 @@
 import os
 import json
 import time
+import asyncio
 import logging
 
 from app.services import search_providers
@@ -43,7 +44,7 @@ def is_following(username: str, artist_id: str) -> bool:
     return any(a["id"] == artist_id for a in artists)
 
 
-async def follow_artist(username: str, artist_id: str, name: str, image: str) -> bool:
+async def follow_artist(username: str, artist_id: str, name: str, image: str, provider: str = "deezer") -> bool:
     data = load_favorites(username)
     if any(a["id"] == artist_id for a in data["artists"]):
         return False  # already following
@@ -51,7 +52,7 @@ async def follow_artist(username: str, artist_id: str, name: str, image: str) ->
     # Fetch latest album ID for future comparison
     last_album = None
     try:
-        album = await search_providers.deezer_artist_latest_album(artist_id)
+        album = await search_providers.artist_latest_album(artist_id, provider=provider)
         if album:
             last_album = album
     except Exception:
@@ -63,6 +64,7 @@ async def follow_artist(username: str, artist_id: str, name: str, image: str) ->
         "image": image,
         "added_at": time.time(),
         "auto_download": False,
+        "provider": provider,
         "last_album_id": last_album["id"] if last_album else None,
         "last_album_name": last_album["name"] if last_album else None,
         "new_release": None,
@@ -108,10 +110,38 @@ def get_all_usernames() -> list[str]:
     return names
 
 
+async def _auto_download_album(album_id: str, album_name: str, artist: dict, username: str, provider: str = "deezer"):
+    """Download an album if any tracks are missing from library."""
+    from app.services import jobs
+    from app.services import downloader
+
+    tracks = await search_providers.get_album_tracks(album_id, provider=provider)
+    if not tracks:
+        return
+    playlist_tracks = [
+        {"name": t["name"], "artist": t["artist"],
+         "album": t.get("album", album_name),
+         "image": t.get("image", artist.get("image", "")),
+         "url": t.get("url", "")}
+        for t in tracks
+    ]
+    job = jobs.create_job(
+        type_="album",
+        title=f"Auto: {artist['name']} - {album_name}",
+        url="", method="yt-dlp", fmt="flac",
+        playlist_name="", playlist_tracks=playlist_tracks,
+        username=username,
+    )
+    task = asyncio.create_task(downloader.run_download(job))
+    jobs.register_task(job.id, task)
+    logger.info(f"Auto-download started: {artist['name']} - {album_name}")
+
+
 async def check_new_releases() -> int:
-    """Check all users' favorites for new releases. Returns count of new releases found."""
+    """Check all users' favorites for new releases and auto-download missing albums.
+    Returns count of download jobs started."""
     import asyncio
-    new_count = 0
+    download_count = 0
     usernames = get_all_usernames()
     for username in usernames:
         data = load_favorites(username)
@@ -119,59 +149,59 @@ async def check_new_releases() -> int:
         for artist in data["artists"]:
             try:
                 await asyncio.sleep(1)  # rate limit
-                album = await search_providers.deezer_artist_latest_album(artist["id"])
-                if not album:
+                provider = artist.get("provider", "deezer")
+
+                # Update latest album tracking
+                latest = await search_providers.artist_latest_album(artist["id"], provider=provider)
+                if not latest:
                     continue
-                if artist.get("last_album_id") and album["id"] != artist["last_album_id"]:
+
+                if artist.get("last_album_id") and latest["id"] != artist["last_album_id"]:
                     artist["new_release"] = {
-                        "id": album["id"],
-                        "name": album["name"],
-                        "release_date": album.get("release_date", ""),
+                        "id": latest["id"],
+                        "name": latest["name"],
+                        "release_date": latest.get("release_date", ""),
                     }
-                    artist["last_album_id"] = album["id"]
-                    artist["last_album_name"] = album["name"]
                     changed = True
-                    new_count += 1
-                    logger.info(f"New release for {artist['name']}: {album['name']} (user: {username})")
+                    logger.info(f"New release for {artist['name']}: {latest['name']} (user: {username})")
 
-                    # Auto-download if enabled
-                    if artist.get("auto_download"):
-                        try:
-                            from app.services import jobs
-                            from app.services import downloader
-                            tracks = await search_providers.deezer_get_album_tracks(album["id"])
-                            if tracks:
-                                playlist_tracks = [
-                                    {"name": t["name"], "artist": t["artist"],
-                                     "album": t.get("album", album["name"]),
-                                     "image": t.get("image", artist.get("image", "")),
-                                     "url": t.get("url", "")}
-                                    for t in tracks
-                                ]
-                                job = jobs.create_job(
-                                    type_="album",
-                                    title=f"Auto: {artist['name']} - {album['name']}",
-                                    url="", method="yt-dlp", fmt="flac",
-                                    playlist_name="", playlist_tracks=playlist_tracks,
-                                    username=username,
+                # Always update baseline
+                if latest:
+                    artist["last_album_id"] = latest["id"]
+                    artist["last_album_name"] = latest["name"]
+                    changed = True
+
+                # Auto-download: check ALL albums from this artist
+                if artist.get("auto_download"):
+                    try:
+                        artist_data = await search_providers.get_artist_albums(artist["id"], provider=provider)
+                        from app.services import library
+                        for album in artist_data.get("albums", []):
+                            await asyncio.sleep(0.5)  # rate limit
+                            # Get album tracks and check if any are missing
+                            tracks = await search_providers.get_album_tracks(album["id"], provider=provider)
+                            if not tracks:
+                                continue
+                            has_all = True
+                            for t in tracks:
+                                sid = await library.find_song_id(t["name"], t["artist"])
+                                if not sid:
+                                    has_all = False
+                                    break
+                            if not has_all:
+                                await _auto_download_album(
+                                    album["id"], album["name"], artist, username, provider=provider
                                 )
-                                import asyncio as _asyncio
-                                task = _asyncio.create_task(downloader.run_download(job))
-                                jobs.register_task(job.id, task)
-                                logger.info(f"Auto-download started: {artist['name']} - {album['name']}")
-                        except Exception as e:
-                            logger.error(f"Auto-download failed for {artist['name']}: {e}")
+                                download_count += 1
+                                logger.info(f"Missing album queued: {artist['name']} - {album['name']}")
+                    except Exception as e:
+                        logger.error(f"Auto-download check failed for {artist['name']}: {e}")
 
-                elif not artist.get("last_album_id") and album:
-                    # First time — just set the baseline
-                    artist["last_album_id"] = album["id"]
-                    artist["last_album_name"] = album["name"]
-                    changed = True
             except Exception as e:
                 logger.warning(f"Failed to check {artist['name']}: {e}")
         if changed:
             save_favorites(username, data)
-    return new_count
+    return download_count
 
 
 async def background_check_loop():
