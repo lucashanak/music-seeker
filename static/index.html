@@ -827,10 +827,10 @@ body.player-active .player-bar { display: flex; }
 .queue-backdrop.open { opacity: 1; pointer-events: auto; }
 .queue-panel { position: fixed; left: 0; right: 0; top: 0; height: 70vh; max-height: 600px; z-index: 250; background: var(--bg-card); border-radius: 0 0 20px 20px; transform: translateY(-100%); transition: transform .35s cubic-bezier(.32,.72,0,1); display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
 .queue-panel.open { transform: translateY(0); }
-.queue-panel.from-bottom { top: auto; bottom: 0; border-radius: 20px 20px 0 0; transform: translateY(100%); box-shadow: 0 -8px 40px rgba(0,0,0,.5); }
-.queue-panel.from-bottom.open { transform: translateY(0); }
-.queue-panel.from-bottom .queue-drag-handle { order: -1; margin: 8px auto 0; }
-.queue-panel.from-bottom .panel-header { order: 0; }
+.fp-queue-panel { position: fixed; left: 0; right: 0; bottom: 0; height: 75vh; max-height: 700px; z-index: 250; background: var(--bg-card); border-radius: 20px 20px 0 0; transform: translateY(100%); transition: transform .35s cubic-bezier(.32,.72,0,1); display: flex; flex-direction: column; box-shadow: 0 -8px 40px rgba(0,0,0,.5); }
+.fp-queue-panel.open { transform: translateY(0); }
+.fp-queue-panel .queue-drag-handle { order: -1; margin: 8px auto 0; }
+.fp-queue-panel .panel-header { order: 0; }
 .queue-drag-handle { width: 40px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.25); margin: 8px auto 0; flex-shrink: 0; }
 .queue-list { flex: 1; overflow-y: auto; padding: 8px; }
 .queue-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; cursor: pointer; transition: background .15s; }
@@ -1561,6 +1561,21 @@ body.player-active .player-bar { display: flex; }
     <div class="empty-state"><p>Queue is empty</p></div>
   </div>
   <div class="queue-drag-handle"></div>
+</div>
+
+<!-- ── Big Player Queue Panel (slides from bottom) ── -->
+<div class="fp-queue-panel" id="fpQueuePanel">
+  <div class="queue-drag-handle"></div>
+  <div class="panel-header">
+    Queue
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button class="btn-logout" id="fpQueueClear" style="font-size:11px;">Clear</button>
+      <button class="panel-close" id="fpQueuePanelClose">&times;</button>
+    </div>
+  </div>
+  <div class="queue-list" id="fpQueuePanelList">
+    <div class="empty-state"><p>Queue is empty</p></div>
+  </div>
 </div>
 
 <!-- ── Downloads Panel ── -->
@@ -3740,6 +3755,7 @@ window.addEventListener('popstate', e => {
   if (_ignorePopstate) { _ignorePopstate = false; return; }
   const state = e.state;
   // Close overlays first (highest priority)
+  if (fpQueuePanelOpen) { closeFpQueuePanel(true); return; }
   if (queuePanelOpen) { closeQueuePanel(true); return; }
   if (fullPlayerOpen) { closeFullPlayer(true); return; }
   if (modalItem) { closeModal(true); return; }
@@ -4095,15 +4111,22 @@ $('#clearQueue').addEventListener('click', () => {
   closeQueuePanel();
   saveQueueDebounced();
 });
-
-let queueFromBottom = false;
-function openQueuePanel(fromBottom) {
-  queueFromBottom = !!fromBottom;
+$('#fpQueuePanelClose').addEventListener('click', () => closeFpQueuePanel());
+$('#fpQueueClear').addEventListener('click', () => {
+  audio.pause();
+  playerQueue = [];
+  playerIndex = -1;
+  hidePlayerBar();
   renderQueue();
-  const qp = $('#queuePanel');
-  qp.classList.toggle('from-bottom', queueFromBottom);
+  closeFpQueuePanel();
+  saveQueueDebounced();
+});
+
+let fpQueuePanelOpen = false;
+function openQueuePanel() {
+  renderQueue();
   $('#queueBackdrop').classList.add('open');
-  qp.classList.add('open');
+  $('#queuePanel').classList.add('open');
   queuePanelOpen = true;
   history.pushState({layer: 'queuePanel'}, '');
 }
@@ -4114,10 +4137,24 @@ function closeQueuePanel(fromPopstate) {
   qp.classList.remove('open');
   qp.style.transform = '';
   qp.style.transition = '';
-  // Remove from-bottom after transition ends so closing animation uses correct direction
-  setTimeout(() => { qp.classList.remove('from-bottom'); }, 350);
   queuePanelOpen = false;
-  queueFromBottom = false;
+  if (!fromPopstate) historyBack();
+}
+function openFpQueuePanel() {
+  renderQueue();
+  $('#queueBackdrop').classList.add('open');
+  $('#fpQueuePanel').classList.add('open');
+  fpQueuePanelOpen = true;
+  history.pushState({layer: 'fpQueuePanel'}, '');
+}
+function closeFpQueuePanel(fromPopstate) {
+  if (!fpQueuePanelOpen) return;
+  $('#queueBackdrop').classList.remove('open');
+  const qp = $('#fpQueuePanel');
+  qp.classList.remove('open');
+  qp.style.transform = '';
+  qp.style.transition = '';
+  fpQueuePanelOpen = false;
   if (!fromPopstate) historyBack();
 }
 
@@ -4163,6 +4200,7 @@ function renderQueueInto(el) {
 }
 function renderQueue() {
   renderQueueInto($('#queueList'));
+  if (fpQueuePanelOpen) renderQueueInto($('#fpQueuePanelList'));
   if (fullPlayerOpen && window.innerWidth > 640) renderQueueInto($('#fpQueueList'));
 }
 
@@ -4319,6 +4357,8 @@ function openFullPlayer() {
 
 function closeFullPlayer(fromPopstate) {
   if (!fullPlayerOpen) return;
+  // Close fp queue panel first if open
+  if (fpQueuePanelOpen) closeFpQueuePanel(true);
   const fp = $('#fullPlayer');
   fp.classList.remove('open');
   fp.style.transform = '';
@@ -4337,7 +4377,10 @@ $('#bnavNowPlaying').addEventListener('click', openFullPlayer);
 // Full player close button
 $('#fpClose').addEventListener('click', () => closeFullPlayer());
 // Queue backdrop closes queue
-$('#queueBackdrop').addEventListener('click', () => closeQueuePanel());
+$('#queueBackdrop').addEventListener('click', () => {
+  if (fpQueuePanelOpen) closeFpQueuePanel();
+  else if (queuePanelOpen) closeQueuePanel();
+});
 // Desktop inline queue clear button
 $('#fpClearQueue').addEventListener('click', () => {
   audio.pause();
@@ -4563,26 +4606,20 @@ $('#fpVolume').addEventListener('input', (e) => {
     if (dy > 50) {
       edgeTracking = false;
       e.preventDefault();
-      openQueuePanel(false);
+      openQueuePanel();
     }
   }, { passive: false });
   document.addEventListener('touchend', () => { edgeTracking = false; }, { passive: true });
   document.addEventListener('touchcancel', () => { edgeTracking = false; }, { passive: true });
 
-  // 4. Swipe to close queue panel (direction depends on from-bottom mode)
+  // 4. Swipe up to close queue panel (always slides from top)
   const qPanel = document.getElementById('queuePanel');
   if (qPanel) {
     let sy = 0, dy = 0, tracking = false;
     qPanel.addEventListener('touchstart', (e) => {
       if (e.touches.length !== 1) return;
       const qList = qPanel.querySelector('.queue-list');
-      if (queueFromBottom) {
-        // From-bottom: swipe down to close — only when scrolled to top
-        if (qList && qList.scrollTop > 0) return;
-      } else {
-        // From-top: swipe up to close — only when scrolled to top
-        if (qList && qList.scrollTop > 0) return;
-      }
+      if (qList && qList.scrollTop > 0) return;
       sy = e.touches[0].clientY;
       dy = 0;
       tracking = true;
@@ -4590,23 +4627,11 @@ $('#fpVolume').addEventListener('input', (e) => {
 
     qPanel.addEventListener('touchmove', (e) => {
       if (!tracking) return;
-      const raw = e.touches[0].clientY - sy;
-      if (queueFromBottom) {
-        // From-bottom: drag downward (positive raw) to dismiss
-        dy = raw;
-        if (dy > 0) {
-          e.preventDefault();
-          qPanel.style.transition = 'none';
-          qPanel.style.transform = `translateY(${dy}px)`;
-        }
-      } else {
-        // From-top: drag upward (negative raw) to dismiss
-        dy = -raw;
-        if (dy > 0) {
-          e.preventDefault();
-          qPanel.style.transition = 'none';
-          qPanel.style.transform = `translateY(${-dy}px)`;
-        }
+      dy = -(e.touches[0].clientY - sy); // positive = upward
+      if (dy > 0) {
+        e.preventDefault();
+        qPanel.style.transition = 'none';
+        qPanel.style.transform = `translateY(${-dy}px)`;
       }
     }, { passive: false });
 
@@ -4614,9 +4639,8 @@ $('#fpVolume').addEventListener('input', (e) => {
       if (!tracking) return;
       tracking = false;
       if (dy > 60) {
-        const dismissDir = queueFromBottom ? '100%' : '-100%';
         qPanel.style.transition = 'transform .3s cubic-bezier(.32,.72,0,1)';
-        qPanel.style.transform = `translateY(${dismissDir})`;
+        qPanel.style.transform = 'translateY(-100%)';
         setTimeout(() => closeQueuePanel(), 300);
       } else {
         qPanel.style.transition = 'transform .25s ease';
@@ -4632,11 +4656,55 @@ $('#fpVolume').addEventListener('input', (e) => {
     }, { passive: true });
   }
 
+  // 4b. Swipe down to close big player queue panel (always slides from bottom)
+  const fpQPanel = document.getElementById('fpQueuePanel');
+  if (fpQPanel) {
+    let sy = 0, dy = 0, tracking = false;
+    fpQPanel.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      const qList = fpQPanel.querySelector('.queue-list');
+      if (qList && qList.scrollTop > 0) return;
+      sy = e.touches[0].clientY;
+      dy = 0;
+      tracking = true;
+    }, { passive: true });
+
+    fpQPanel.addEventListener('touchmove', (e) => {
+      if (!tracking) return;
+      dy = e.touches[0].clientY - sy; // positive = downward
+      if (dy > 0) {
+        e.preventDefault();
+        fpQPanel.style.transition = 'none';
+        fpQPanel.style.transform = `translateY(${dy}px)`;
+      }
+    }, { passive: false });
+
+    fpQPanel.addEventListener('touchend', () => {
+      if (!tracking) return;
+      tracking = false;
+      if (dy > 60) {
+        fpQPanel.style.transition = 'transform .3s cubic-bezier(.32,.72,0,1)';
+        fpQPanel.style.transform = 'translateY(100%)';
+        setTimeout(() => closeFpQueuePanel(), 300);
+      } else {
+        fpQPanel.style.transition = 'transform .25s ease';
+        fpQPanel.style.transform = 'translateY(0)';
+        setTimeout(() => { fpQPanel.style.transition = ''; fpQPanel.style.transform = ''; }, 250);
+      }
+    }, { passive: true });
+
+    fpQPanel.addEventListener('touchcancel', () => {
+      tracking = false;
+      fpQPanel.style.transition = '';
+      fpQPanel.style.transform = '';
+    }, { passive: true });
+  }
+
   // 5. Swipe up in full player (bottom area, below controls) → open queue from bottom
   if (fpSide) {
     let qsy = 0, qdy = 0, qTracking = false;
     fpSide.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1 || !fullPlayerOpen || queuePanelOpen) return;
+      if (e.touches.length !== 1 || !fullPlayerOpen || queuePanelOpen || fpQueuePanelOpen) return;
       // Only activate in bottom 1/3 of the player (actions/controls area)
       const rect = fpSide.getBoundingClientRect();
       const touchY = e.touches[0].clientY;
@@ -4653,7 +4721,7 @@ $('#fpVolume').addEventListener('input', (e) => {
       qdy = qsy - e.touches[0].clientY;
       if (qdy > 40) {
         qTracking = false;
-        openQueuePanel(true);
+        openFpQueuePanel();
       }
     }, { passive: true });
 
@@ -4685,8 +4753,8 @@ $('#fpQueueTop').addEventListener('click', () => {
     // Desktop: queue is inline, just refresh it
     renderQueueInto($('#fpQueueList'));
   } else {
-    // Mobile: open queue from bottom on top of full player
-    openQueuePanel(true);
+    // Mobile: open dedicated big player queue (slides from bottom)
+    openFpQueuePanel();
   }
 });
 
