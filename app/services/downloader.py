@@ -17,6 +17,23 @@ SLSKD_URL = os.environ.get("SLSKD_URL", "http://slskd:5030")
 SLSKD_API_KEY = os.environ.get("SLSKD_API_KEY", "")
 
 
+def _check_quota(username: str) -> bool:
+    """Check if user is within their disk quota. Returns True if OK to download."""
+    if not username:
+        return True
+    from app.services import auth as auth_service
+    users = auth_service._load_users()
+    user_data = users.get(username, {})
+    quota_gb = user_data.get("quota_gb", 0)
+    if quota_gb <= 0:
+        return True
+    from app.dependencies import _get_dir_size
+    user_dir = os.path.join(MUSIC_DIR, username)
+    used_bytes, _ = _get_dir_size(user_dir)
+    quota_bytes = quota_gb * 1024 * 1024 * 1024
+    return used_bytes < quota_bytes
+
+
 async def run_download(job: Job):
     sem = get_semaphore()
     async with sem:
@@ -292,6 +309,11 @@ async def _run_ytdlp(job: Job):
     failed = []
     label = "episodes" if is_podcast else "tracks"
     for i, track in enumerate(to_download, 1):
+        # Check quota before each track
+        if job.username and not _check_quota(job.username):
+            job.progress_text = f"Disk quota exceeded — stopped at {i-1}/{total}"
+            break
+
         name = track.get("name", "")
         artist = track.get("artist", "")
         album = track.get("album", "")
@@ -464,6 +486,11 @@ async def _run_slskd(job: Job):
     total = len(to_download)
     failed = []
     for i, track in enumerate(to_download, 1):
+        # Check quota before each track
+        if job.username and not _check_quota(job.username):
+            job.progress_text = f"Disk quota exceeded — stopped at {i-1}/{total}"
+            break
+
         name = track.get("name", "")
         artist = track.get("artist", "")
         album = track.get("album", "")
