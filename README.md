@@ -1,31 +1,70 @@
 # MusicSeeker
 
-A self-hosted web app for searching and downloading music. Think Jellyseerr, but for music.
+A self-hosted web app for searching, downloading, and playing music. Think Jellyseerr, but for music.
 
 Built with FastAPI + vanilla JS. Runs as a single Docker container.
 
-![Search results](screenshots/search-results.png)
+![Search results](screenshots/search-tracks.png)
 
 ## Features
 
+### Search & Discovery
 - **Multi-Provider Search** — Search tracks, albums, artists, and playlists via Deezer (default, no API key needed), YouTube Music, or Spotify — configurable in Settings with automatic fallback
-- **Discover** — Browse music by genre tags (rock, jazz, electronic, etc.) powered by Last.fm, with infinite scroll and filtering
+- **Discover** — Browse music by genre tags (rock, jazz, electronic, etc.) powered by Last.fm, with infinite scroll and filtering by tracks, albums, or artists
+- **Artist Detail View** — Click any artist to see their full discography, play radio, follow them, or download all albums at once
+- **Album Browsing** — View album track listings with durations, download individual tracks or entire albums
+
+### Downloads
 - **Three download methods:**
-  - **yt-dlp** — Download from YouTube in FLAC or MP3 with Spotify metadata (artist, title, album) and album art embedded
-  - **Soulseek (slskd)** — P2P downloads via Soulseek network, auto-selects best quality (prefers FLAC)
+  - **yt-dlp** — Download from YouTube in FLAC or MP3 with metadata (artist, title, album) and album art automatically embedded via metaflac/ffmpeg
+  - **Soulseek (slskd)** — P2P downloads via Soulseek network, auto-selects best quality (prefers FLAC, higher bitrate)
   - **Lidarr** — Torrent-based downloads with automatic artist monitoring
-- **Song Recognition** — Identify songs via your microphone using Shazam, with AcoustID fingerprinting as fallback, then download them instantly
-- **Spotify Playlists** — Browse your own or search public Spotify playlists and download individual tracks or full playlists with optional Navidrome playlist creation
-- **Liked Songs** — Access and download your Spotify Liked Songs as a playlist, with Navidrome playlist sync
-- **Podcasts** — Search and download podcast episodes from Spotify, manage downloaded shows, subscribe for auto-sync of new episodes
 - **Smart Downloads** — Checks your Navidrome library before downloading and skips tracks you already have
+- **Download Management** — Real-time progress tracking with percentage and file size, retry failed downloads, cancel running jobs, download history panel with status badges
+
+### Player
+- **In-Browser Streaming Player** — Stream from local downloads (fastest), Navidrome, or YouTube via yt-dlp/ffmpeg proxy, with 4-hour URL caching
+- **Full-Screen Player** — Slides up from mini player bar with large album art, seek bar, shuffle, and repeat (off/all/one). On desktop: split view with integrated queue panel
+- **Swipe Gestures** — Swipe up on mini player to expand, swipe down to close. Swipe left/right on album art for next/previous track. Tap album art to play/pause
+- **Queue Management** — Per-user persistent queue that syncs across devices. Add tracks, reorder, remove, clear
+- **Media Session API** — Lock screen controls on mobile, headset button support
+
+### Radio
+- **Artist Radio** — Start an auto-generated station from any artist with the 📻 button
+- **Three radio sources** — Deezer Artist Radio, Last.fm Track Radio, or Combined mode — configurable in Settings
+
+### Favorites & New Releases
+- **Follow Artists** — Heart icon to follow/unfollow artists from search results or artist detail
+- **Favorites Page** — Browse all followed artists with images
+- **New Release Detection** — Automatic background checks for new albums from followed artists, shown with "NEW" badges
+- **Auto-Download** — Optional per-artist toggle to automatically download new albums when detected
+
+### Spotify Integration
+- **Per-User OAuth** — Authorize with Spotify directly from Settings (no manual token exchange needed). Per-user tokens stored securely
+- **My Spotify Library** — Browse your Playlists, Saved Albums, Followed Artists, and Subscribed Podcasts in separate tabs
+- **Liked Songs** — Access and download your Spotify Liked Songs as a playlist, with Navidrome playlist sync
+- **Graceful Degradation** — Features that require Spotify credentials are greyed out when keys are missing
+
+### Podcasts
+- **Search & Download** — Search podcast episodes from Spotify, download individual episodes or entire shows
+- **Subscriptions** — Subscribe to shows for automatic sync of new episodes (configurable interval)
+- **Episode Management** — Filter episodes by name, bulk delete, manual sync check
+
+### Library & Navidrome
 - **Library Detection** — Shows "In Library" badge for tracks already in your Navidrome collection (fuzzy matching handles remasters, feat. tags, etc.)
-- **Per-User Download Folders** — Each user's downloads go to `/music/{username}/`, with disk usage tracking and per-user cleanup in Settings
-- **Download Management** — Real-time progress tracking, retry failed downloads, cancel running downloads
-- **In-Browser Player** — Preview tracks before downloading with a built-in streaming player. Streams from local downloads (fastest), Navidrome, or YouTube via yt-dlp/ffmpeg proxy. Full-screen player with album art, seek bar, shuffle, and repeat (off/all/one). Per-user persistent queue syncs across devices. Media Session API for lock screen controls. Download button auto-disables for tracks already in your library
+- **Playlist Sync** — Creates Navidrome playlists after downloading album/playlist, triggers library scan automatically
+- **Song Recognition** — Identify songs via your microphone using Shazam, with AcoustID fingerprinting as fallback, then download them instantly
+
+### User Management
+- **JWT Authentication** — Admin and user roles with per-user permissions
+- **Per-User Permissions** — Restrict download formats (MP3/FLAC), methods (yt-dlp/slskd/Lidarr), and storage quotas per user
+- **Per-User Download Folders** — Each user's downloads go to `/music/{username}/`, with disk usage tracking and admin cleanup
 - **Browser Notifications** — Get notified when downloads complete (even in background tabs)
-- **User Management** — JWT authentication with admin/user roles, per-user format/method permissions
-- **Modern UI** — Spotify-inspired dark theme with lime green accent, Inter font, glassmorphism nav, bottom tab bar on mobile, bottom-sheet modals, and responsive card grid
+
+### UI
+- **Modern Dark Theme** — Spotify-inspired design with lime green accent, Inter font, glassmorphism navigation
+- **Responsive** — Desktop top nav with full layout, mobile bottom tab bar with bottom-sheet modals
+- **No Build Step** — Entire frontend is a single HTML file served by FastAPI
 
 ## Screenshots
 
@@ -241,8 +280,9 @@ services:
 ┌────────────▼─────────────────┐
 │     FastAPI (main.py)        │
 │  Auth, Search, Downloads,    │
-│  Recognition, Discover,      │
-│  Settings                    │
+│  Player, Recognition,        │
+│  Discover, Favorites,        │
+│  Podcasts, Settings          │
 ├──────────────────────────────┤
 │ search_providers.py │ Deezer + YTMusic│
 │ spotify.py  │ Spotify Web API│
@@ -259,8 +299,9 @@ services:
 
 - **No database** — users and settings stored as JSON files in `/app/data`
 - **No build step** — frontend is a single HTML file served by FastAPI
-- **yt-dlp runs in-process** — downloads run as subprocesses with Spotify metadata post-processing
+- **yt-dlp runs in-process** — downloads run as subprocesses with metadata post-processing (artist, title, album art from search provider)
 - **slskd integration** — REST API calls to self-hosted Soulseek client
+- **Streaming player** — multi-source resolution (local file > Navidrome > YouTube proxy) with per-user queue persistence
 
 ## API Reference
 
@@ -323,7 +364,7 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `LIDARR_URL` | No | `http://lidarr:8686` | Lidarr API URL |
 | `LIDARR_API_KEY` | No | — | Lidarr API key |
 | `NAVIDROME_URL` | No | `http://navidrome:4533` | Navidrome URL |
-| `NAVIDROME_USER` | No | `lucas` | Navidrome username |
+| `NAVIDROME_USER` | No | — | Navidrome username |
 | `NAVIDROME_PASSWORD` | No | — | Navidrome password |
 | `SLSKD_URL` | No | `http://slskd:5030` | slskd REST API URL |
 | `SLSKD_API_KEY` | No | — | slskd API key (set in `slskd-data/slskd.yml`) |
