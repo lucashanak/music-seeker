@@ -63,14 +63,15 @@ export async function loadTagResults(tag, type, append) {
           </div>
         </div>
       `).join('');
-      Array.from(fragment.children).forEach(card => {
+      const newCards = Array.from(fragment.children);
+      newCards.forEach(card => {
         card.addEventListener('click', (e) => {
           if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-fav-btn')) return;
           openModal(JSON.parse(card.dataset.item));
         });
         grid.appendChild(card);
       });
-      checkLibrary(data.results, grid);
+      checkLibrary(data.results, grid, newCards);
     }
     applyTagFilter();
   } catch (e) {

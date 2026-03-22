@@ -88,13 +88,15 @@ export function renderResults(items, container, fromPage) {
 }
 
 // ── Library Check ──
-export async function checkLibrary(items, containerEl) {
+// cards: optional array of card elements to check (must align 1:1 with items).
+// If omitted, all .card children of containerEl are used.
+export async function checkLibrary(items, containerEl, cards) {
   try {
     const checkItems = items.map(item => ({ name: item.name, artist: item.artist || '', type: item.type || 'track' }));
     const data = await apiJson('/api/library/check', {
       method: 'POST', body: { items: checkItems },
     });
-    const cards = $$('.card', containerEl);
+    if (!cards) cards = $$('.card', containerEl);
     data.results.forEach((inLib, i) => {
       if (inLib && cards[i]) {
         cards[i].classList.add('in-library');
@@ -151,7 +153,8 @@ export async function doSearch(append) {
           </div>
         </div>
       `).join('');
-      Array.from(fragment.children).forEach(card => {
+      const newCards = Array.from(fragment.children);
+      newCards.forEach(card => {
         card.addEventListener('click', (e) => {
           if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-fav-btn')) return;
           const item = JSON.parse(card.dataset.item);
@@ -167,7 +170,7 @@ export async function doSearch(append) {
         });
         grid.appendChild(card);
       });
-      checkLibrary(data.results, grid);
+      checkLibrary(data.results, grid, newCards);
     }
     store.searchOffset += data.results.length;
   } catch (e) {
