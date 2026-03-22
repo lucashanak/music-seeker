@@ -5,8 +5,8 @@ import shutil
 import time
 import httpx
 
-from jobs import Job, JobStatus, get_semaphore, save_if_finished
-import library
+from app.services.jobs import Job, JobStatus, get_semaphore, save_if_finished
+from app.services import library
 
 LIDARR_URL = os.environ.get("LIDARR_URL", "http://lidarr:8686")
 LIDARR_API_KEY = os.environ.get("LIDARR_API_KEY", "")
@@ -57,8 +57,8 @@ def _sanitize(name: str) -> str:
 
 async def _resolve_tracks(job: Job) -> list[dict]:
     """Resolve job into a list of {name, artist, album} dicts for downloading."""
-    from spotify import parse_spotify_url, get_track_metadata, get_album_tracks, get_episode_metadata, get_show_episodes
-    from search_providers import parse_deezer_url, deezer_get_track, deezer_get_album_tracks
+    from app.services.spotify import parse_spotify_url, get_track_metadata, get_album_tracks, get_episode_metadata, get_show_episodes
+    from app.services.search_providers import parse_deezer_url, deezer_get_track, deezer_get_album_tracks
 
     # Playlists or albums with pre-resolved track data
     if job.type in ("playlist", "album") and job.playlist_tracks:

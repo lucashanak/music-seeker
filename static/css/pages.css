@@ -1,0 +1,113 @@
+/* ── Discover / Tags ── */
+.tag-cloud { display: flex; flex-wrap: wrap; gap: 10px; }
+.tag-chip {
+  background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text); padding: 10px 20px; border-radius: 24px;
+  cursor: pointer; font-size: 14px; transition: all var(--transition);
+  font-family: inherit; font-weight: 500;
+}
+.tag-chip:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-dim);
+  box-shadow: 0 0 16px rgba(162,230,64,.1);
+}
+.tag-chip .tag-count { font-size: 11px; color: var(--text-dim); margin-left: 8px; font-weight: 400; }
+.tag-detail-header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+.tag-back-btn {
+  background: none; border: 1px solid var(--border); color: var(--text);
+  padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 13px;
+  font-family: inherit; font-weight: 500; transition: all var(--transition);
+}
+.tag-back-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── Spotify Library Tabs ── */
+.sp-tabs {
+  display: flex; gap: 8px; margin-bottom: 24px; overflow-x: auto;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.sp-tabs::-webkit-scrollbar { display: none; }
+.sp-tab {
+  padding: 10px 22px; border-radius: 50px; border: none; cursor: pointer;
+  font-size: 14px; font-weight: 600; white-space: nowrap;
+  background: var(--bg-elevated); color: var(--text-muted);
+  transition: all .2s ease;
+}
+.sp-tab:hover { background: var(--bg-card); color: var(--text); }
+.sp-tab.active { background: var(--accent); color: #000; }
+.sp-section-title {
+  font-size: 13px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px;
+}
+
+/* ── Playlist Detail ── */
+.playlist-hero {
+  display: flex; gap: 20px; align-items: center; margin-bottom: 24px;
+  padding: 24px; background: var(--bg-card); border-radius: 16px;
+  border: 1px solid var(--border);
+}
+.playlist-hero-img {
+  width: 100px; height: 100px; border-radius: 12px; object-fit: cover;
+  box-shadow: 0 4px 20px rgba(0,0,0,.4); flex-shrink: 0;
+}
+.playlist-hero-info { flex: 1; min-width: 0; }
+.playlist-hero-info h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+.playlist-hero-info p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+.playlist-hero-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; flex-shrink: 0; }
+
+/* ── Empty state ── */
+.empty-state {
+  text-align: center; padding: 60px 20px; color: var(--text-muted);
+}
+.empty-state p { font-size: 15px; }
+
+/* Podcasts page */
+.podcast-show-card {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px 20px; margin-bottom: 10px; cursor: pointer; transition: background 0.15s;
+}
+.podcast-show-card:hover { background: var(--bg-elevated); }
+.podcast-show-info { flex: 1; min-width: 0; }
+.podcast-show-name { font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.podcast-show-meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.podcast-ep-row {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 12px 16px; margin-bottom: 8px;
+}
+.podcast-ep-row .ep-name { flex: 1; min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.podcast-ep-row .ep-size { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.podcast-ep-row .ep-date { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.btn-delete-ep, .btn-delete-show {
+  background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-muted); font-size: 12px; padding: 4px 10px; cursor: pointer; white-space: nowrap;
+}
+.btn-delete-ep:hover, .btn-delete-show:hover { border-color: #e74c3c; color: #e74c3c; }
+.btn-check-new, .btn-dl-missing {
+  background: none; border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  color: var(--accent); font-size: 12px; padding: 4px 10px; cursor: pointer; white-space: nowrap;
+}
+.btn-check-new:hover, .btn-dl-missing:hover { background: var(--accent); color: #000; }
+.missing-ep-row {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 12px 16px; margin-bottom: 8px;
+}
+.missing-ep-row .ep-name { flex: 1; min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.missing-ep-row .ep-date { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.missing-section-header { font-size: 14px; font-weight: 600; color: var(--accent); margin: 20px 0 10px; display: flex; align-items: center; justify-content: space-between; }
+.missing-section-header .missing-count { font-weight: 400; font-size: 12px; color: var(--text-muted); }
+.podcast-ep-row .ep-check { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+.podcast-sub-card {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 16px; margin-bottom: 8px;
+}
+.podcast-sub-card img { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; flex-shrink: 0; }
+.podcast-sub-info { flex: 1; min-width: 0; }
+.podcast-sub-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.podcast-sub-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.podcast-sub-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.podcast-sub-actions select { background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 6px; font-size: 12px; }
+.btn-unsub { background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 12px; padding: 4px 10px; cursor: pointer; }
+.btn-unsub:hover { border-color: #e74c3c; color: #e74c3c; }

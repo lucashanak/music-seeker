@@ -1,0 +1,74 @@
+/* ── Modal ── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,.75); backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none; transition: opacity .25s;
+}
+.modal-overlay.open { opacity: 1; pointer-events: auto; }
+
+.modal {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 20px; padding: 32px; width: 90%; max-width: 440px;
+  transform: scale(0.95) translateY(10px); transition: transform .25s cubic-bezier(.4,0,.2,1);
+  box-shadow: 0 24px 80px rgba(0,0,0,.6);
+}
+.modal-overlay.open .modal { transform: scale(1) translateY(0); }
+
+.modal-header { display: flex; gap: 18px; margin-bottom: 24px; align-items: center; }
+.modal-img {
+  width: 96px; height: 96px; border-radius: 12px; object-fit: cover;
+  box-shadow: 0 4px 20px rgba(0,0,0,.4);
+}
+.modal-info { flex: 1; min-width: 0; }
+.modal-title { font-size: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.3px; }
+.modal-artist { font-size: 14px; color: var(--text-muted); margin-top: 4px; }
+
+.modal-section { margin-bottom: 20px; }
+.modal-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 10px; font-weight: 600; }
+
+.option-group { display: flex; gap: 8px; }
+.option-btn {
+  flex: 1; padding: 12px 8px; text-align: center; background: var(--bg-input);
+  border: 2px solid var(--border); border-radius: 12px;
+  color: var(--text); cursor: pointer; font-size: 13px; transition: all var(--transition);
+  font-family: inherit; font-weight: 500;
+}
+.option-btn:hover { border-color: var(--border-hover); }
+.option-btn.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.option-btn small { display: block; font-size: 11px; color: var(--text-dim); margin-top: 3px; font-weight: 400; }
+
+.btn-download {
+  width: 100%; padding: 15px; background: var(--accent); color: #000;
+  border: none; border-radius: 12px; font-size: 15px;
+  font-weight: 700; cursor: pointer; transition: all var(--transition);
+  font-family: inherit;
+}
+.btn-download:hover { box-shadow: var(--shadow-glow); transform: translateY(-1px); }
+.btn-download:active { transform: translateY(0); }
+.btn-download:disabled { opacity: .4; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.btn-close {
+  position: absolute; top: 16px; right: 20px; background: none; border: none;
+  color: var(--text-muted); font-size: 24px; cursor: pointer; line-height: 1;
+  transition: color var(--transition); width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+}
+.btn-close:hover { color: var(--text); background: rgba(255,255,255,.05); }
+
+#modalLibraryNotice {
+  background: var(--accent-dim); border: 1px solid rgba(162,230,64,0.2);
+  border-radius: 10px; padding: 12px 16px; margin-bottom: 20px;
+  font-size: 13px; color: var(--accent); font-weight: 500;
+}
+
+.modal-btn-row { display: flex; gap: 8px; margin-top: 8px; }
+.modal-btn-row .btn-play-modal { flex: 0 0 auto; padding: 15px 20px; background: var(--bg-elevated); color: var(--text); border: 2px solid var(--border); border-radius: 12px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all var(--transition); font-family: inherit; display: flex; align-items: center; gap: 6px; }
+.modal-btn-row .btn-play-modal:hover { border-color: var(--accent); color: var(--accent); }
+.modal-btn-row .btn-queue-modal { flex: 0 0 auto; padding: 15px 16px; background: var(--bg-elevated); color: var(--text-muted); border: 2px solid var(--border); border-radius: 12px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all var(--transition); font-family: inherit; }
+.modal-btn-row .btn-queue-modal:hover { border-color: var(--border-hover); color: var(--text); }
+
+.modal-auto-dl { display: flex; align-items: center; gap: 8px; padding: 10px 0 0; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+.modal-auto-dl input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+.modal-auto-dl:hover { color: var(--text); }

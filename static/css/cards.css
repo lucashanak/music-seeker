@@ -1,0 +1,85 @@
+/* ── Grid ── */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 20px;
+}
+
+.card {
+  background: var(--bg-card); border-radius: 16px;
+  overflow: hidden; cursor: pointer; transition: all .25s cubic-bezier(.4,0,.2,1);
+  border: 1px solid transparent; position: relative;
+}
+.card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 12px 40px rgba(0,0,0,.5), 0 0 0 1px var(--border);
+  border-color: var(--border);
+}
+.card:active { transform: translateY(-2px); }
+
+.card-img {
+  width: 100%; aspect-ratio: 1; object-fit: cover;
+  background: var(--bg-elevated);
+}
+
+.card-body { padding: 14px; }
+.card-title {
+  font-size: 14px; font-weight: 600; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; line-height: 1.3;
+}
+.card-sub {
+  font-size: 13px; color: var(--text-muted); margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card-sub .clickable, .card-meta .clickable {
+  cursor: pointer; transition: color .15s;
+}
+.card-sub .clickable:hover, .card-meta .clickable:hover {
+  color: var(--accent); text-decoration: underline;
+}
+.card-meta {
+  font-size: 11px; color: var(--text-dim); margin-top: 8px;
+  display: flex; justify-content: space-between;
+}
+
+/* ── In Library Badge ── */
+.in-library-badge {
+  position: absolute; top: 10px; right: 10px;
+  background: var(--accent); color: #000;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  padding: 4px 10px; border-radius: 20px;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 12px rgba(0,0,0,.5);
+  z-index: 2;
+  animation: badgeFadeIn .3s ease;
+}
+
+.card.in-library { border-color: rgba(162, 230, 64, 0.2); }
+
+/* ── Skeleton ── */
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-elevated) 25%, var(--bg-card) 50%, var(--bg-elevated) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius);
+}
+
+.skeleton-card { height: 280px; border-radius: 16px; }
+
+/* ── Card Action Buttons ── */
+.card-play-btn { position: absolute; bottom: 8px; right: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
+.card:hover .card-play-btn { opacity: 1; transform: translateY(0); }
+.card-play-btn:hover { transform: scale(1.1) !important; box-shadow: 0 4px 16px rgba(0,0,0,.5), var(--shadow-glow); }
+.card-dl-btn { position: absolute; bottom: 8px; left: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
+.card:hover .card-dl-btn { opacity: 1; transform: translateY(0); }
+.card-dl-btn:hover { transform: scale(1.1) !important; box-shadow: 0 4px 16px rgba(0,0,0,.5), var(--shadow-glow); }
+.card-radio-btn { position: absolute; bottom: 8px; left: 52px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; font-size: 16px; }
+.card:hover .card-radio-btn { opacity: 1; transform: translateY(0); }
+.card-radio-btn:hover { transform: scale(1.1) !important; background: var(--accent); color: #000; border-color: var(--accent); }
+.card-fav-btn { position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: rgba(0,0,0,.6); color: var(--text); border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transition: all .2s; cursor: pointer; z-index: 3; font-size: 18px; }
+.card:hover .card-fav-btn { opacity: 1; }
+.card-fav-btn:hover { color: #ef4444; transform: scale(1.1); }
+.card-fav-btn.following { color: #ef4444; opacity: 1; }
+.new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
+.fav-new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
+.fav-auto-dl-badge { position: absolute; bottom: 52px; right: 8px; font-size: 10px; color: var(--accent); opacity: .7; }

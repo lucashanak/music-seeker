@@ -1,6 +1,6 @@
 import os
 import json
-import jobs
+from app.services import jobs
 
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
@@ -73,8 +73,8 @@ def update(data: dict) -> dict:
 
     # Apply navidrome config changes
     if any(k in data for k in ("navidrome_url", "navidrome_user", "navidrome_password")):
-        import downloader
-        import library
+        from app.services import downloader
+        from app.services import library
         if "navidrome_url" in data:
             library.NAVIDROME_URL = data["navidrome_url"]
             downloader.NAVIDROME_URL = data["navidrome_url"]
@@ -86,7 +86,7 @@ def update(data: dict) -> dict:
 
     # Apply slskd config changes
     if any(k in data for k in ("slskd_url", "slskd_api_key")):
-        import downloader
+        from app.services import downloader
         if "slskd_url" in data:
             downloader.SLSKD_URL = data["slskd_url"]
         if "slskd_api_key" in data:

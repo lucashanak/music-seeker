@@ -84,7 +84,7 @@ async def get_app_token(creds: dict | None = None) -> str:
 def _get_global_refresh_token() -> str:
     """Get global refresh token: settings override > env var."""
     try:
-        import settings as _s
+        from app.services import settings as _s
         stored = _s._settings.get("spotify_refresh_token", "")
         if stored:
             return stored

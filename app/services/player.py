@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-import library
+from app.services import library
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 PLAYER_DIR = DATA_DIR / "player"

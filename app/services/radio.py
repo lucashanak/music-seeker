@@ -3,8 +3,8 @@
 import asyncio
 import logging
 
-import lastfm
-import search_providers
+from app.services import lastfm
+from app.services import search_providers
 
 logger = logging.getLogger(__name__)
 

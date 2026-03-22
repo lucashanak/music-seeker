@@ -492,7 +492,7 @@ _DEFAULT_FALLBACK = {
 async def _try_provider(name: str, query: str, search_type: str, limit: int, offset: int) -> list[dict] | None:
     """Try a single provider, return results or None."""
     if name == "spotify":
-        import spotify
+        from app.services import spotify
         return await spotify.search(query, search_type, limit, offset)
     if name == "itunes":
         return await itunes_search(query, search_type, limit)

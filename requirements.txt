@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+httpx
+shazamio
+python-multipart
+pyacoustid
+yt-dlp
+ytmusicapi

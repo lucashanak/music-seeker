@@ -5,7 +5,7 @@ import json
 import time
 import logging
 
-import search_providers
+from app.services import search_providers
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +137,8 @@ async def check_new_releases() -> int:
                     # Auto-download if enabled
                     if artist.get("auto_download"):
                         try:
-                            import jobs
-                            import downloader
+                            from app.services import jobs
+                            from app.services import downloader
                             tracks = await search_providers.deezer_get_album_tracks(album["id"])
                             if tracks:
                                 playlist_tracks = [

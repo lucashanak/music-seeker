@@ -1,0 +1,61 @@
+/* ── Downloads Panel ── */
+.downloads-panel {
+  position: fixed; right: 0; top: 0; bottom: 0; width: 400px; z-index: 150;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  transform: translateX(100%); transition: transform .3s cubic-bezier(.4,0,.2,1);
+  display: flex; flex-direction: column;
+  box-shadow: -8px 0 40px rgba(0,0,0,.4);
+}
+.downloads-panel.open { transform: translateX(0); }
+
+.panel-header {
+  padding: 20px 24px; border-bottom: 1px solid var(--border);
+  font-size: 18px; font-weight: 700; display: flex; justify-content: space-between; align-items: center;
+  letter-spacing: -0.3px;
+}
+.panel-close {
+  background: none; border: none; color: var(--text-muted); font-size: 22px; cursor: pointer;
+  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; transition: all var(--transition);
+}
+.panel-close:hover { background: rgba(255,255,255,.05); color: var(--text); }
+
+.jobs-list { flex: 1; overflow-y: auto; padding: 16px; }
+
+.job-item {
+  padding: 16px; background: var(--bg-elevated); border-radius: 12px;
+  margin-bottom: 10px; border: 1px solid var(--border);
+  transition: border-color var(--transition);
+}
+.job-item:hover { border-color: var(--border-hover); }
+.job-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; display: flex; justify-content: space-between; align-items: center; }
+.job-progress-bar { height: 4px; background: var(--bg-input); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+.job-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .5s; box-shadow: 0 0 8px var(--accent-glow); }
+.job-progress-text { font-size: 11px; color: var(--text-muted); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-status { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 5px; }
+.job-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.job-status.done { color: var(--accent); }
+.job-status.done::before { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
+.job-status.failed { color: var(--red); }
+.job-status.failed::before { background: var(--red); }
+.job-status.running { color: var(--blue); }
+.job-status.running::before { background: var(--blue); animation: pulse 1.5s ease infinite; }
+.job-status.queued { color: var(--text-muted); }
+.job-status.queued::before { background: var(--text-muted); }
+.job-status.cancelled { color: var(--text-dim); }
+.job-status.cancelled::before { background: var(--text-dim); }
+
+.job-cancel {
+  background: none; border: none; color: var(--text-muted); cursor: pointer;
+  font-size: 11px; text-decoration: underline; font-family: inherit;
+}
+.job-cancel:hover { color: var(--red); }
+
+.job-retry {
+  background: none; border: 1px solid var(--accent); color: var(--accent); cursor: pointer;
+  font-size: 11px; padding: 3px 10px; border-radius: 20px; margin-left: 4px;
+  font-family: inherit; transition: all var(--transition);
+}
+.job-retry:hover { background: var(--accent); color: #000; }

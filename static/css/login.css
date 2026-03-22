@@ -1,0 +1,39 @@
+/* ── Login ── */
+.login-screen {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 20px;
+  background: radial-gradient(ellipse at 50% 0%, rgba(162,230,64,.06) 0%, transparent 60%),
+              radial-gradient(ellipse at 80% 100%, rgba(96,75,232,.06) 0%, transparent 60%),
+              var(--bg);
+}
+.login-box {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 20px; padding: 48px 40px; width: 100%; max-width: 400px;
+  text-align: center; box-shadow: var(--shadow-card);
+}
+.login-box .logo-icon {
+  width: 56px; height: 56px; margin: 0 auto 16px;
+  background: var(--accent-dim); border-radius: 16px;
+  display: flex; align-items: center; justify-content: center;
+}
+.login-box .logo-icon svg { width: 28px; height: 28px; }
+.login-box .logo-text { font-size: 26px; font-weight: 800; color: var(--accent); margin-bottom: 6px; letter-spacing: -0.5px; }
+.login-box p { color: var(--text-muted); margin-bottom: 28px; font-size: 14px; }
+.login-box input {
+  width: 100%; padding: 14px 18px; margin-bottom: 14px; font-size: 15px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); outline: none;
+  font-family: inherit; transition: border-color var(--transition);
+}
+.login-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.login-box input::placeholder { color: var(--text-dim); }
+.login-box .btn-login {
+  width: 100%; padding: 14px; background: var(--accent); color: #000;
+  border: none; border-radius: var(--radius-sm); font-size: 15px;
+  font-weight: 700; cursor: pointer; margin-top: 6px;
+  font-family: inherit; transition: all var(--transition);
+}
+.login-box .btn-login:hover { opacity: .9; transform: translateY(-1px); box-shadow: var(--shadow-glow); }
+.login-box .btn-login:active { transform: translateY(0); }
+.login-box .btn-login:disabled { opacity: .4; transform: none; }
+.login-error { color: var(--red); font-size: 13px; margin-top: 14px; }

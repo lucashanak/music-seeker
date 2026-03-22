@@ -1,0 +1,159 @@
+/* ── Settings ── */
+.settings-form { max-width: 540px; }
+
+.setting-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.setting-section-title {
+  padding: 16px 20px;
+  font-size: 15px; font-weight: 700; color: var(--text);
+  cursor: pointer; list-style: none;
+  display: flex; align-items: center; justify-content: space-between;
+  transition: color var(--transition);
+  user-select: none;
+}
+.setting-section-title::-webkit-details-marker { display: none; }
+.setting-section-title::after {
+  content: ''; width: 8px; height: 8px;
+  border-right: 2px solid var(--text-muted); border-bottom: 2px solid var(--text-muted);
+  transform: rotate(-45deg); transition: transform .25s ease;
+  flex-shrink: 0;
+}
+.setting-section[open] > .setting-section-title::after {
+  transform: rotate(45deg);
+}
+.setting-section-title:hover { color: var(--accent); }
+.setting-section-body {
+  padding: 0 20px 18px;
+}
+
+.setting-group {
+  margin-bottom: 16px;
+}
+.setting-group:last-child { margin-bottom: 0; }
+.setting-label {
+  display: block; font-size: 11px; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;
+  font-weight: 600;
+}
+.setting-input, .setting-select {
+  width: 100%; padding: 12px 16px; background: var(--bg-input);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text); font-size: 14px; outline: none; transition: all var(--transition);
+  font-family: inherit;
+}
+.setting-select { appearance: none; cursor: pointer; }
+.setting-input:focus, .setting-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.setting-input::placeholder { color: var(--text-dim); }
+
+.btn-save {
+  padding: 14px 36px; background: var(--accent); color: #000;
+  border: none; border-radius: 12px; font-size: 14px;
+  font-weight: 700; cursor: pointer; transition: all var(--transition);
+  font-family: inherit;
+}
+.btn-save:hover { box-shadow: var(--shadow-glow); transform: translateY(-1px); }
+.btn-save:active { transform: translateY(0); }
+.btn-save:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.save-status { display: inline-block; margin-left: 12px; font-size: 13px; color: var(--accent); font-weight: 500; }
+
+/* ── User Management ── */
+.users-section { margin-top: 40px; max-width: 540px; }
+.users-section h3 { font-size: 18px; margin-bottom: 16px; font-weight: 700; letter-spacing: -0.3px; }
+.user-row {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); margin-bottom: 8px;
+}
+.user-row .user-name { flex: 1; font-size: 14px; font-weight: 500; }
+.user-row .user-badge {
+  font-size: 10px; text-transform: uppercase; color: var(--accent);
+  background: var(--accent-dim); padding: 3px 10px; border-radius: 20px; font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.user-row .btn-delete-user {
+  background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 18px;
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; transition: all var(--transition);
+}
+.user-row .btn-delete-user:hover { color: var(--red); background: rgba(239,68,68,.1); }
+.add-user-form { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.add-user-form input {
+  padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font-size: 13px;
+  outline: none; flex: 1; min-width: 120px; font-family: inherit;
+  transition: border-color var(--transition);
+}
+.add-user-form input:focus { border-color: var(--accent); }
+.btn-add-user {
+  padding: 10px 20px; background: var(--accent); color: #000;
+  border: none; border-radius: var(--radius-sm); font-size: 13px;
+  font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: all var(--transition);
+}
+.btn-add-user:hover { box-shadow: var(--shadow-glow); }
+.perm-section {
+  width: 100%; background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); overflow: hidden;
+}
+.perm-section-title {
+  padding: 10px 14px; font-size: 12px; font-weight: 600; color: var(--text-muted);
+  cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between;
+  user-select: none;
+}
+.perm-section-title::-webkit-details-marker { display: none; }
+.perm-section-title::after {
+  content: ''; width: 6px; height: 6px;
+  border-right: 1.5px solid var(--text-dim); border-bottom: 1.5px solid var(--text-dim);
+  transform: rotate(-45deg); transition: transform .2s;
+}
+.perm-section[open] > .perm-section-title::after { transform: rotate(45deg); }
+.perm-section-body {
+  padding: 0 14px 10px; display: flex; flex-direction: column; gap: 6px;
+}
+.perm-check {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 13px; color: var(--text);
+}
+.perm-check span { min-width: 64px; }
+.perm-check input { accent-color: var(--accent); }
+.user-row { flex-wrap: wrap; }
+.user-perms {
+  width: 100%; display: flex; gap: 6px; flex-wrap: wrap;
+  margin-top: 4px;
+}
+.user-perm-tag {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--text-muted); white-space: nowrap;
+}
+.user-perm-edit {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  cursor: pointer; font-size: 11px; padding: 2px 10px; border-radius: 10px;
+  font-family: inherit; transition: all var(--transition);
+}
+.user-perm-edit:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── Disk Usage ── */
+.disk-usage-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.disk-usage-row:last-child { border-bottom: none; }
+.disk-usage-name { flex: 1; font-weight: 600; font-size: 14px; }
+.disk-usage-name.expandable { cursor: pointer; }
+.disk-usage-name.expandable::before { content: '\25B6'; font-size: 10px; margin-right: 6px; display: inline-block; transition: transform 0.2s; }
+.disk-usage-name.expandable.expanded::before { transform: rotate(90deg); }
+.disk-usage-stats { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.disk-usage-bar { width: 80px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.disk-usage-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.btn-delete-dir { background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 12px; padding: 4px 10px; cursor: pointer; }
+.btn-delete-dir:hover { border-color: #e74c3c; color: #e74c3c; }
+.disk-usage-subs { display: none; padding-left: 24px; }
+.disk-usage-subs.open { display: block; }
+.disk-usage-subs .disk-usage-row { padding: 6px 0; }
+.disk-usage-subs .disk-usage-name { font-weight: 500; font-size: 13px; color: var(--text-muted); }
