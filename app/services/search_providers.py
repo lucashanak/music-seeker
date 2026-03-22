@@ -125,23 +125,27 @@ async def deezer_get_artist_albums(artist_id: str) -> dict:
         resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}")
         resp.raise_for_status()
         artist = resp.json()
-        # Get albums
-        resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}/albums", params={"limit": 100})
-        resp.raise_for_status()
-        data = resp.json()
-
-    albums = []
-    for item in data.get("data", []):
-        albums.append({
-            "id": str(item["id"]),
-            "name": item.get("title", ""),
-            "artist": artist.get("name", ""),
-            "image": item.get("cover_big", ""),
-            "url": item.get("link", ""),
-            "total_tracks": item.get("nb_tracks", 0),
-            "release_date": item.get("release_date", ""),
-            "type": "album",
-        })
+        # Get albums with pagination (Deezer returns max 100 per page)
+        albums = []
+        url = f"{DEEZER_BASE}/artist/{artist_id}/albums"
+        params = {"limit": 100}
+        while url:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            for item in data.get("data", []):
+                albums.append({
+                    "id": str(item["id"]),
+                    "name": item.get("title", ""),
+                    "artist": artist.get("name", ""),
+                    "image": item.get("cover_big", ""),
+                    "url": item.get("link", ""),
+                    "total_tracks": item.get("nb_tracks", 0),
+                    "release_date": item.get("release_date", ""),
+                    "type": "album",
+                })
+            url = data.get("next")
+            params = {}  # next URL includes all params
     return {
         "name": artist.get("name", ""),
         "image": artist.get("picture_big", ""),
