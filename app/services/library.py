@@ -72,29 +72,33 @@ async def check_items(items: list[dict]) -> list[bool]:
 
 
 async def _search_navidrome(client: httpx.AsyncClient, name: str, artist: str, item_type: str) -> bool:
-    # Search by track/album name — more specific queries yield better matches
-    query = name
-    params = _params(query=query, songCount=50, albumCount=20, artistCount=20)
-    resp = await client.get("/rest/search3", params=params)
-    resp.raise_for_status()
-    data = resp.json()
+    # Try with artist+name first for precision, fall back to name-only for recall
+    queries = [f"{artist} {name}"] if artist else [name]
+    if artist:
+        queries.append(name)
 
-    sr = data.get("subsonic-response", {}).get("searchResult3", {})
+    for query in queries:
+        params = _params(query=query, songCount=50, albumCount=30, artistCount=20)
+        resp = await client.get("/rest/search3", params=params)
+        resp.raise_for_status()
+        data = resp.json()
 
-    if item_type == "track":
-        for song in sr.get("song", []):
-            if _matches(song.get("title", ""), name) and _artist_matches(song.get("artist", ""), artist):
-                return True
+        sr = data.get("subsonic-response", {}).get("searchResult3", {})
 
-    elif item_type == "album":
-        for album in sr.get("album", []):
-            if _matches(album.get("name", ""), name) and _artist_matches(album.get("artist", ""), artist):
-                return True
+        if item_type == "track":
+            for song in sr.get("song", []):
+                if _matches(song.get("title", ""), name) and _artist_matches(song.get("artist", ""), artist):
+                    return True
 
-    elif item_type == "artist":
-        for a in sr.get("artist", []):
-            if _matches(a.get("name", ""), artist or name):
-                return True
+        elif item_type == "album":
+            for album in sr.get("album", []):
+                if _matches(album.get("name", ""), name) and _artist_matches(album.get("artist", ""), artist):
+                    return True
+
+        elif item_type == "artist":
+            for a in sr.get("artist", []):
+                if _matches(a.get("name", ""), artist or name):
+                    return True
 
     return False
 
