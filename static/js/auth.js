@@ -8,6 +8,7 @@ import { requestNotificationPermission } from './utils.js';
 import { refreshJobs } from './downloads.js';
 import { loadQueueState } from './player.js';
 import { loadFavoritedArtistIds } from './favorites.js';
+import { restoreSearch } from './search.js';
 
 // ── Version Check ──
 export async function checkVersion() {
@@ -124,6 +125,9 @@ export async function initApp() {
 
     // Load favorited artist IDs
     loadFavoritedArtistIds();
+
+    // Restore previous search if any
+    restoreSearch();
 
     $('#searchInput').focus();
     requestNotificationPermission();

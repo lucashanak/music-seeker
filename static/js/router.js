@@ -52,7 +52,7 @@ export function switchPage(page, fromPopstate) {
 export function searchFor(query, type) {
   switchPage('search');
   $('#searchInput').value = query;
-  $('#searchClear').style.display = '';
+  $('#searchClear').style.display = 'block';
   store.searchType = type;
   $$('.type-btn[data-type]').forEach(b => b.classList.remove('active'));
   const btn = $(`.type-btn[data-type="${type}"]`);

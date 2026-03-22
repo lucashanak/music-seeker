@@ -118,10 +118,35 @@ export async function checkLibrary(items, containerEl, cards) {
   } catch {}
 }
 
+// ── Persist / Restore Search ──
+function saveSearchState() {
+  const user = store.currentUser?.username || '';
+  const q = $('#searchInput').value.trim();
+  if (q) {
+    localStorage.setItem(`ms_search_${user}`, JSON.stringify({ q, type: store.searchType }));
+  } else {
+    localStorage.removeItem(`ms_search_${user}`);
+  }
+}
+
+export function restoreSearch() {
+  const user = store.currentUser?.username || '';
+  try {
+    const saved = JSON.parse(localStorage.getItem(`ms_search_${user}`));
+    if (saved && saved.q) {
+      $('#searchInput').value = saved.q;
+      $('#searchClear').style.display = 'block';
+      store.searchType = saved.type || 'track';
+      $$('.type-btn').forEach(b => b.classList.toggle('active', b.dataset.type === store.searchType));
+      doSearch();
+    }
+  } catch {}
+}
+
 // ── Do Search ──
 export async function doSearch(append) {
   const q = $('#searchInput').value.trim();
-  if (!q) { $('#searchResults').innerHTML = ''; return; }
+  if (!q) { $('#searchResults').innerHTML = ''; saveSearchState(); return; }
   if (!append) {
     store.searchOffset = 0;
     store.searchHasMore = true;
@@ -173,6 +198,7 @@ export async function doSearch(append) {
       checkLibrary(data.results, grid, newCards);
     }
     store.searchOffset += data.results.length;
+    if (!append) saveSearchState();
   } catch (e) {
     if (!append) $('#searchResults').innerHTML = `<div class="empty-state"><p>Search failed: ${e.message}</p></div>`;
   }
@@ -184,7 +210,7 @@ export async function doSearch(append) {
 export function init() {
   $('#searchInput').addEventListener('input', () => {
     clearTimeout(store.searchTimeout);
-    $('#searchClear').style.display = $('#searchInput').value ? '' : 'none';
+    $('#searchClear').style.display = $('#searchInput').value ? 'block' : 'none';
     store.searchTimeout = setTimeout(doSearch, 400);
   });
   $('#searchInput').addEventListener('keydown', e => {
@@ -196,6 +222,7 @@ export function init() {
     $('#searchResults').innerHTML = '';
     store.searchQuery = '';
     store.searchHasMore = false;
+    saveSearchState();
     $('#searchInput').focus();
   });
 
