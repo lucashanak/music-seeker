@@ -3629,14 +3629,15 @@ $('#playerDownloadBtn').addEventListener('click', async () => {
 });
 
 // Play button on cards (event delegation)
-document.addEventListener('click', (e) => {
+document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.card-play-btn');
   if (!btn) return;
   e.stopPropagation();
   const card = btn.closest('.card');
   if (!card) return;
   const item = JSON.parse(card.dataset.item);
-  playTrack(item);
+  const tracks = await resolveItemTracks(item);
+  if (tracks.length) { playerQueue = tracks; playerIndex = 0; loadAndPlay(); }
 });
 
 // Download button on cards (event delegation)
@@ -3653,12 +3654,42 @@ document.addEventListener('click', (e) => {
   setTimeout(() => $('#modalDownload').click(), 100);
 });
 
+// Resolve album/artist to individual tracks for player
+async function resolveItemTracks(item) {
+  const type = item.type || 'track';
+  if (type === 'album' && item.id) {
+    const data = await apiJson(`/api/album/${item.id}/tracks`);
+    return (data.tracks || []).map(t => ({...t, type: 'track'}));
+  }
+  if (type === 'artist' && item.id) {
+    const data = await apiJson(`/api/artist/${item.id}/albums`);
+    const albums = data.albums || [];
+    const allTracks = [];
+    for (const album of albums.slice(0, 10)) {
+      try {
+        const ad = await apiJson(`/api/album/${album.id}/tracks`);
+        (ad.tracks || []).forEach(t => allTracks.push({...t, type: 'track'}));
+      } catch {}
+    }
+    return allTracks;
+  }
+  return [item];
+}
+
 // Modal play/queue buttons
-$('#modalPlay').addEventListener('click', () => {
-  if (modalItem) { playTrack({...modalItem}); closeModal(); }
+$('#modalPlay').addEventListener('click', async () => {
+  if (!modalItem) return;
+  const item = {...modalItem};
+  closeModal();
+  const tracks = await resolveItemTracks(item);
+  if (tracks.length) { playerQueue = tracks; playerIndex = 0; loadAndPlay(); }
 });
-$('#modalAddQueue').addEventListener('click', () => {
-  if (modalItem) { addToQueue([{...modalItem}]); closeModal(); }
+$('#modalAddQueue').addEventListener('click', async () => {
+  if (!modalItem) return;
+  const item = {...modalItem};
+  closeModal();
+  const tracks = await resolveItemTracks(item);
+  if (tracks.length) addToQueue(tracks);
 });
 
 // Playlist play/queue all
