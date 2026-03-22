@@ -23,6 +23,9 @@ def create_app() -> FastAPI:
     app.include_router(settings.router)
     app.include_router(admin.router)
 
+    # Apply saved settings to library/downloader modules
+    app_settings._apply_to_modules()
+
     # Background tasks
     from app.background import startup
     app.on_event("startup")(startup)

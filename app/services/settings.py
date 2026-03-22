@@ -51,6 +51,18 @@ def _save():
 _load()
 
 
+def _apply_to_modules():
+    """Push loaded settings into library/downloader module globals."""
+    from app.services import library, downloader
+    library.NAVIDROME_URL = _settings["navidrome_url"]
+    library.NAVIDROME_USER = _settings["navidrome_user"]
+    library.NAVIDROME_PASSWORD = _settings["navidrome_password"]
+    downloader.NAVIDROME_URL = _settings["navidrome_url"]
+    downloader.NAVIDROME_PASSWORD = _settings["navidrome_password"]
+    downloader.SLSKD_URL = _settings["slskd_url"]
+    downloader.SLSKD_API_KEY = _settings["slskd_api_key"]
+
+
 def get_all() -> dict:
     return {
         **_settings,
