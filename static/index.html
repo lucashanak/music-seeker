@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>MusicSeeker</title>
-<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=2">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -819,6 +819,10 @@ body.player-active .player-bar { display: flex; }
 .card-fav-btn.following { color: #ef4444; opacity: 1; }
 .new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
 .fav-new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
+.fav-auto-dl-badge { position: absolute; bottom: 52px; right: 8px; font-size: 10px; color: var(--accent); opacity: .7; }
+.modal-auto-dl { display: flex; align-items: center; gap: 8px; padding: 10px 0 0; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+.modal-auto-dl input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+.modal-auto-dl:hover { color: var(--text); }
 .queue-backdrop { position: fixed; inset: 0; z-index: 249; background: rgba(0,0,0,.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); opacity: 0; pointer-events: none; transition: opacity .3s; }
 .queue-backdrop.open { opacity: 1; pointer-events: auto; }
 .queue-panel { position: fixed; left: 0; right: 0; top: 0; height: 70vh; max-height: 600px; z-index: 250; background: var(--bg-card); border-radius: 0 0 20px 20px; transform: translateY(-100%); transition: transform .35s cubic-bezier(.32,.72,0,1); display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
@@ -978,9 +982,11 @@ body.player-active .player-bar { display: flex; }
     </div>
     <div class="logo-text">MusicSeeker</div>
     <p>Sign in to continue</p>
-    <input id="loginUser" type="text" placeholder="Username" autocomplete="username">
-    <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password">
-    <button class="btn-login" id="loginBtn">Sign In</button>
+    <form id="loginForm" action="javascript:void(0)" method="post">
+      <input id="loginUser" type="text" name="username" placeholder="Username" autocomplete="username">
+      <input id="loginPass" type="password" name="password" placeholder="Password" autocomplete="current-password">
+      <button class="btn-login" type="submit" id="loginBtn">Sign In</button>
+    </form>
     <div class="login-error" id="loginError"></div>
   </div>
 </div>
@@ -1461,6 +1467,10 @@ body.player-active .player-bar { display: flex; }
       <button class="btn-download" id="modalRadio" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);flex:1;">&#x1f4fb; Radio</button>
       <button class="btn-download" id="modalFavToggle" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);flex:1;">&#x2661; Follow</button>
     </div>
+    <label id="modalAutoDownload" class="modal-auto-dl" style="display:none;">
+      <input type="checkbox" id="modalAutoDownloadCb">
+      <span>Auto-download new releases</span>
+    </label>
   </div>
 </div>
 
@@ -1659,9 +1669,8 @@ async function doLogin() {
   }
 }
 
-$('#loginBtn').addEventListener('click', doLogin);
-$('#loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-$('#loginUser').addEventListener('keydown', e => { if (e.key === 'Enter') $('#loginPass').focus(); });
+$('#loginForm').addEventListener('submit', (e) => { e.preventDefault(); doLogin(); });
+$('#loginUser').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('#loginPass').focus(); } });
 
 // ── App Init ──
 let jobsInterval = null;
@@ -2945,7 +2954,8 @@ function openModal(item) {
   const isFavable = type === 'artist' || (type === 'album' && item.id) || type === 'track';
   $('#modalFavToggle').style.display = isFavable ? '' : 'none';
   // Show follow state for artists
-  if (type === 'artist' && item.id && favoritedArtistIds.has(item.id)) {
+  const isFollowed = type === 'artist' && item.id && favoritedArtistIds.has(item.id);
+  if (isFollowed) {
     $('#modalFavToggle').innerHTML = '&#x2665; Unfollow';
     $('#modalFavToggle').style.color = '#ef4444';
   } else if (type === 'artist') {
@@ -2953,6 +2963,24 @@ function openModal(item) {
     $('#modalFavToggle').style.color = '';
   } else {
     $('#modalFavToggle').style.display = 'none';
+  }
+  // Auto-download toggle (only for followed artists)
+  const adLabel = $('#modalAutoDownload');
+  const adCb = $('#modalAutoDownloadCb');
+  if (isFollowed || item._isFavorite) {
+    adLabel.style.display = '';
+    adCb.checked = !!item._autoDownload;
+    adCb.onchange = async () => {
+      try {
+        await apiJson(`/api/favorites/${item.id}`, { method: 'PUT', body: { auto_download: adCb.checked } });
+        showToast(adCb.checked ? 'Auto-download enabled' : 'Auto-download disabled');
+      } catch (e) {
+        adCb.checked = !adCb.checked;
+        showToast('Failed: ' + e.message);
+      }
+    };
+  } else {
+    adLabel.style.display = 'none';
   }
 
   // Last.fm items have no Spotify URL — resolve it (skip for playlists/podcasts)
@@ -4812,6 +4840,7 @@ async function loadFavorites() {
       <div class="card fav-card" data-artist-id="${a.id}" data-item='${JSON.stringify({id: a.id, name: a.name, artist: a.name, image: a.image, type: "artist"}).replace(/'/g, "&#39;")}'>
         <img class="card-img" src="${a.image || ''}" alt="" loading="lazy" style="border-radius:50%;" onerror="this.style.background='var(--bg-elevated)'">
         ${a.new_release ? '<div class="fav-new-badge">NEW</div>' : ''}
+        ${a.auto_download ? '<div class="fav-auto-dl-badge" title="Auto-download enabled">&#x21E9; Auto</div>' : ''}
         <div class="card-body">
           <div class="card-title">${esc(a.name)}</div>
           <div class="card-sub">${a.new_release ? esc(a.new_release.name) : (a.last_album_name ? esc(a.last_album_name) : '')}</div>
@@ -4837,6 +4866,8 @@ function openFavoriteModal(artist) {
     artist: artist.name,
     image: artist.image,
     type: 'artist',
+    _autoDownload: artist.auto_download,
+    _isFavorite: true,
   });
 }
 
