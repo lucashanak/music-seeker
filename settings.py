@@ -18,6 +18,7 @@ _defaults = {
     "slskd_url": os.environ.get("SLSKD_URL", "http://slskd:5030"),
     "slskd_api_key": os.environ.get("SLSKD_API_KEY", ""),
     "recommendation_source": os.environ.get("RECOMMENDATION_SOURCE", "combined"),
+    "spotify_refresh_token": "",
 }
 
 _settings = {**_defaults}
@@ -55,6 +56,7 @@ def get_all() -> dict:
         **_settings,
         "navidrome_password": bool(_settings["navidrome_password"]),
         "slskd_api_key": bool(_settings["slskd_api_key"]),
+        "spotify_refresh_token": bool(_settings["spotify_refresh_token"]),
     }
 
 

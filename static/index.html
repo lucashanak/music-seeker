@@ -594,6 +594,25 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
 }
 .user-perm-edit:hover { border-color: var(--accent); color: var(--accent); }
 
+/* ── Spotify Library Tabs ── */
+.sp-tabs {
+  display: flex; gap: 8px; margin-bottom: 24px; overflow-x: auto;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.sp-tabs::-webkit-scrollbar { display: none; }
+.sp-tab {
+  padding: 10px 22px; border-radius: 50px; border: none; cursor: pointer;
+  font-size: 14px; font-weight: 600; white-space: nowrap;
+  background: var(--bg-elevated); color: var(--text-muted);
+  transition: all .2s ease;
+}
+.sp-tab:hover { background: var(--bg-card); color: var(--text); }
+.sp-tab.active { background: var(--accent); color: #000; }
+.sp-section-title {
+  font-size: 13px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px;
+}
+
 /* ── Playlist Detail ── */
 .playlist-hero {
   display: flex; gap: 20px; align-items: center; margin-bottom: 24px;
@@ -1115,10 +1134,29 @@ body.player-active .player-bar { display: flex; }
 
 <!-- ── Playlists Page ── -->
 <main id="pagePlaylists" style="display:none">
-  <h2 class="page-title">My Spotify Playlists</h2>
-  <div id="playlistsGrid" class="grid"></div>
+  <div id="spotifyLibrary">
+    <h2 class="page-title">My Spotify Library</h2>
+    <div class="sp-tabs">
+      <button class="sp-tab active" data-sp-tab="playlists">Playlists</button>
+      <button class="sp-tab" data-sp-tab="albums">Albums</button>
+      <button class="sp-tab" data-sp-tab="artists">Artists</button>
+      <button class="sp-tab" data-sp-tab="podcasts">Podcasts</button>
+    </div>
+    <div id="spPlaylists" class="sp-section">
+      <div id="playlistsGrid" class="grid"></div>
+    </div>
+    <div id="spAlbums" class="sp-section" style="display:none">
+      <div id="spAlbumsGrid" class="grid"></div>
+    </div>
+    <div id="spArtists" class="sp-section" style="display:none">
+      <div id="spArtistsGrid" class="grid"></div>
+    </div>
+    <div id="spPodcasts" class="sp-section" style="display:none">
+      <div id="spPodcastsGrid" class="grid"></div>
+    </div>
+  </div>
   <div id="playlistDetail" style="display:none; margin-top:24px;">
-    <button id="backToPlaylists" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back to Playlists</button>
+    <button id="backToPlaylists" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back</button>
     <div class="playlist-hero">
       <img id="plDetailImg" class="playlist-hero-img" src="">
       <div class="playlist-hero-info">
@@ -1299,7 +1337,16 @@ body.player-active .player-bar { display: flex; }
     <summary class="setting-section-title">Spotify Account</summary>
     <div class="setting-section-body">
       <div id="spotifyStatus" style="font-size:13px;margin-bottom:12px;"></div>
-      <div id="spotifyConnectForm">
+      <div style="margin-bottom:16px;">
+        <button class="btn-save" id="spotifyOAuth" style="background:var(--accent);color:#000;font-weight:600;padding:10px 24px;font-size:14px;">
+          &#9835; Authorize with Spotify
+        </button>
+        <button class="btn-save" id="spotifyDisconnect" style="background:var(--border);display:none;margin-left:8px;">Disconnect</button>
+        <span class="save-status" id="spotifyOAuthStatus"></span>
+      </div>
+      <details style="margin-bottom:8px;">
+        <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;">Advanced: Manual credentials</summary>
+        <div id="spotifyConnectForm" style="margin-top:8px;">
         <div class="setting-group">
           <label class="setting-label">Client ID</label>
           <input class="setting-input" id="spotifyClientId" type="text" placeholder="Enter Spotify Client ID...">
@@ -1313,11 +1360,11 @@ body.player-active .player-bar { display: flex; }
           <input class="setting-input" id="spotifyRefreshToken" type="password" placeholder="Enter Refresh Token...">
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;">
-          <button class="btn-save" id="spotifyConnect">Connect Spotify</button>
-          <button class="btn-save" id="spotifyDisconnect" style="background:var(--border);display:none;">Disconnect</button>
+          <button class="btn-save" id="spotifyConnect">Connect</button>
           <span class="save-status" id="spotifyConnStatus"></span>
         </div>
       </div>
+      </details>
       <div class="setting-group" style="margin-top:12px;">
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);cursor:pointer;">
           <input type="checkbox" id="settingHideSpotify" style="accent-color:var(--accent);">
@@ -1722,6 +1769,10 @@ function switchPage(page, fromPopstate) {
   if (page === 'search') {
     $('#showDetail').style.display = 'none';
     $('#searchResults').style.display = '';
+  }
+  if (page === 'playlists') {
+    $('#spotifyLibrary').style.display = '';
+    $('#playlistDetail').style.display = 'none';
   }
   if (page === 'discover') loadTags();
   if (page === 'playlists') loadPlaylists();
@@ -2133,40 +2184,144 @@ $('#rrSearch').addEventListener('click', () => {
   doSearch();
 });
 
-// ── Playlists ──
-async function loadPlaylists() {
+// ── Spotify Library ──
+const spCache = { playlists: null, albums: null, artists: null, podcasts: null };
+let activeSpTab = 'playlists';
+
+// Tab switching
+$$('.sp-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    if (tab.dataset.spTab === activeSpTab) return;
+    $$('.sp-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    activeSpTab = tab.dataset.spTab;
+    $$('.sp-section').forEach(s => s.style.display = 'none');
+    $(`#sp${activeSpTab.charAt(0).toUpperCase() + activeSpTab.slice(1)}`).style.display = '';
+    loadSpTab(activeSpTab);
+  });
+});
+
+function loadPlaylists() {
   $('#playlistDetail').style.display = 'none';
-  const grid = $('#playlistsGrid');
-  grid.style.display = '';
+  $('#spotifyLibrary').style.display = '';
   if (!spotifyUser) {
-    grid.innerHTML = `<div class="empty-state" style="opacity:.5;"><p>Spotify user token not configured.<br>Set SPOTIFY_REFRESH_TOKEN to access playlists and liked songs.</p></div>`;
+    $('#playlistsGrid').innerHTML = `<div class="empty-state" style="opacity:.5;"><p>Spotify user token not configured.<br>Set SPOTIFY_REFRESH_TOKEN to access playlists and liked songs.</p></div>`;
     return;
   }
+  loadSpTab(activeSpTab);
+}
+
+async function loadSpTab(tab) {
+  const gridMap = { playlists: '#playlistsGrid', albums: '#spAlbumsGrid', artists: '#spArtistsGrid', podcasts: '#spPodcastsGrid' };
+  const grid = $(gridMap[tab]);
+  if (!grid) return;
+
+  if (spCache[tab]) { renderSpGrid(tab, spCache[tab], grid); return; }
+
   grid.innerHTML = Array(6).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
-    const data = await apiJson('/api/spotify/playlists');
+    if (tab === 'playlists') {
+      const data = await apiJson('/api/spotify/playlists');
+      spCache.playlists = data.playlists;
+      renderSpGrid('playlists', data.playlists, grid);
+    } else if (tab === 'albums') {
+      const data = await apiJson('/api/spotify/albums');
+      spCache.albums = data.albums;
+      renderSpGrid('albums', data.albums, grid);
+    } else if (tab === 'artists') {
+      const data = await apiJson('/api/spotify/artists');
+      spCache.artists = data.artists;
+      renderSpGrid('artists', data.artists, grid);
+    } else if (tab === 'podcasts') {
+      const data = await apiJson('/api/spotify/shows');
+      spCache.podcasts = data.shows;
+      renderSpGrid('podcasts', data.shows, grid);
+    }
+  } catch (e) {
+    grid.innerHTML = `<div class="empty-state"><p>Failed to load ${tab}</p></div>`;
+  }
+}
+
+function renderSpGrid(tab, items, grid) {
+  if (tab === 'playlists') {
     const likedCard = `
-      <div class="card" data-playlist-id="liked" data-playlist-url="">
+      <div class="card sp-card" data-playlist-id="liked" data-playlist-url="" data-sp-type="playlist">
         <div class="card-img" style="background:linear-gradient(135deg,#604be8,#1db954);display:flex;align-items:center;justify-content:center;font-size:32px;">&#9829;</div>
         <div class="card-body">
           <div class="card-title">Liked Songs</div>
           <div class="card-sub">Your saved tracks</div>
         </div>
       </div>`;
-    grid.innerHTML = likedCard + data.playlists.map(pl => `
-      <div class="card" data-playlist-id="${pl.id}" data-playlist-url="${pl.url}">
+    grid.innerHTML = likedCard + items.map(pl => `
+      <div class="card sp-card" data-playlist-id="${pl.id}" data-playlist-url="${pl.url}" data-sp-type="playlist">
         <img class="card-img" src="${pl.image || ''}" alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(pl.name)}</div>
           <div class="card-sub">${pl.tracks_total} tracks</div>
         </div>
-      </div>
-    `).join('');
-    $$('.card', grid).forEach(card => {
-      card.addEventListener('click', () => loadPlaylistDetail(card.dataset.playlistId, card.dataset.playlistUrl));
+      </div>`).join('');
+  } else if (tab === 'albums') {
+    grid.innerHTML = items.map(a => `
+      <div class="card sp-card" data-sp-type="album" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.artist,image:a.image,url:a.url,type:"album"}).replace(/'/g,"&#39;")}'>
+        <img class="card-img" src="${a.image || ''}" alt="" loading="lazy">
+        <div class="card-body">
+          <div class="card-title">${esc(a.name)}</div>
+          <div class="card-sub">${esc(a.artist)} &middot; ${a.total_tracks} tracks</div>
+        </div>
+      </div>`).join('') || '<div class="empty-state"><p>No saved albums</p></div>';
+  } else if (tab === 'artists') {
+    grid.innerHTML = items.map(a => `
+      <div class="card sp-card" data-sp-type="artist" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.name,image:a.image,url:a.url,type:"artist"}).replace(/'/g,"&#39;")}'>
+        <img class="card-img" src="${a.image || ''}" alt="" loading="lazy" style="border-radius:50%;">
+        <div class="card-body">
+          <div class="card-title">${esc(a.name)}</div>
+          <div class="card-sub">${a.genres ? esc(a.genres.join(', ')) : 'Artist'}</div>
+        </div>
+      </div>`).join('') || '<div class="empty-state"><p>No followed artists</p></div>';
+  } else if (tab === 'podcasts') {
+    grid.innerHTML = items.map(s => `
+      <div class="card sp-card" data-sp-type="show" data-show-id="${s.id}" data-item='${JSON.stringify({id:s.id,name:s.name,artist:s.artist,image:s.image,url:s.url,type:"show"}).replace(/'/g,"&#39;")}'>
+        <img class="card-img" src="${s.image || ''}" alt="" loading="lazy">
+        <div class="card-body">
+          <div class="card-title">${esc(s.name)}</div>
+          <div class="card-sub">${esc(s.artist || '')} &middot; ${s.total_episodes || 0} episodes</div>
+        </div>
+      </div>`).join('') || '<div class="empty-state"><p>No saved podcasts</p></div>';
+  }
+
+  // Attach click handlers
+  $$('.sp-card', grid).forEach(card => {
+    card.addEventListener('click', () => {
+      const type = card.dataset.spType;
+      if (type === 'playlist') {
+        loadPlaylistDetail(card.dataset.playlistId, card.dataset.playlistUrl);
+      } else if (type === 'album') {
+        const item = JSON.parse(card.dataset.item);
+        openModal(item);
+      } else if (type === 'artist') {
+        const item = JSON.parse(card.dataset.item);
+        // Try to resolve Deezer artist ID for detail view
+        searchForArtistDetail(item);
+      } else if (type === 'show') {
+        const item = JSON.parse(card.dataset.item);
+        loadShowDetail(item.id, item.url || '', 'playlists');
+      }
     });
-  } catch (e) {
-    grid.innerHTML = `<div class="empty-state"><p>Failed to load playlists</p></div>`;
+  });
+}
+
+async function searchForArtistDetail(item) {
+  // Search Deezer for this artist to get their artist ID for the detail view
+  try {
+    const data = await apiJson(`/api/search?q=${encodeURIComponent(item.name)}&type=artist`);
+    const match = (data.results || []).find(r => r.name.toLowerCase() === item.name.toLowerCase()) || (data.results || [])[0];
+    if (match && match.id) {
+      loadArtistDetail(match.id, 'playlists');
+    } else {
+      showToast('Artist not found on Deezer');
+    }
+  } catch {
+    showToast('Failed to find artist');
   }
 }
 
@@ -2176,7 +2331,6 @@ async function loadPlaylistDetail(id, url, fromPage) {
   currentPlaylistUrl = url;
   playlistDetailSource = fromPage || null;
   if (fromPage) {
-    // Show playlists page without pushing history — source page stays as back target
     currentPage = 'playlists';
     $('#pageSearch').style.display = 'none';
     $('#pageDiscover').style.display = 'none';
@@ -2184,7 +2338,7 @@ async function loadPlaylistDetail(id, url, fromPage) {
     $('#pageFavorites').style.display = 'none';
     $('#pageSettings').style.display = 'none';
   }
-  $('#playlistsGrid').style.display = 'none';
+  $('#spotifyLibrary').style.display = 'none';
   $('#playlistDetail').style.display = '';
   history.pushState({layer: 'playlistDetail'}, '');
   const tracksEl = $('#playlistTracks');
@@ -2214,7 +2368,7 @@ $('#backToPlaylists').addEventListener('click', () => {
 });
 function closePlaylistDetail(fromPopstate) {
   $('#playlistDetail').style.display = 'none';
-  $('#playlistsGrid').style.display = '';
+  $('#spotifyLibrary').style.display = '';
   const src = playlistDetailSource;
   playlistDetailSource = null;
   if (src) {
@@ -2336,14 +2490,33 @@ async function loadArtistDetail(id, fromPage) {
 }
 
 $('#backFromArtist').addEventListener('click', () => closeArtistDetail());
-$('#downloadArtist').addEventListener('click', () => {
+$('#downloadArtist').addEventListener('click', async () => {
   if (!currentArtistAlbums.length) return;
-  openModal({
-    name: $('#artistDetailName').textContent,
-    artist: $('#artistDetailName').textContent,
-    image: $('#artistDetailImg').src,
-    type: 'artist',
-  });
+  const btn = $('#downloadArtist');
+  btn.disabled = true; btn.textContent = 'Starting...';
+  try {
+    for (const album of currentArtistAlbums) {
+      const tracks = [];
+      try {
+        const data = await apiJson(`/api/album/${album.id}/tracks`);
+        (data.tracks || []).forEach(t => tracks.push({ name: t.name, artist: t.artist, album: t.album || album.name, image: t.image || album.image || '', url: t.url || '' }));
+      } catch {}
+      await apiJson('/api/download', { method: 'POST', body: {
+        url: album.url || `https://www.deezer.com/album/${album.id}`,
+        title: `${album.artist || $('#artistDetailName').textContent} - ${album.name}`,
+        method: appSettings.default_method || 'yt-dlp',
+        format: appSettings.default_format || 'flac',
+        type: 'album',
+        playlist_tracks: tracks,
+      }});
+    }
+    showToast(`Queued ${currentArtistAlbums.length} albums for download`);
+    openPanel();
+  } catch (e) {
+    alert('Download failed: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Download All Albums';
+  }
 });
 function closeArtistDetail(fromPopstate) {
   $('#artistDetail').style.display = 'none';
@@ -3090,9 +3263,11 @@ async function loadSettings() {
   // Load per-user Spotify status
   try {
     const sp = await apiJson('/api/user/spotify');
+    const ver = await apiJson('/api/version');
     const statusEl = $('#spotifyStatus');
+    const hasGlobal = ver.spotify_user;
     if (sp.connected) {
-      statusEl.innerHTML = '<span style="color:var(--accent);">&#x2713; Connected</span> — Your Spotify account is linked.';
+      statusEl.innerHTML = '<span style="color:var(--accent);">&#x2713; Connected</span> — Your personal Spotify account is linked.';
       $('#spotifyClientId').value = sp.spotify_client_id || '';
       $('#spotifyClientId').placeholder = '(set)';
       $('#spotifyClientSecret').value = '';
@@ -3100,12 +3275,18 @@ async function loadSettings() {
       $('#spotifyRefreshToken').value = '';
       $('#spotifyRefreshToken').placeholder = '(set) Enter new...';
       $('#spotifyDisconnect').style.display = '';
+      $('#spotifyOAuth').textContent = '\u266B Reconnect Spotify';
+    } else if (hasGlobal) {
+      statusEl.innerHTML = '<span style="color:var(--accent);">&#x2713; Connected</span> — Using shared Spotify account.';
+      $('#spotifyDisconnect').style.display = '';
+      $('#spotifyOAuth').textContent = '\u266B Reconnect Spotify';
     } else {
-      statusEl.innerHTML = 'Not connected. Enter your <a href="https://developer.spotify.com/dashboard" target="_blank" style="color:var(--accent)">Spotify API</a> credentials to access your playlists and Liked Songs.';
+      statusEl.innerHTML = 'Not connected. Click "Authorize with Spotify" to link your account.';
       $('#spotifyClientId').value = '';
       $('#spotifyClientSecret').value = '';
       $('#spotifyRefreshToken').value = '';
       $('#spotifyDisconnect').style.display = 'none';
+      $('#spotifyOAuth').textContent = '\u266B Authorize with Spotify';
     }
     $('#settingHideSpotify').checked = currentUser.hide_spotify || false;
   } catch { }
@@ -3155,7 +3336,40 @@ $('#saveSettings').addEventListener('click', async () => {
   } finally { btn.disabled = false; }
 });
 
-// ── Spotify Connect/Disconnect ──
+// ── Spotify OAuth ──
+$('#spotifyOAuth').addEventListener('click', async () => {
+  const btn = $('#spotifyOAuth');
+  btn.disabled = true;
+  try {
+    const data = await apiJson('/api/spotify/auth-url?origin=' + encodeURIComponent(window.location.origin));
+    window.location.href = data.url;
+  } catch (e) {
+    $('#spotifyOAuthStatus').textContent = e.message || 'Failed';
+    $('#spotifyOAuthStatus').style.color = 'var(--red)';
+    btn.disabled = false;
+  }
+});
+
+// Handle OAuth callback redirect
+(function checkSpotifyCallback() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('spotify_connected') === '1') {
+    history.replaceState(null, '', '/');
+    setTimeout(() => {
+      switchPage('settings');
+      showToast('Spotify connected successfully!');
+    }, 500);
+  } else if (params.get('spotify_error')) {
+    const err = params.get('spotify_error');
+    history.replaceState(null, '', '/');
+    setTimeout(() => {
+      switchPage('settings');
+      showToast('Spotify connection failed: ' + err, true);
+    }, 500);
+  }
+})();
+
+// ── Spotify Manual Connect/Disconnect ──
 $('#spotifyConnect').addEventListener('click', async () => {
   const btn = $('#spotifyConnect');
   const status = $('#spotifyConnStatus');

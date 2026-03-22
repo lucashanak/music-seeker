@@ -1,8 +1,9 @@
 import asyncio
 import os
+import time
 from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 
 import spotify
@@ -19,7 +20,7 @@ import player
 import radio
 import favorites
 
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.12.0"
 
 app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
@@ -113,7 +114,7 @@ async def get_version():
         "search_fallback": app_settings._settings.get("search_fallback", ""),
         "podcast_provider": app_settings._settings.get("podcast_provider", "itunes"),
         "spotify_available": bool(spotify.SPOTIFY_CLIENT_ID and spotify.SPOTIFY_CLIENT_SECRET),
-        "spotify_user": bool(spotify.SPOTIFY_REFRESH_TOKEN),
+        "spotify_user": bool(spotify._get_global_refresh_token()),
     }
 
 
@@ -211,6 +212,27 @@ async def get_playlist_tracks(playlist_id: str, user: dict = Depends(auth.get_cu
     creds = _user_spotify_creds(user)
     data = await spotify.get_playlist_tracks(playlist_id, creds=creds)
     return data
+
+
+@app.get("/api/spotify/albums")
+async def get_saved_albums(user: dict = Depends(auth.get_current_user)):
+    creds = _user_spotify_creds(user)
+    albums = await spotify.get_saved_albums(creds=creds)
+    return {"albums": albums}
+
+
+@app.get("/api/spotify/artists")
+async def get_followed_artists(user: dict = Depends(auth.get_current_user)):
+    creds = _user_spotify_creds(user)
+    artists = await spotify.get_followed_artists(creds=creds)
+    return {"artists": artists}
+
+
+@app.get("/api/spotify/shows")
+async def get_saved_shows(user: dict = Depends(auth.get_current_user)):
+    creds = _user_spotify_creds(user)
+    shows = await spotify.get_saved_shows(creds=creds)
+    return {"shows": shows}
 
 
 @app.get("/api/spotify/show/{show_id}/episodes")
@@ -492,6 +514,7 @@ class SettingsUpdate(BaseModel):
     slskd_url: str | None = None
     slskd_api_key: str | None = None
     recommendation_source: str | None = None
+    spotify_refresh_token: str | None = None
 
 
 @app.put("/api/settings")
@@ -587,6 +610,69 @@ async def connect_user_spotify(req: SpotifyConnectRequest, user: dict = Depends(
 async def disconnect_user_spotify(user: dict = Depends(auth.get_current_user)):
     auth.clear_user_spotify(user["username"])
     return {"status": "disconnected"}
+
+
+# --- Spotify OAuth Flow ---
+
+# In-memory store for pending OAuth states (state_token -> username)
+# Entries expire after 10 minutes
+_oauth_states: dict[str, dict] = {}
+
+
+def _build_base_url(request: Request) -> str:
+    """Get external base URL, respecting reverse proxy headers."""
+    base = str(request.base_url).rstrip("/")
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host")
+    if forwarded_host:
+        proto = forwarded_proto or "https"
+        base = f"{proto}://{forwarded_host}"
+    return base
+
+
+@app.get("/api/spotify/auth-url")
+async def spotify_auth_url(request: Request, origin: str = "", user: dict = Depends(auth.get_current_user)):
+    """Return Spotify OAuth URL. Frontend redirects browser there."""
+    import secrets
+    base = origin.rstrip("/") if origin else _build_base_url(request)
+    redirect_uri = f"{base}/api/spotify/callback"
+    state = secrets.token_urlsafe(32)
+    _oauth_states[state] = {"username": user["username"], "redirect_uri": redirect_uri, "ts": time.time()}
+    # Cleanup old states (>10 min)
+    cutoff = time.time() - 600
+    for k in list(_oauth_states):
+        if _oauth_states[k]["ts"] < cutoff:
+            del _oauth_states[k]
+    url = spotify.get_oauth_url(redirect_uri, state=state)
+    return {"url": url, "redirect_uri": redirect_uri}
+
+
+@app.get("/api/spotify/callback")
+async def spotify_callback(request: Request, code: str = "", error: str = "", state: str = ""):
+    """Handle Spotify OAuth callback — exchange code for tokens, store per-user."""
+    if error:
+        return RedirectResponse("/?spotify_error=" + error)
+    if not code:
+        return RedirectResponse("/?spotify_error=no_code")
+
+    # Look up username and redirect_uri from state
+    state_data = _oauth_states.pop(state, None) if state else None
+    if not state_data or time.time() - state_data["ts"] > 600:
+        return RedirectResponse("/?spotify_error=invalid_state")
+    username = state_data["username"]
+    redirect_uri = state_data.get("redirect_uri") or f"{_build_base_url(request)}/api/spotify/callback"
+
+    try:
+        data = await spotify.exchange_code(code, redirect_uri)
+    except Exception:
+        return RedirectResponse("/?spotify_error=exchange_failed")
+
+    if "refresh_token" not in data:
+        return RedirectResponse("/?spotify_error=no_refresh_token")
+
+    # Store per-user: use global client_id/secret + user's refresh token
+    auth.update_user_spotify(username, spotify.SPOTIFY_CLIENT_ID, spotify.SPOTIFY_CLIENT_SECRET, data["refresh_token"])
+    return RedirectResponse("/?spotify_connected=1")
 
 
 class UserSettingRequest(BaseModel):

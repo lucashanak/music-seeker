@@ -8,6 +8,44 @@ SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 SPOTIFY_REFRESH_TOKEN = os.environ.get("SPOTIFY_REFRESH_TOKEN", "")
 
+SPOTIFY_SCOPES = "user-library-read playlist-read-private playlist-read-collaborative user-follow-read"
+
+
+def get_oauth_url(redirect_uri: str, state: str = "", client_id: str = "") -> str:
+    """Build Spotify OAuth authorization URL."""
+    import urllib.parse
+    cid = client_id or SPOTIFY_CLIENT_ID
+    params = {
+        "client_id": cid,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": SPOTIFY_SCOPES,
+        "show_dialog": "true",
+    }
+    if state:
+        params["state"] = state
+    return f"https://accounts.spotify.com/authorize?{urllib.parse.urlencode(params)}"
+
+
+async def exchange_code(code: str, redirect_uri: str, client_id: str = "", client_secret: str = "") -> dict:
+    """Exchange authorization code for access + refresh tokens."""
+    cid = client_id or SPOTIFY_CLIENT_ID
+    csecret = client_secret or SPOTIFY_CLIENT_SECRET
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://accounts.spotify.com/api/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": cid,
+                "client_secret": csecret,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
 # Token caches keyed by (client_id, grant_type) to support per-user credentials
 # Key format: "{client_id}:app" or "{client_id}:{refresh_token_hash}:user"
 _token_cache: dict[str, dict] = {}
@@ -43,11 +81,23 @@ async def get_app_token(creds: dict | None = None) -> str:
     return data["access_token"]
 
 
+def _get_global_refresh_token() -> str:
+    """Get global refresh token: settings override > env var."""
+    try:
+        import settings as _s
+        stored = _s._settings.get("spotify_refresh_token", "")
+        if stored:
+            return stored
+    except Exception:
+        pass
+    return SPOTIFY_REFRESH_TOKEN
+
+
 async def get_user_token(creds: dict | None = None) -> str:
     """User token via refresh_token — needed for user-specific endpoints (playlists)."""
     cid = (creds or {}).get("client_id") or SPOTIFY_CLIENT_ID
     csecret = (creds or {}).get("client_secret") or SPOTIFY_CLIENT_SECRET
-    rt = (creds or {}).get("refresh_token") or SPOTIFY_REFRESH_TOKEN
+    rt = (creds or {}).get("refresh_token") or _get_global_refresh_token()
     key = _cache_key(cid, rt, user=True)
 
     cached = _token_cache.get(key, {})
@@ -264,6 +314,88 @@ async def get_liked_tracks(creds: dict | None = None) -> dict:
         "image": "",
         "tracks": tracks,
     }
+
+
+async def get_saved_albums(creds: dict | None = None) -> list[dict]:
+    """Fetch user's saved albums."""
+    albums = []
+    offset = 0
+    while True:
+        data = await spotify_get("me/albums", {"limit": 50, "offset": offset}, user=True, creds=creds)
+        for item in data.get("items", []):
+            a = item.get("album")
+            if not a or not a.get("id"):
+                continue
+            albums.append({
+                "id": a["id"],
+                "name": a["name"],
+                "artist": ", ".join(ar["name"] for ar in a.get("artists", [])),
+                "image": _best_image(a.get("images", [])),
+                "url": a["external_urls"].get("spotify", ""),
+                "total_tracks": a.get("total_tracks", 0),
+                "release_date": a.get("release_date", ""),
+                "type": "album",
+            })
+        if not data.get("next"):
+            break
+        offset += 50
+    return albums
+
+
+async def get_followed_artists(creds: dict | None = None) -> list[dict]:
+    """Fetch user's followed artists."""
+    artists = []
+    after = None
+    while True:
+        params = {"type": "artist", "limit": 50}
+        if after:
+            params["after"] = after
+        data = await spotify_get("me/following", params, user=True, creds=creds)
+        items = data.get("artists", {}).get("items", [])
+        for item in items:
+            if not item or not item.get("id"):
+                continue
+            artists.append({
+                "id": item["id"],
+                "name": item["name"],
+                "artist": item["name"],
+                "image": _best_image(item.get("images", [])),
+                "url": item["external_urls"].get("spotify", ""),
+                "genres": item.get("genres", [])[:3],
+                "followers": item.get("followers", {}).get("total", 0),
+                "type": "artist",
+            })
+        cursors = data.get("artists", {}).get("cursors", {})
+        after = cursors.get("after")
+        if not after or not items:
+            break
+    return artists
+
+
+async def get_saved_shows(creds: dict | None = None) -> list[dict]:
+    """Fetch user's saved podcast shows."""
+    shows = []
+    offset = 0
+    while True:
+        data = await spotify_get("me/shows", {"limit": 50, "offset": offset}, user=True, creds=creds)
+        for item in data.get("items", []):
+            s = item.get("show")
+            if not s or not s.get("id"):
+                continue
+            shows.append({
+                "id": s["id"],
+                "name": s["name"],
+                "artist": s.get("publisher", ""),
+                "image": _best_image(s.get("images", [])),
+                "url": s["external_urls"].get("spotify", ""),
+                "total_episodes": s.get("total_episodes", 0),
+                "type": "show",
+                "description": (s.get("description", "") or "")[:200],
+            })
+        if not data.get("next"):
+            break
+        offset += 50
+    return shows
 
 
 def parse_spotify_url(url: str) -> tuple[str, str] | None:

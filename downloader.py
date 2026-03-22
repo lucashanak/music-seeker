@@ -60,8 +60,8 @@ async def _resolve_tracks(job: Job) -> list[dict]:
     from spotify import parse_spotify_url, get_track_metadata, get_album_tracks, get_episode_metadata, get_show_episodes
     from search_providers import parse_deezer_url, deezer_get_track, deezer_get_album_tracks
 
-    # Playlists: already have track data
-    if job.type == "playlist" and job.playlist_tracks:
+    # Playlists or albums with pre-resolved track data
+    if job.type in ("playlist", "album") and job.playlist_tracks:
         return job.playlist_tracks
 
     # Shows: already have episode data from frontend
