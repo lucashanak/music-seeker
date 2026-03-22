@@ -102,6 +102,12 @@ export async function checkLibrary(items, containerEl) {
         badge.className = 'in-library-badge';
         badge.textContent = 'In Library';
         cards[i].appendChild(badge);
+        const dlBtn = cards[i].querySelector('.card-dl-btn');
+        if (dlBtn) {
+          dlBtn.disabled = true;
+          dlBtn.style.opacity = '0.3';
+          dlBtn.title = 'Already in library';
+        }
         const item = JSON.parse(cards[i].dataset.item);
         item.inLibrary = true;
         cards[i].dataset.item = JSON.stringify(item).replace(/'/g, "&#39;");

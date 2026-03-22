@@ -115,6 +115,13 @@ async def _auto_download_album(album_id: str, album_name: str, artist: dict, use
     from app.services import jobs
     from app.services import downloader
 
+    # Skip if a job for this album is already queued/running
+    expected_title = f"Auto: {artist['name']} - {album_name}"
+    for existing in jobs._jobs.values():
+        if existing.status in (jobs.JobStatus.QUEUED, jobs.JobStatus.RUNNING) and existing.title == expected_title:
+            logger.info(f"Job already in queue: {expected_title}")
+            return
+
     tracks = await search_providers.get_album_tracks(album_id, provider=provider)
     if not tracks:
         return
@@ -139,24 +146,38 @@ async def _auto_download_album(album_id: str, album_name: str, artist: dict, use
 
 async def check_new_releases() -> int:
     """Check all users' favorites for new releases and auto-download missing albums.
+    Searches by artist name using the configured search provider.
     Returns count of download jobs started."""
     import asyncio
+    from app.services import settings as app_settings
+
     download_count = 0
+    provider = app_settings._settings.get("search_provider", "deezer")
     usernames = get_all_usernames()
+    queued_albums = set()  # (artist_name_lower, album_name_lower) — dedup across users
+
     for username in usernames:
         data = load_favorites(username)
         changed = False
         for artist in data["artists"]:
             try:
                 await asyncio.sleep(1)  # rate limit
-                provider = artist.get("provider", "deezer")
+
+                # Find artist by name using configured search engine
+                found = await search_providers.find_artist_by_name(artist["name"], provider=provider)
+                if not found:
+                    logger.warning(f"Could not find artist '{artist['name']}' via {provider}")
+                    continue
+
+                found_id = found["id"]
+                logger.info(f"Matched '{artist['name']}' → '{found['name']}' (id={found_id}, provider={provider})")
 
                 # Update latest album tracking
-                latest = await search_providers.artist_latest_album(artist["id"], provider=provider)
+                latest = await search_providers.artist_latest_album(found_id, provider=provider)
                 if not latest:
                     continue
 
-                if artist.get("last_album_id") and latest["id"] != artist["last_album_id"]:
+                if artist.get("last_album_id") and latest["id"] != artist.get("last_album_id"):
                     artist["new_release"] = {
                         "id": latest["id"],
                         "name": latest["name"],
@@ -166,19 +187,17 @@ async def check_new_releases() -> int:
                     logger.info(f"New release for {artist['name']}: {latest['name']} (user: {username})")
 
                 # Always update baseline
-                if latest:
-                    artist["last_album_id"] = latest["id"]
-                    artist["last_album_name"] = latest["name"]
-                    changed = True
+                artist["last_album_id"] = latest["id"]
+                artist["last_album_name"] = latest["name"]
+                changed = True
 
                 # Auto-download: check ALL albums from this artist
                 if artist.get("auto_download"):
                     try:
-                        artist_data = await search_providers.get_artist_albums(artist["id"], provider=provider)
+                        artist_data = await search_providers.get_artist_albums(found_id, provider=provider)
                         from app.services import library
                         for album in artist_data.get("albums", []):
                             await asyncio.sleep(0.5)  # rate limit
-                            # Get album tracks and check if any are missing
                             tracks = await search_providers.get_album_tracks(album["id"], provider=provider)
                             if not tracks:
                                 continue
@@ -189,6 +208,11 @@ async def check_new_releases() -> int:
                                     has_all = False
                                     break
                             if not has_all:
+                                dedup_key = (artist["name"].lower(), album["name"].lower())
+                                if dedup_key in queued_albums:
+                                    logger.info(f"Skipping duplicate: {artist['name']} - {album['name']}")
+                                    continue
+                                queued_albums.add(dedup_key)
                                 await _auto_download_album(
                                     album["id"], album["name"], artist, username, provider=provider
                                 )

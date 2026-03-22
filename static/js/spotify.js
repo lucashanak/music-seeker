@@ -4,7 +4,7 @@ import { store } from './store.js';
 import { $, $$, esc, showToast, historyBack } from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { renderResults } from './search.js';
+import { renderResults, checkLibrary } from './search.js';
 import { switchPage } from './router.js';
 
 // ── Tab Switching ──
@@ -265,11 +265,14 @@ export async function loadArtistDetail(id, fromPage) {
     $$('.card-dl-btn', albumsEl).forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (btn.disabled) return;
         const card = btn.closest('.card');
         const album = store.currentArtistAlbums[card.dataset.albumIdx];
-        if (album) { openModal(album); setTimeout(() => $('#modalDownload').click(), 100); }
+        if (album) { openModal(album); if (!album.inLibrary) setTimeout(() => $('#modalDownload').click(), 100); }
       });
     });
+    // Check library status for albums
+    checkLibrary(store.currentArtistAlbums.map(a => ({ name: a.name, artist: data.name, type: 'album' })), albumsEl);
     // Update follow button state
     updateFollowButton(id);
   } catch (e) {

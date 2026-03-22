@@ -325,7 +325,7 @@ export function init() {
   // Download button on cards (event delegation)
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.card-dl-btn');
-    if (!btn) return;
+    if (!btn || btn.disabled) return;
     e.stopPropagation();
     const card = btn.closest('.card');
     if (!card) return;
@@ -333,7 +333,7 @@ export function init() {
     if (card.dataset.albumIdx !== undefined) return; // handled locally
     const item = JSON.parse(card.dataset.item);
     openModal(item);
-    setTimeout(() => $('#modalDownload').click(), 100);
+    if (!item.inLibrary) setTimeout(() => $('#modalDownload').click(), 100);
   });
 
   // Keyboard: space to play/pause (when not in input)

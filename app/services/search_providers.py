@@ -618,6 +618,29 @@ async def resolve(name: str, artist: str, item_type: str = "track", provider: st
     return results[0] if results else None
 
 
+def _normalize(name: str) -> str:
+    """Normalize artist/album name for comparison."""
+    return re.sub(r'\s+', ' ', name.strip().lower())
+
+
+async def find_artist_by_name(name: str, provider: str = "deezer") -> dict | None:
+    """Search for an artist by name and return best exact/near-exact match.
+    Returns dict with id, name, image or None if no good match."""
+    results = await search(name, "artist", limit=5, provider=provider, fallback="")
+    if not results:
+        return None
+    norm = _normalize(name)
+    # Exact match first
+    for r in results:
+        if _normalize(r["name"]) == norm:
+            return r
+    # First result as fallback (top search result is usually correct)
+    top = results[0]
+    if norm in _normalize(top["name"]) or _normalize(top["name"]) in norm:
+        return top
+    return None
+
+
 # ── Provider-aware artist/album functions ──
 
 async def get_artist_albums(artist_id: str, provider: str = "deezer") -> dict:

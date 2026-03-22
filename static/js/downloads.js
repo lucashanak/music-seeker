@@ -40,8 +40,13 @@ export function openModal(item) {
   $$('.modal-section', $('#downloadModal')).forEach((s, i) => { if (i < 2) s.style.display = isPodcast ? 'none' : ''; });
   $('#modalLibraryNotice').style.display = item.inLibrary ? '' : 'none';
   const dlBtn = $('#modalDownload');
-  dlBtn.disabled = false;
-  dlBtn.textContent = 'Download';
+  if (item.inLibrary) {
+    dlBtn.disabled = true;
+    dlBtn.textContent = 'Already in library';
+  } else {
+    dlBtn.disabled = false;
+    dlBtn.textContent = 'Download';
+  }
   $('#downloadModal').classList.add('open');
 
   // Update radio/favorite buttons visibility
