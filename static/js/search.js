@@ -92,7 +92,7 @@ export function renderResults(items, container, fromPage) {
 // If omitted, all .card children of containerEl are used.
 export async function checkLibrary(items, containerEl, cards) {
   try {
-    const checkItems = items.map(item => ({ name: item.name, artist: item.artist || '', type: item.type || 'track' }));
+    const checkItems = items.map(item => ({ name: item.name, artist: item.artist || '', type: item.type || 'track', id: item.id || '' }));
     const data = await apiJson('/api/library/check', {
       method: 'POST', body: { items: checkItems },
     });
@@ -110,9 +110,17 @@ export async function checkLibrary(items, containerEl, cards) {
           dlBtn.style.opacity = '0.3';
           dlBtn.title = 'Already in library';
         }
-        const item = JSON.parse(cards[i].dataset.item);
-        item.inLibrary = true;
-        cards[i].dataset.item = JSON.stringify(item).replace(/'/g, "&#39;");
+        if (cards[i].dataset.item) {
+          const item = JSON.parse(cards[i].dataset.item);
+          item.inLibrary = true;
+          cards[i].dataset.item = JSON.stringify(item).replace(/'/g, "&#39;");
+        }
+        if (cards[i].dataset.albumIdx != null) {
+          const idx = parseInt(cards[i].dataset.albumIdx);
+          if (store.currentArtistAlbums && store.currentArtistAlbums[idx]) {
+            store.currentArtistAlbums[idx].inLibrary = true;
+          }
+        }
       }
     });
   } catch {}

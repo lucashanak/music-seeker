@@ -46,23 +46,32 @@ async def check_items(items: list[dict]) -> list[bool]:
     if not NAVIDROME_PASSWORD:
         return [False] * len(items)
 
+    provider = ""
+    try:
+        from app.services.settings import _settings
+        provider = _settings.get("search_provider", "deezer")
+    except Exception:
+        pass
+
     # Deduplicate queries to avoid redundant API calls
     queries: dict[str, dict] = {}
     for i, item in enumerate(items):
         name = item.get("name", "")
         artist = item.get("artist", "")
         item_type = item.get("type", "track")
+        album_id = item.get("id", "")
         key = f"{item_type}:{_normalize(artist)}:{_normalize(name)}"
         if key not in queries:
-            queries[key] = {"name": name, "artist": artist, "type": item_type, "indices": []}
+            queries[key] = {"name": name, "artist": artist, "type": item_type, "album_id": album_id, "indices": []}
         queries[key]["indices"].append(i)
 
     results = [False] * len(items)
 
-    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=30) as client:
         for key, q in queries.items():
             try:
-                found = await _search_navidrome(client, q["name"], q["artist"], q["type"])
+                found = await _search_navidrome(client, q["name"], q["artist"], q["type"],
+                                                album_id=q["album_id"], provider=provider)
                 for idx in q["indices"]:
                     results[idx] = found
             except Exception:
@@ -71,14 +80,15 @@ async def check_items(items: list[dict]) -> list[bool]:
     return results
 
 
-async def _search_navidrome(client: httpx.AsyncClient, name: str, artist: str, item_type: str) -> bool:
+async def _search_navidrome(client: httpx.AsyncClient, name: str, artist: str, item_type: str,
+                            album_id: str = "", provider: str = "") -> bool:
     # Try with artist+name first for precision, fall back to name-only for recall
     queries = [f"{artist} {name}"] if artist else [name]
     if artist:
         queries.append(name)
 
     for query in queries:
-        params = _params(query=query, songCount=50, albumCount=30, artistCount=20)
+        params = _params(query=query, songCount=50, albumCount=50, artistCount=20)
         resp = await client.get("/rest/search3", params=params)
         resp.raise_for_status()
         data = resp.json()
@@ -94,13 +104,52 @@ async def _search_navidrome(client: httpx.AsyncClient, name: str, artist: str, i
             for album in sr.get("album", []):
                 if _matches(album.get("name", ""), name) and _artist_matches(album.get("artist", ""), artist):
                     return True
+            # Fallback: check if a song with this title exists (singles filed under different albums or different artist)
+            for song in sr.get("song", []):
+                if _matches(song.get("title", ""), name):
+                    return True
 
         elif item_type == "artist":
             for a in sr.get("artist", []):
                 if _matches(a.get("name", ""), artist or name):
                     return True
 
+    # Last resort for albums: fetch track list and check if majority exist in library
+    if item_type == "album" and album_id and provider:
+        return await _check_album_tracks(client, album_id, provider)
+
     return False
+
+
+async def _check_album_tracks(client: httpx.AsyncClient, album_id: str, provider: str) -> bool:
+    """Fetch album tracks from provider and check if most exist in Navidrome."""
+    try:
+        if provider == "deezer":
+            from app.services.search_providers import deezer_get_album_tracks
+            tracks = await deezer_get_album_tracks(album_id)
+        else:
+            return False
+
+        if not tracks:
+            return False
+
+        found = 0
+        for track in tracks:
+            tname = track.get("name", "")
+            tartist = track.get("artist", "")
+            params = _params(query=f"{tartist} {tname}" if tartist else tname, songCount=10, albumCount=0, artistCount=0)
+            resp = await client.get("/rest/search3", params=params)
+            resp.raise_for_status()
+            sr = resp.json().get("subsonic-response", {}).get("searchResult3", {})
+            for song in sr.get("song", []):
+                if _matches(song.get("title", ""), tname):
+                    found += 1
+                    break
+
+        # Consider "in library" if majority of tracks exist
+        return found >= len(tracks) * 0.5
+    except Exception:
+        return False
 
 
 def _matches(a: str, b: str) -> bool:
@@ -120,8 +169,8 @@ def _artist_matches(lib_artist: str, search_artist: str) -> bool:
     return la in sa or sa in la
 
 
-async def find_song_id(name: str, artist: str) -> str | None:
-    """Find a song's Navidrome ID by name and artist."""
+async def find_song_id(name: str, artist: str, album: str = "") -> str | None:
+    """Find a song's Navidrome ID by name and artist. If album is set, only match songs on that album."""
     if not NAVIDROME_PASSWORD:
         return None
     async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
@@ -131,6 +180,8 @@ async def find_song_id(name: str, artist: str) -> str | None:
         sr = resp.json().get("subsonic-response", {}).get("searchResult3", {})
         for song in sr.get("song", []):
             if _matches(song.get("title", ""), name) and _artist_matches(song.get("artist", ""), artist):
+                if album and not _matches(song.get("album", ""), album):
+                    continue
                 return song.get("id")
     return None
 

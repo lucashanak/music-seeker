@@ -289,10 +289,12 @@ async def _run_ytdlp(job: Job):
     if not is_podcast:
         job.progress_text = "Checking library for existing tracks..."
         to_download = []
+        # For album downloads, only skip tracks found on the same album (not on other albums)
+        album_filter = tracks[0].get("album", "") if job.type == "album" and tracks else ""
         for track in tracks:
             name = track.get("name", "")
             artist = track.get("artist", "")
-            sid = await library.find_song_id(name, artist)
+            sid = await library.find_song_id(name, artist, album=album_filter)
             if sid:
                 already_have += 1
             else:
@@ -468,10 +470,11 @@ async def _run_slskd(job: Job):
     job.progress_text = "Checking library for existing tracks..."
     to_download = []
     already_have = 0
+    album_filter = tracks[0].get("album", "") if job.type == "album" and tracks else ""
     for track in tracks:
         name = track.get("name", "")
         artist = track.get("artist", "")
-        sid = await library.find_song_id(name, artist)
+        sid = await library.find_song_id(name, artist, album=album_filter)
         if sid:
             already_have += 1
         else:

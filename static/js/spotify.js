@@ -273,7 +273,7 @@ export async function loadArtistDetail(id, fromPage) {
       });
     });
     // Check library status for albums
-    checkLibrary(store.currentArtistAlbums.map(a => ({ name: a.name, artist: data.name, type: 'album' })), albumsEl);
+    checkLibrary(store.currentArtistAlbums.map(a => ({ name: a.name, artist: data.name, type: 'album', id: a.id })), albumsEl);
     // Update follow button state
     updateFollowButton(id);
   } catch (e) {
