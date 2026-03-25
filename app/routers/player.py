@@ -10,6 +10,20 @@ from app.dependencies import _stream_auth
 router = APIRouter(prefix="/api/player", tags=["player"])
 
 
+@router.head("/stream")
+async def player_stream_head(name: str, artist: str = "", user: dict = Depends(_stream_auth)):
+    """HEAD request for DLNA renderers to check MIME type before fetching."""
+    result = await player.resolve_stream(name, artist)
+    if not result:
+        raise HTTPException(404, "Could not resolve stream for this track")
+    headers = {"Content-Type": "audio/mpeg", "X-Stream-Source": result["source"], "Accept-Ranges": "bytes"}
+    if result["source"] == "local":
+        size = os.path.getsize(result["path"])
+        headers["Content-Length"] = str(size)
+    from fastapi.responses import Response
+    return Response(content=b"", headers=headers, media_type="audio/mpeg")
+
+
 @router.get("/stream")
 async def player_stream(name: str, artist: str = "", user: dict = Depends(_stream_auth)):
     result = await player.resolve_stream(name, artist)

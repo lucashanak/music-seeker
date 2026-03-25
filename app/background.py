@@ -67,8 +67,8 @@ async def startup():
     if not ADMIN_PASS:
         import sys
         print("WARNING: ADMIN_PASS not set! Set it via environment variable.", file=sys.stderr)
-        return
-    auth.init_admin(ADMIN_USER, ADMIN_PASS)
+    else:
+        auth.init_admin(ADMIN_USER, ADMIN_PASS)
     asyncio.create_task(_podcast_auto_sync())
     asyncio.create_task(_favorites_release_check())
     # Start DLNA renderer discovery
