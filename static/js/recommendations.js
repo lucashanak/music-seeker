@@ -133,12 +133,14 @@ function renderRecs() {
         const playlists = data.playlists || [];
         if (!playlists.length) { showToast('No Navidrome playlists'); return; }
         const picked = await showPlaylistPicker(playlists);
-        if (!picked) return;
-        await apiJson(`/api/library/playlist/${picked.id}/add-by-name`, {
-          method: 'POST',
-          body: { name: track.name, artist: track.artist, album: track.album || '' },
-        });
-        showToast(`Added to ${picked.name}`);
+        if (!picked || !picked.length) return;
+        for (const pl of picked) {
+          await apiJson(`/api/library/playlist/${pl.id}/add-and-download`, {
+            method: 'POST',
+            body: { name: track.name, artist: track.artist, album: track.album || '' },
+          });
+        }
+        showToast(`Added to ${picked.map(p => p.name).join(', ')}`);
       } catch (e) {
         showToast(e.message || 'Failed to add to playlist');
       }
