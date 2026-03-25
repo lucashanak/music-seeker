@@ -38,10 +38,6 @@ export function renderQueueInto(el) {
       if (idx !== store.playerIndex) { store.playerIndex = idx; loadAndPlay(); }
     });
   });
-  // Scroll to now-playing track
-  const nowPlaying = el.querySelector('.now-playing');
-  if (nowPlaying) nowPlaying.scrollIntoView({ block: 'center', behavior: 'instant' });
-
   $$('.qi-remove', el).forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -65,6 +61,12 @@ export function renderQueue() {
   if (store.fullPlayerOpen && window.innerWidth > 640) renderQueueInto($('#fpQueueList'));
 }
 
+export function scrollToNowPlaying(el) {
+  if (!el) return;
+  const np = el.querySelector('.now-playing');
+  if (np) np.scrollIntoView({ block: 'center', behavior: 'instant' });
+}
+
 // ── Queue Panel (small player) ──
 export function openQueuePanel() {
   renderQueue();
@@ -72,6 +74,7 @@ export function openQueuePanel() {
   $('#queuePanel').classList.add('open');
   store.queuePanelOpen = true;
   history.pushState({ layer: 'queuePanel' }, '');
+  scrollToNowPlaying($('#queueList'));
 }
 
 export function closeQueuePanel(fromPopstate) {
@@ -92,6 +95,7 @@ export function openFpQueuePanel() {
   $('#queueBackdrop').classList.add('open');
   $('#fpQueuePanel').classList.add('open');
   history.pushState({ layer: 'fpQueuePanel' }, '');
+  scrollToNowPlaying($('#fpQueuePanelList'));
 }
 
 export function closeFpQueuePanel(fromPopstate) {

@@ -17,6 +17,7 @@ body.player-active .player-bar { display: flex; }
 .player-bar .player-img:hover { box-shadow: 0 0 16px rgba(162,230,64,.15); }
 .player-bar .player-text { min-width: 0; flex: 1; cursor: pointer; }
 .player-bar .player-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.player-bar .player-artist-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .player-bar .player-artist { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .player-controls button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
@@ -136,3 +137,12 @@ body.player-active .player-bar { display: flex; }
 }
 .rec-add-queue:hover { background: var(--accent); color: #000; border-color: var(--accent); }
 .rec-add-playlist:hover { background: rgba(255,255,255,.1); }
+
+/* ── Source Badge ── */
+.source-badge { font-size: 9px; font-weight: 700; letter-spacing: .5px; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; text-transform: uppercase; line-height: 1.4; }
+.source-badge:empty { display: none; }
+.source-local { background: #22c55e; color: #000; }
+.source-navidrome { background: #3b82f6; color: #fff; }
+.source-youtube { background: #ef4444; color: #fff; }
+.fp-artist-row { display: flex; align-items: center; gap: 8px; justify-content: center; }
+.fp-artist-row .source-badge { font-size: 10px; padding: 2px 7px; }

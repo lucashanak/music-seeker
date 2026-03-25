@@ -54,7 +54,7 @@ export function renderResults(items, container, fromPage) {
     return;
   }
   el.innerHTML = items.map(item => `
-    <div class="card" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
+    <div class="card" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
       ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="card-body">
         <div class="card-title">${esc(item.name)}</div>
@@ -113,7 +113,7 @@ export async function checkLibrary(items, containerEl, cards) {
         if (cards[i].dataset.item) {
           const item = JSON.parse(cards[i].dataset.item);
           item.inLibrary = true;
-          cards[i].dataset.item = JSON.stringify(item).replace(/'/g, "&#39;");
+          cards[i].dataset.item = JSON.stringify(item);
         }
         if (cards[i].dataset.albumIdx != null) {
           const idx = parseInt(cards[i].dataset.albumIdx);
@@ -172,7 +172,7 @@ export async function doSearch(append) {
       const grid = $('#searchResults');
       const fragment = document.createElement('div');
       fragment.innerHTML = data.results.map(item => `
-        <div class="card" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
+        <div class="card" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
           ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
           <div class="card-body">
             <div class="card-title">${esc(item.name)}</div>

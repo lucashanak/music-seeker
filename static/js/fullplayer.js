@@ -3,7 +3,7 @@
 import { store } from './store.js';
 import { $, fmtTime, showToast, historyBack } from './utils.js';
 import { apiJson } from './api.js';
-import { renderQueueInto, renderQueue, openFpQueuePanel, closeFpQueuePanel, closeQueuePanel } from './queue.js';
+import { renderQueueInto, renderQueue, openFpQueuePanel, closeFpQueuePanel, closeQueuePanel, scrollToNowPlaying } from './queue.js';
 
 // Forward references set during init to avoid circular imports
 let nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon, audio;
@@ -54,7 +54,10 @@ export function openFullPlayer() {
   $('#fullPlayer').classList.add('open');
   store.fullPlayerOpen = true;
   // Populate desktop inline queue
-  if (window.innerWidth > 640) renderQueueInto($('#fpQueueList'));
+  if (window.innerWidth > 640) {
+    renderQueueInto($('#fpQueueList'));
+    scrollToNowPlaying($('#fpQueueList'));
+  }
   history.pushState({ layer: 'fullPlayer' }, '');
   // Load recommendations if not loaded yet
   import('./recommendations.js').then(m => m.onPanelOpened());

@@ -36,11 +36,17 @@ def _resolve_local_file(name: str, artist: str) -> dict | None:
     safe_artist = _sanitize(artist) if artist else ""
     if not safe_title:
         return None
+    # Generate title variants to handle different sanitization styles
+    title_variants = {safe_title}
+    # Also try with spaces instead of underscores (older downloads)
+    alt = re.sub(r'[/\\:*?"<>|]', ' ', name).strip().rstrip('.')
+    alt = re.sub(r'\s+', ' ', alt)  # collapse multiple spaces
+    title_variants.add(alt)
+
     # Search across all user dirs: /music/{user}/{artist}/{album}/{title}.ext
     for user_dir in MUSIC_DIR.iterdir():
         if not user_dir.is_dir() or user_dir.name.startswith('.'):
             continue
-        # If we have an artist, look in artist subdirs
         search_dirs = []
         if safe_artist:
             artist_dir = user_dir / safe_artist
@@ -49,11 +55,11 @@ def _resolve_local_file(name: str, artist: str) -> dict | None:
         else:
             search_dirs.append(user_dir)
         for search_dir in search_dirs:
-            for ext in ("flac", "mp3", "opus", "m4a"):
-                matches = list(search_dir.rglob(f"{safe_title}.{ext}"))
-                if matches:
-                    # Prefer FLAC > MP3 > others
-                    return {"source": "local", "path": str(matches[0])}
+            for title in title_variants:
+                for ext in ("flac", "mp3", "opus", "m4a"):
+                    matches = list(search_dir.rglob(f"{title}.{ext}"))
+                    if matches:
+                        return {"source": "local", "path": str(matches[0])}
     return None
 
 

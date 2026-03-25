@@ -13,12 +13,14 @@ async def player_stream(name: str, artist: str = "", user: dict = Depends(_strea
     result = await player.resolve_stream(name, artist)
     if not result:
         raise HTTPException(404, "Could not resolve stream for this track")
-    if result["source"] == "local":
-        return StreamingResponse(player.stream_local_file(result["path"]), media_type="audio/mpeg")
-    elif result["source"] == "navidrome":
-        return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg")
+    source = result["source"]
+    headers = {"X-Stream-Source": source}
+    if source == "local":
+        return StreamingResponse(player.stream_local_file(result["path"]), media_type="audio/mpeg", headers=headers)
+    elif source == "navidrome":
+        return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg", headers=headers)
     else:
-        return StreamingResponse(player.stream_youtube(result["url"]), media_type="audio/mpeg")
+        return StreamingResponse(player.stream_youtube(result["url"]), media_type="audio/mpeg", headers=headers)
 
 
 @router.get("/queue")
@@ -47,6 +49,15 @@ async def add_to_queue(req: AddToQueueRequest, user: dict = Depends(auth.get_cur
 async def clear_player_queue(user: dict = Depends(auth.get_current_user)):
     player.clear_queue(user["username"])
     return {"status": "cleared"}
+
+
+@router.get("/resolve-source")
+async def resolve_source(name: str, artist: str = "", user: dict = Depends(auth.get_current_user)):
+    """Resolve stream source without streaming. Returns source type."""
+    result = await player.resolve_stream(name, artist)
+    if not result:
+        raise HTTPException(404, "Could not resolve")
+    return {"source": result["source"]}
 
 
 @router.get("/recommendations")

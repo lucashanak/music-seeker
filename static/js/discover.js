@@ -54,7 +54,7 @@ export async function loadTagResults(tag, type, append) {
       const grid = $('#tagResults');
       const fragment = document.createElement('div');
       fragment.innerHTML = data.results.map(item => `
-        <div class="card" data-item='${JSON.stringify(item).replace(/'/g, "&#39;")}'>
+        <div class="card" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
           ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
           <div class="card-body">
             <div class="card-title">${esc(item.name)}</div>

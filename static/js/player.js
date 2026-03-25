@@ -41,7 +41,9 @@ export function loadAndPlay() {
   $('#playerTimeCurrent').textContent = '0:00';
   $('#playerTimeTotal').textContent = '0:00';
   document.getElementById('playerBar').style.setProperty('--player-progress', '0%');
-  const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: store.authToken });
+  const cleanName = _decodeEntities(item.name || '');
+  const cleanArtist = _decodeEntities(item.artist || '');
+  const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
   audio.src = `/api/player/stream?${params}`;
   audio.load();
   audio.play().catch(() => {});
@@ -52,6 +54,29 @@ export function loadAndPlay() {
   renderQueue();
   saveQueueDebounced();
   updateMediaSession();
+  resolveSource(item);
+}
+
+function _decodeEntities(s) {
+  if (!s || !s.includes('&')) return s;
+  const el = document.createElement('textarea');
+  el.innerHTML = s;
+  return el.value;
+}
+
+function resolveSource(item) {
+  const badge = $('#playerSourceBadge');
+  const fpBadge = $('#fpSourceBadge');
+  if (badge) { badge.textContent = ''; badge.className = 'source-badge'; }
+  if (fpBadge) { fpBadge.textContent = ''; fpBadge.className = 'source-badge'; }
+  const params = new URLSearchParams({ name: _decodeEntities(item.name || ''), artist: _decodeEntities(item.artist || '') });
+  apiJson(`/api/player/resolve-source?${params}`).then(data => {
+    const src = data.source || 'youtube';
+    const labels = { local: 'LOCAL', navidrome: 'FLAC', youtube: 'YT' };
+    const label = labels[src] || src.toUpperCase();
+    if (badge) { badge.textContent = label; badge.className = `source-badge source-${src}`; }
+    if (fpBadge) { fpBadge.textContent = label; fpBadge.className = `source-badge source-${src}`; }
+  }).catch(() => {});
 }
 
 function updateDownloadButtons(item) {

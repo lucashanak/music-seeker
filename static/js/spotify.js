@@ -61,7 +61,7 @@ function renderSpGrid(tab, items, grid) {
       </div>`).join('');
   } else if (tab === 'albums') {
     grid.innerHTML = items.map(a => `
-      <div class="card sp-card" data-sp-type="album" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.artist,image:a.image,url:a.url,type:"album"}).replace(/'/g,"&#39;")}'>
+      <div class="card sp-card" data-sp-type="album" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.artist,image:a.image,url:a.url,type:"album"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
         <img class="card-img" src="${a.image || ''}" alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(a.name)}</div>
@@ -70,7 +70,7 @@ function renderSpGrid(tab, items, grid) {
       </div>`).join('') || '<div class="empty-state"><p>No saved albums</p></div>';
   } else if (tab === 'artists') {
     grid.innerHTML = items.map(a => `
-      <div class="card sp-card" data-sp-type="artist" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.name,image:a.image,url:a.url,type:"artist"}).replace(/'/g,"&#39;")}'>
+      <div class="card sp-card" data-sp-type="artist" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.name,image:a.image,url:a.url,type:"artist"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
         <img class="card-img" src="${a.image || ''}" alt="" loading="lazy" style="border-radius:50%;">
         <div class="card-body">
           <div class="card-title">${esc(a.name)}</div>
@@ -79,7 +79,7 @@ function renderSpGrid(tab, items, grid) {
       </div>`).join('') || '<div class="empty-state"><p>No followed artists</p></div>';
   } else if (tab === 'podcasts') {
     grid.innerHTML = items.map(s => `
-      <div class="card sp-card" data-sp-type="show" data-show-id="${s.id}" data-item='${JSON.stringify({id:s.id,name:s.name,artist:s.artist,image:s.image,url:s.url,type:"show"}).replace(/'/g,"&#39;")}'>
+      <div class="card sp-card" data-sp-type="show" data-show-id="${s.id}" data-item='${JSON.stringify({id:s.id,name:s.name,artist:s.artist,image:s.image,url:s.url,type:"show"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
         <img class="card-img" src="${s.image || ''}" alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(s.name)}</div>
