@@ -35,8 +35,5 @@
     "android": {
       "minSdkVersion": 24
     }
-  },
-  "permissions": [
-    "core:default"
-  ]
+  }
 }
