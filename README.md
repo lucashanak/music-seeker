@@ -24,10 +24,18 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 
 ### Player
 - **In-Browser Streaming Player** — Stream from local downloads (fastest), Navidrome, or YouTube via yt-dlp/ffmpeg proxy, with 4-hour URL caching
+- **Source Badge** — Shows stream source (LOCAL / FLAC / YT) on mini player and full player so you know where audio is coming from
 - **Full-Screen Player** — Slides up from mini player bar with large album art, seek bar, shuffle, and repeat (off/all/one). On desktop: split view with integrated queue panel
 - **Swipe Gestures** — Swipe up on mini player to expand, swipe down to close. Swipe left/right on album art for next/previous track. Tap album art to play/pause
-- **Queue Management** — Per-user persistent queue that syncs across devices. Add tracks, reorder, remove, clear
+- **Queue Management** — Per-user persistent queue with drag & drop reorder (drag handle on each track). Add tracks, reorder, remove, clear. Save queue as Navidrome playlist
 - **Media Session API** — Lock screen controls on mobile, headset button support
+
+### Smart Recommendations
+- **Playlist-Aware Recommendations** — Panel in full player queue sidebar suggests tracks based on your current queue/playlist context
+- **Three sources** — Last.fm Similar Tracks + Deezer Artist Radio + Spotify Recommendations API — combined and deduplicated
+- **Virtual Playback** — Click a recommendation to play it directly without adding to queue. Next recommendation plays automatically when track ends (like Spotify autoplay)
+- **Add to Queue** — "+" button adds recommendation to actual queue. In Playlist Mode, also downloads and adds to Navidrome playlist
+- **Add to Playlist(s)** — Playlist icon opens multi-select picker to add track to one or more Navidrome playlists (auto-downloads if not in library)
 
 ### Radio
 - **Artist Radio** — Start an auto-generated station from any artist with the 📻 button
@@ -51,7 +59,15 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 - **Episode Management** — Filter episodes by name, bulk delete, manual sync check
 
 ### Library & Navidrome
+- **Library Tab** — Browse all your Navidrome playlists with cover art. Play All, Queue All, or open playlist detail
+- **Playlist Management** — Create, rename, duplicate, merge, and delete playlists directly from MusicSeeker
+- **Playlist Mode** — Play All from a Library playlist links the queue to that playlist. Adding/removing tracks in queue auto-syncs to Navidrome. Badge shows linked playlist name. Persists across page refresh
+- **Save Queue as Playlist** — Save button in queue header creates a new Navidrome playlist from current queue and activates Playlist Mode
+- **Bulk Operations** — Select multiple tracks in playlist detail with checkboxes, then copy to other playlist(s) or remove
+- **Drag & Drop Reorder** — Reorder tracks in queue via drag handle. In Playlist Mode, reorder syncs to Navidrome playlist
+- **Multi-Playlist Picker** — Add tracks to multiple playlists at once with checkbox picker modal
 - **Library Detection** — Shows "In Library" badge for tracks already in your Navidrome collection (fuzzy matching handles remasters, feat. tags, etc.)
+- **Track & Album Deletion** — Delete track or album files from library via modal button, with confirmation showing affected playlists. Triggers Navidrome scan
 - **Playlist Sync** — Creates Navidrome playlists after downloading album/playlist, triggers library scan automatically
 - **Song Recognition** — Identify songs via your microphone using Shazam, with AcoustID fingerprinting as fallback, then download them instantly
 
@@ -75,6 +91,10 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 | Full Player (Desktop) | My Spotify Library | Mobile |
 |-----------------------|-------------------|--------|
 | ![Player](screenshots/full-player.png) | ![Spotify](screenshots/my-spotify.png) | ![Mobile](screenshots/mobile.png) |
+
+| Library Playlists | Playlist Detail | Recommendations |
+|-------------------|-----------------|-----------------|
+| ![Library](screenshots/library.png) | ![Playlist](screenshots/playlist-detail.png) | ![Recs](screenshots/recommendations.png) |
 
 ## Requirements
 
@@ -287,8 +307,9 @@ services:
 │ search_providers.py │ Deezer + YTMusic│
 │ spotify.py  │ Spotify Web API│
 │ lastfm.py   │ Last.fm API   │
+│ radio.py    │ Recommendations │
 │ downloader.py │ yt-dlp / slskd / Lidarr│
-│ library.py  │ Subsonic API   │
+│ library.py  │ Subsonic API + Playlists│
 │ recognize.py│ shazamio+acoustid│
 │ podcasts.py │ Subscriptions   │
 │ player.py   │ Streaming+Queue │
@@ -320,6 +341,21 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `POST` | `/api/jobs/:id/retry` | Retry a failed job |
 | `DELETE` | `/api/jobs` | Clear download history |
 | `POST` | `/api/library/check` | Check if items exist in Navidrome |
+| `GET` | `/api/library/playlists` | List Navidrome playlists |
+| `GET` | `/api/library/playlist/:id` | Get playlist with tracks |
+| `POST` | `/api/library/playlist` | Create new playlist |
+| `PUT` | `/api/library/playlist/:id/rename` | Rename playlist |
+| `PUT` | `/api/library/playlist/:id/tracks` | Add tracks by song IDs |
+| `PUT` | `/api/library/playlist/:id/reorder` | Reorder playlist tracks |
+| `POST` | `/api/library/playlist/:id/add-by-name` | Add track by name/artist |
+| `POST` | `/api/library/playlist/:id/add-and-download` | Add track (download if needed) |
+| `POST` | `/api/library/playlist/:id/remove-by-name` | Remove track by name |
+| `DELETE` | `/api/library/playlist/:id/tracks` | Remove tracks by indices |
+| `DELETE` | `/api/library/playlist/:id` | Delete playlist |
+| `POST` | `/api/library/track/delete` | Delete track file from disk |
+| `POST` | `/api/library/track/check-playlists` | Check which playlists contain track |
+| `POST` | `/api/library/album/delete` | Delete album files from disk |
+| `GET` | `/api/library/cover/:id` | Proxy Navidrome cover art |
 | `POST` | `/api/recognize` | Identify song from audio (multipart) |
 | `GET` | `/api/spotify/playlists` | Get user's Spotify playlists |
 | `GET` | `/api/spotify/liked` | Get user's Liked Songs |
@@ -341,6 +377,10 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `PUT` | `/api/player/queue` | Save player queue state |
 | `POST` | `/api/player/queue/add` | Add tracks to queue |
 | `DELETE` | `/api/player/queue` | Clear player queue |
+| `GET` | `/api/player/recommendations` | Get recommendations from queue |
+| `POST` | `/api/player/recommendations` | Get recommendations from track list |
+| `GET` | `/api/player/resolve-source?name=..&artist=..` | Resolve stream source type |
+| `GET` | `/api/radio?track=..&artist=..` | Get radio tracks |
 | `GET` | `/api/settings` | Get app settings |
 | `PUT` | `/api/settings` | Update settings (admin only) |
 | `GET` | `/api/users` | List users (admin only) |
