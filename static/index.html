@@ -232,6 +232,17 @@
         <button class="btn-download" id="deleteLibPlaylist" style="width:auto; padding:12px 28px; background:#ef4444; color:#fff;">Delete</button>
       </div>
     </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+      <label style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="libBulkToggle" style="width:14px;height:14px;accent-color:var(--accent);">
+        Select all
+      </label>
+      <div id="libBulkActions" style="display:none;gap:8px;display:none;align-items:center;">
+        <span id="libBulkCount" style="font-size:12px;color:var(--text-muted);"></span>
+        <button class="btn-check-new" id="libBulkCopy" style="font-size:12px;padding:6px 12px;">Copy to...</button>
+        <button class="btn-delete-show" id="libBulkRemove" style="font-size:12px;padding:6px 12px;">Remove</button>
+      </div>
+    </div>
     <div id="libraryTracks" class="grid"></div>
   </div>
 </main>

@@ -69,9 +69,41 @@ async function loadLibraryDetail(id) {
     }
     $('#libDetailCount').textContent = `${currentLibPlaylistTracks.length} tracks`;
     renderResults(currentLibPlaylistTracks, '#libraryTracks');
+    _addBulkCheckboxes();
   } catch (e) {
     tracksEl.innerHTML = `<div class="empty-state"><p>Failed to load playlist</p></div>`;
   }
+}
+
+// ── Bulk select ──
+let _bulkSelected = new Set();
+
+function _addBulkCheckboxes() {
+  _bulkSelected.clear();
+  _updateBulkUI();
+  const toggle = $('#libBulkToggle');
+  if (toggle) toggle.checked = false;
+  $$('#libraryTracks .card').forEach((card, i) => {
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'lib-bulk-cb';
+    cb.style.cssText = 'position:absolute;top:8px;left:8px;width:18px;height:18px;accent-color:var(--accent);z-index:2;cursor:pointer;';
+    cb.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (cb.checked) _bulkSelected.add(i); else _bulkSelected.delete(i);
+      _updateBulkUI();
+    });
+    cb.addEventListener('click', (e) => e.stopPropagation());
+    card.style.position = 'relative';
+    card.prepend(cb);
+  });
+}
+
+function _updateBulkUI() {
+  const actions = $('#libBulkActions');
+  const count = $('#libBulkCount');
+  if (actions) actions.style.display = _bulkSelected.size > 0 ? 'flex' : 'none';
+  if (count) count.textContent = `${_bulkSelected.size} selected`;
 }
 
 export function closeLibraryDetail(fromPopstate) {
@@ -180,6 +212,59 @@ export function init() {
       showToast(`Duplicated as "${name.trim()}" (${songIds.length} tracks)`);
     } catch (e) {
       showToast('Failed to duplicate');
+    }
+  });
+
+  // Bulk: Select All
+  const bulkToggle = $('#libBulkToggle');
+  if (bulkToggle) bulkToggle.addEventListener('change', () => {
+    const cbs = $$('#libraryTracks .lib-bulk-cb');
+    cbs.forEach((cb, i) => {
+      cb.checked = bulkToggle.checked;
+      if (bulkToggle.checked) _bulkSelected.add(i); else _bulkSelected.delete(i);
+    });
+    _updateBulkUI();
+  });
+
+  // Bulk: Copy to playlist
+  const bulkCopy = $('#libBulkCopy');
+  if (bulkCopy) bulkCopy.addEventListener('click', async () => {
+    if (!_bulkSelected.size) return;
+    try {
+      const data = await apiJson('/api/library/playlists');
+      const others = (data.playlists || []).filter(p => p.id !== currentLibPlaylistId);
+      if (!others.length) { showToast('No other playlists'); return; }
+      const picked = await showPlaylistPicker(others);
+      if (!picked || !picked.length) return;
+      const songIds = [..._bulkSelected].map(i => currentLibPlaylistTracks[i]?.id).filter(Boolean);
+      for (const pl of picked) {
+        await apiJson(`/api/library/playlist/${pl.id}/tracks`, {
+          method: 'PUT',
+          body: { song_ids: songIds },
+        });
+      }
+      showToast(`Copied ${songIds.length} tracks to ${picked.map(p => p.name).join(', ')}`);
+    } catch (e) {
+      showToast('Failed to copy');
+    }
+  });
+
+  // Bulk: Remove from playlist
+  const bulkRemove = $('#libBulkRemove');
+  if (bulkRemove) bulkRemove.addEventListener('click', async () => {
+    if (!_bulkSelected.size || !currentLibPlaylistId) return;
+    if (!confirm(`Remove ${_bulkSelected.size} tracks from playlist?`)) return;
+    try {
+      // Remove by indices (descending to avoid shift)
+      const indices = [..._bulkSelected].sort((a, b) => b - a);
+      await apiJson(`/api/library/playlist/${currentLibPlaylistId}/tracks`, {
+        method: 'DELETE',
+        body: { indices },
+      });
+      showToast(`Removed ${indices.length} tracks`);
+      loadLibraryDetail(currentLibPlaylistId);
+    } catch (e) {
+      showToast('Failed to remove');
     }
   });
 
