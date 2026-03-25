@@ -301,6 +301,7 @@ async function saveQueueNow() {
         current_index: store.playerIndex,
         position_seconds: audio.currentTime || 0,
         volume: store.playerVolume,
+        playlist_mode: store.playlistMode,
       },
     });
   } catch {}
@@ -331,6 +332,12 @@ export async function loadQueueState() {
         updateDownloadButtons(item);
         showPlayerBar();
       }
+      // Restore playlist mode
+      if (data.playlist_mode) {
+        store.playlistMode = data.playlist_mode;
+        updatePlaylistBadge();
+      }
+      import('./queue.js').then(m => m.updateSaveButton());
     }
   } catch {}
 }
@@ -471,6 +478,7 @@ export function init() {
         xhr.send(JSON.stringify({
           queue: store.playerQueue, current_index: store.playerIndex,
           position_seconds: audio.currentTime || 0, volume: store.playerVolume,
+          playlist_mode: store.playlistMode,
         }));
       } catch {}
     }

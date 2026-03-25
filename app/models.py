@@ -85,6 +85,7 @@ class QueueState(BaseModel):
     current_index: int = -1
     position_seconds: float = 0.0
     volume: float = 1.0
+    playlist_mode: dict | None = None
 
 
 class AddToQueueRequest(BaseModel):
