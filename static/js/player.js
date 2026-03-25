@@ -127,8 +127,20 @@ export function nextTrack() {
       }).finally(() => { store.radioLoading = false; });
     }
   } else {
-    audio.pause();
-    updatePlayPauseIcon(false);
+    // Try auto-queue from recommendations
+    import('./recommendations.js').then(m => {
+      if (m.autoQueueEnabled) {
+        m.autoFillQueue().then(filled => {
+          if (!filled) {
+            audio.pause();
+            updatePlayPauseIcon(false);
+          }
+        });
+      } else {
+        audio.pause();
+        updatePlayPauseIcon(false);
+      }
+    });
   }
 }
 
@@ -177,6 +189,8 @@ export async function resolveItemTracks(item) {
 export function saveQueueDebounced() {
   clearTimeout(store.playerSaveTimer);
   store.playerSaveTimer = setTimeout(saveQueueNow, 2000);
+  // Trigger recommendations refresh
+  import('./recommendations.js').then(m => m.onQueueChanged());
 }
 
 async function saveQueueNow() {

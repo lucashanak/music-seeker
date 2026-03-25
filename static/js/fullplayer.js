@@ -56,6 +56,8 @@ export function openFullPlayer() {
   // Populate desktop inline queue
   if (window.innerWidth > 640) renderQueueInto($('#fpQueueList'));
   history.pushState({ layer: 'fullPlayer' }, '');
+  // Load recommendations if not loaded yet
+  import('./recommendations.js').then(m => m.onPanelOpened());
 }
 
 export function closeFullPlayer(fromPopstate) {

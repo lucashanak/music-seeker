@@ -1,10 +1,12 @@
-"""Radio module: fetch similar tracks from Deezer, Last.fm, or combined."""
+"""Radio module: fetch similar tracks from Deezer, Last.fm, Spotify, or combined."""
 
 import asyncio
 import logging
+import random
 
 from app.services import lastfm
 from app.services import search_providers
+from app.services import spotify
 
 logger = logging.getLogger(__name__)
 
@@ -132,3 +134,77 @@ async def _get_combined_radio(
         deduped = _dedup(interleaved)
 
     return deduped[:limit]
+
+
+async def get_playlist_recommendations(
+    tracks: list[dict],
+    source: str = "combined",
+    limit: int = 20,
+    exclude: list[dict] | None = None,
+) -> list[dict]:
+    """Get recommendations based on a list of tracks (playlist/queue context).
+    Samples seed tracks, fetches from multiple sources, deduplicates, and filters."""
+    if not tracks:
+        return []
+
+    # Sample up to 5 seed tracks
+    seeds = random.sample(tracks, min(5, len(tracks)))
+
+    # Collect unique artists
+    artists = list({t.get("artist", "").split(",")[0].strip() for t in seeds if t.get("artist")})
+
+    tasks = []
+
+    # Last.fm + Deezer radio for each seed
+    for seed in seeds[:3]:  # limit concurrent calls
+        tasks.append(get_radio_tracks(
+            source if source != "spotify" else "combined",
+            seed.get("name", ""),
+            seed.get("artist", "").split(",")[0].strip(),
+            seed.get("id", ""),
+            limit=10,
+        ))
+
+    # Spotify recommendations
+    if spotify.SPOTIFY_CLIENT_ID:
+        tasks.append(_get_spotify_playlist_recs(seeds, limit=15))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_tracks = []
+    for r in results:
+        if isinstance(r, list):
+            all_tracks.extend(r)
+
+    deduped = _dedup(all_tracks)
+
+    # Filter out tracks already in the playlist
+    if exclude:
+        exclude_keys = {
+            (t.get("name", "").lower().strip(), t.get("artist", "").lower().strip())
+            for t in exclude
+        }
+        deduped = [t for t in deduped if (t.get("name", "").lower().strip(), t.get("artist", "").lower().strip()) not in exclude_keys]
+
+    return deduped[:limit]
+
+
+async def _get_spotify_playlist_recs(seeds: list[dict], limit: int = 15) -> list[dict]:
+    """Get Spotify recommendations by resolving seed tracks to Spotify IDs."""
+    sem = asyncio.Semaphore(3)
+
+    async def resolve_id(track: dict) -> str | None:
+        async with sem:
+            try:
+                result = await spotify.resolve_url(track.get("name", ""), track.get("artist", ""), "track")
+                return result.get("id") if result else None
+            except Exception:
+                return None
+
+    ids = await asyncio.gather(*[resolve_id(s) for s in seeds[:5]])
+    track_ids = [i for i in ids if i]
+
+    if not track_ids:
+        return []
+
+    return await spotify.get_recommendations(seed_tracks=track_ids, limit=limit)

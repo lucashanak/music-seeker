@@ -498,6 +498,43 @@ async def get_show_episodes(show_id: str) -> dict:
     }
 
 
+async def get_recommendations(
+    seed_tracks: list[str] | None = None,
+    seed_artists: list[str] | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Get track recommendations from Spotify based on seed tracks/artists.
+    Max 5 seeds total (tracks + artists combined)."""
+    seeds_t = (seed_tracks or [])[:5]
+    seeds_a = (seed_artists or [])[:max(0, 5 - len(seeds_t))]
+    if not seeds_t and not seeds_a:
+        return []
+    params = {"limit": limit}
+    if seeds_t:
+        params["seed_tracks"] = ",".join(seeds_t)
+    if seeds_a:
+        params["seed_artists"] = ",".join(seeds_a)
+    try:
+        data = await spotify_get("recommendations", params)
+    except Exception:
+        return []
+    results = []
+    for t in data.get("tracks", []):
+        if not t or not t.get("id"):
+            continue
+        results.append({
+            "id": t["id"],
+            "name": t["name"],
+            "artist": ", ".join(a["name"] for a in t.get("artists", [])),
+            "album": t.get("album", {}).get("name", ""),
+            "image": _best_image(t.get("album", {}).get("images", [])),
+            "url": t["external_urls"].get("spotify", ""),
+            "duration_ms": t.get("duration_ms", 0),
+            "type": "track",
+        })
+    return results
+
+
 def _best_image(images: list[dict]) -> str:
     if not images:
         return ""

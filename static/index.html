@@ -49,6 +49,7 @@
 <nav>
   <button class="nav-btn active" data-page="search">Search</button>
   <button class="nav-btn" data-page="discover">Discover</button>
+  <button class="nav-btn" data-page="library">Library</button>
   <button class="nav-btn" data-page="playlists">My Spotify</button>
   <button class="nav-btn" data-page="podcasts">My Podcasts</button>
   <button class="nav-btn" data-page="favorites">Favorites</button>
@@ -74,6 +75,10 @@
   <button class="bnav-btn" data-page="discover">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
     Discover
+  </button>
+  <button class="bnav-btn" data-page="library">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+    Library
   </button>
   <button class="bnav-btn" data-page="playlists">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
@@ -198,6 +203,33 @@
     <div id="tagLoadMore" style="text-align:center; padding:20px; display:none;">
       <div class="skeleton" style="height:40px; width:200px; margin:0 auto;"></div>
     </div>
+  </div>
+</main>
+
+<!-- ── Library Page (Navidrome) ── -->
+<main id="pageLibrary" style="display:none">
+  <div id="libraryList">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
+      <h2 class="page-title" style="margin:0;">My Library</h2>
+      <button id="newLibPlaylist" class="btn-check-new">+ New Playlist</button>
+    </div>
+    <div id="libraryGrid" class="grid"></div>
+  </div>
+  <div id="libraryDetail" style="display:none; margin-top:24px;">
+    <button id="backToLibrary" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back</button>
+    <div class="playlist-hero">
+      <img id="libDetailImg" class="playlist-hero-img" src="">
+      <div class="playlist-hero-info">
+        <h2 id="libDetailName"></h2>
+        <p id="libDetailCount"></p>
+      </div>
+      <div class="playlist-hero-actions">
+        <button class="btn-download" id="playLibPlaylist" style="width:auto; padding:12px 28px; background:var(--accent); color:#000;">&#9654; Play All</button>
+        <button class="btn-download" id="queueLibPlaylist" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">+ Queue All</button>
+        <button class="btn-download" id="deleteLibPlaylist" style="width:auto; padding:12px 28px; background:#ef4444; color:#fff;">Delete</button>
+      </div>
+    </div>
+    <div id="libraryTracks" class="grid"></div>
   </div>
 </main>
 
@@ -596,6 +628,15 @@
   <div class="fp-queue-side" id="fpQueueSide">
     <div class="panel-header">Queue <div style="display:flex;gap:8px;align-items:center;"><button class="btn-logout" id="fpClearQueue" style="font-size:11px;">Clear</button></div></div>
     <div class="queue-list" id="fpQueueList"></div>
+    <div class="recs-section" id="fpRecsSection" style="display:none;">
+      <div class="panel-header" style="font-size:13px;border-top:1px solid var(--border);padding-top:12px;">
+        Recommended
+        <label style="font-size:11px; display:flex; align-items:center; gap:4px; cursor:pointer;">
+          <input type="checkbox" id="autoQueueToggle" style="width:13px;height:13px;accent-color:var(--accent);"> Auto
+        </label>
+      </div>
+      <div class="recs-list" id="fpRecsList"></div>
+    </div>
   </div>
 </div>
 
@@ -644,6 +685,6 @@
   </div>
 </div>
 
-<script type="module" src="/static/js/app.js?v=12"></script>
+<script type="module" src="/static/js/app.js?v=13"></script>
 </body>
 </html>

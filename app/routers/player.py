@@ -1,8 +1,8 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from app.models import QueueState, AddToQueueRequest
-from app.services import auth, player
+from app.models import QueueState, AddToQueueRequest, RecommendationRequest
+from app.services import auth, player, radio, settings as app_settings
 from app.dependencies import _stream_auth
 
 router = APIRouter(prefix="/api/player", tags=["player"])
@@ -47,3 +47,31 @@ async def add_to_queue(req: AddToQueueRequest, user: dict = Depends(auth.get_cur
 async def clear_player_queue(user: dict = Depends(auth.get_current_user)):
     player.clear_queue(user["username"])
     return {"status": "cleared"}
+
+
+@router.get("/recommendations")
+async def get_queue_recommendations(
+    limit: int = Query(15, ge=1, le=50),
+    user: dict = Depends(auth.get_current_user),
+):
+    """Get recommendations based on the user's current queue."""
+    queue_data = player.load_queue(user["username"])
+    tracks = queue_data.get("queue", [])
+    if not tracks:
+        raise HTTPException(400, "Queue is empty")
+    source = app_settings._settings.get("recommendation_source", "combined")
+    recs = await radio.get_playlist_recommendations(tracks, source, limit, exclude=tracks)
+    return {"tracks": recs}
+
+
+@router.post("/recommendations")
+async def get_playlist_recommendations(
+    req: RecommendationRequest,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Get recommendations based on an explicit track list."""
+    if not req.tracks:
+        raise HTTPException(400, "No tracks provided")
+    source = app_settings._settings.get("recommendation_source", "combined")
+    recs = await radio.get_playlist_recommendations(req.tracks, source, req.limit, exclude=req.tracks)
+    return {"tracks": recs}

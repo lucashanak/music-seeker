@@ -114,3 +114,25 @@ body.player-active .player-bar { display: flex; }
 .queue-item .qi-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; width: 24px; height: 24px; font-size: 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%; opacity: 0; transition: all .15s; flex-shrink: 0; }
 .queue-item:hover .qi-remove { opacity: 1; }
 .queue-item .qi-remove:hover { color: var(--red); background: rgba(255,255,255,.05); }
+
+/* ── Recommendations ── */
+.recs-section { padding: 0 12px 12px; }
+.recs-list { display: flex; flex-direction: column; gap: 4px; }
+.rec-item {
+  display: flex; align-items: center; gap: 10px; padding: 6px 8px;
+  border-radius: 8px; transition: background .15s; cursor: default;
+}
+.rec-item:hover { background: rgba(255,255,255,.04); }
+.rec-img { width: 36px; height: 36px; border-radius: 6px; object-fit: cover; flex-shrink: 0; background: var(--bg-elevated); }
+.rec-info { min-width: 0; flex: 1; }
+.rec-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-artist { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.rec-add-queue, .rec-add-playlist {
+  background: none; border: 1px solid var(--border); color: var(--text);
+  width: 26px; height: 26px; border-radius: 50%; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; transition: all .15s;
+}
+.rec-add-queue:hover { background: var(--accent); color: #000; border-color: var(--accent); }
+.rec-add-playlist:hover { background: rgba(255,255,255,.1); }

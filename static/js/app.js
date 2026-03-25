@@ -16,6 +16,8 @@ import { init as initPodcasts, loadPodcasts, closePodcastShow } from './podcasts
 import { init as initSettings, loadSettings } from './settings.js';
 import { init as initRecognize } from './recognize.js';
 import { init as initGestures } from './gestures.js';
+import { init as initLibrary, loadLibrary, closeLibraryDetail } from './library.js';
+import { init as initRecommendations } from './recommendations.js';
 import { initVirtualKeyboard } from './utils.js';
 
 // ── Wire up cross-module references ──
@@ -33,6 +35,7 @@ setCloseHandlers({
   closePodcastShow,
   closeTagDetail,
   closeArtistDetail,
+  closeLibraryDetail,
 });
 
 // Register page loaders with router
@@ -41,6 +44,7 @@ registerPageLoader('playlists', loadPlaylists);
 registerPageLoader('podcasts', loadPodcasts);
 registerPageLoader('favorites', loadFavorites);
 registerPageLoader('settings', loadSettings);
+registerPageLoader('library', loadLibrary);
 
 // ── Initialize all modules ──
 initRouter();
@@ -57,6 +61,8 @@ initPodcasts();
 initSettings();
 initRecognize();
 initGestures();
+initLibrary();
+initRecommendations();
 initVirtualKeyboard();
 
 // Auth init last (triggers initApp which depends on everything above)

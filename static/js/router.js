@@ -36,6 +36,7 @@ export function switchPage(page, fromPopstate) {
   $('#pagePodcasts').style.display = page === 'podcasts' ? '' : 'none';
   $('#pageFavorites').style.display = page === 'favorites' ? '' : 'none';
   $('#pageSettings').style.display = page === 'settings' ? '' : 'none';
+  if ($('#pageLibrary')) $('#pageLibrary').style.display = page === 'library' ? '' : 'none';
   if (page === 'search') {
     $('#showDetail').style.display = 'none';
     $('#searchResults').style.display = '';
@@ -43,6 +44,10 @@ export function switchPage(page, fromPopstate) {
   if (page === 'playlists') {
     $('#spotifyLibrary').style.display = '';
     $('#playlistDetail').style.display = 'none';
+  }
+  if (page === 'library') {
+    if ($('#libraryList')) $('#libraryList').style.display = '';
+    if ($('#libraryDetail')) $('#libraryDetail').style.display = 'none';
   }
   // Call registered page loaders
   if (pageLoaders[page]) pageLoaders[page]();
@@ -72,7 +77,7 @@ function handleClickableSearch(e) {
 // ── Close sub-pages ──
 // These are imported from their respective modules for popstate handling
 
-let closePlaylistDetail, closeShowDetail, closePodcastShow, closeTagDetail, closeArtistDetail;
+let closePlaylistDetail, closeShowDetail, closePodcastShow, closeTagDetail, closeArtistDetail, closeLibraryDetail;
 
 export function setCloseHandlers(handlers) {
   closePlaylistDetail = handlers.closePlaylistDetail;
@@ -80,6 +85,7 @@ export function setCloseHandlers(handlers) {
   closePodcastShow = handlers.closePodcastShow;
   closeTagDetail = handlers.closeTagDetail;
   closeArtistDetail = handlers.closeArtistDetail;
+  closeLibraryDetail = handlers.closeLibraryDetail;
 }
 
 // ── Popstate Handler ──
@@ -101,6 +107,7 @@ function handlePopstate(e) {
   if ($('#podcastEpisodes').style.display !== 'none' && closePodcastShow) { closePodcastShow(true); return; }
   if ($('#tagDetailView').style.display !== 'none' && closeTagDetail) { closeTagDetail(true); return; }
   if ($('#artistDetail').style.display !== 'none' && closeArtistDetail) { closeArtistDetail(true); return; }
+  if ($('#libraryDetail') && $('#libraryDetail').style.display !== 'none' && closeLibraryDetail) { closeLibraryDetail(true); return; }
   // Guard: prevent exiting the app
   if (!state || state.guard) {
     history.pushState({ page: store.currentPage }, '');

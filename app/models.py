@@ -92,6 +92,29 @@ class AddToQueueRequest(BaseModel):
     play_now: bool = False
 
 
+class CreatePlaylistRequest(BaseModel):
+    name: str
+
+
+class AddTracksByIdRequest(BaseModel):
+    song_ids: list[str]
+
+
+class RemoveTracksRequest(BaseModel):
+    indices: list[int]
+
+
+class AddTrackByNameRequest(BaseModel):
+    name: str
+    artist: str = ""
+    album: str = ""
+
+
+class RecommendationRequest(BaseModel):
+    tracks: list[dict]
+    limit: int = 15
+
+
 class PodcastSubRequest(BaseModel):
     show_name: str
     spotify_id: str

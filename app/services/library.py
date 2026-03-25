@@ -186,9 +186,116 @@ async def find_song_id(name: str, artist: str, album: str = "") -> str | None:
     return None
 
 
+async def get_playlists() -> list[dict]:
+    """Get all playlists from Navidrome via Subsonic API."""
+    if not NAVIDROME_PASSWORD:
+        return []
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
+        resp = await client.get("/rest/getPlaylists", params=_params())
+        resp.raise_for_status()
+        sr = resp.json().get("subsonic-response", {})
+        if sr.get("status") != "ok":
+            return []
+        items = sr.get("playlists", {}).get("playlist", [])
+        if isinstance(items, dict):
+            items = [items]
+        return [
+            {
+                "id": p["id"],
+                "name": p.get("name", ""),
+                "songCount": p.get("songCount", 0),
+                "duration": p.get("duration", 0),
+                "coverArt": p.get("coverArt", ""),
+                "image": f"/api/library/cover/{p['coverArt']}" if p.get("coverArt") else "",
+            }
+            for p in items
+        ]
+
+
+async def get_cover_art(cover_id: str) -> bytes | None:
+    """Proxy cover art from Navidrome."""
+    if not NAVIDROME_PASSWORD:
+        return None
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
+        resp = await client.get("/rest/getCoverArt", params=_params(id=cover_id))
+        resp.raise_for_status()
+        return resp.content
+
+
+async def get_playlist(playlist_id: str) -> dict | None:
+    """Get a playlist with its tracks from Navidrome."""
+    if not NAVIDROME_PASSWORD:
+        return None
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=15) as client:
+        resp = await client.get("/rest/getPlaylist", params=_params(id=playlist_id))
+        resp.raise_for_status()
+        sr = resp.json().get("subsonic-response", {})
+        if sr.get("status") != "ok":
+            return None
+        pl = sr.get("playlist", {})
+        entries = pl.get("entry", [])
+        if isinstance(entries, dict):
+            entries = [entries]
+        tracks = [
+            {
+                "id": e.get("id", ""),
+                "name": e.get("title", ""),
+                "artist": e.get("artist", ""),
+                "album": e.get("album", ""),
+                "duration_ms": e.get("duration", 0) * 1000,
+                "image": f"/api/library/cover/{e['coverArt']}" if e.get("coverArt") else "",
+                "type": "track",
+            }
+            for e in entries
+        ]
+        return {
+            "id": pl.get("id", ""),
+            "name": pl.get("name", ""),
+            "songCount": pl.get("songCount", 0),
+            "image": f"/api/library/cover/{pl['coverArt']}" if pl.get("coverArt") else "",
+            "tracks": tracks,
+        }
+
+
+async def update_playlist(playlist_id: str, song_ids_to_add: list[str] | None = None,
+                           song_indices_to_remove: list[int] | None = None) -> bool:
+    """Add or remove tracks from a Navidrome playlist."""
+    if not NAVIDROME_PASSWORD:
+        return False
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=30) as client:
+        param_list = list(_params(playlistId=playlist_id).items())
+        if song_ids_to_add:
+            for sid in song_ids_to_add:
+                param_list.append(("songIdToAdd", sid))
+        if song_indices_to_remove:
+            for idx in song_indices_to_remove:
+                param_list.append(("songIndexToRemove", str(idx)))
+        resp = await client.get("/rest/updatePlaylist", params=param_list)
+        resp.raise_for_status()
+        sr = resp.json().get("subsonic-response", {})
+        return sr.get("status") == "ok"
+
+
+async def delete_playlist(playlist_id: str) -> bool:
+    """Delete a playlist from Navidrome."""
+    if not NAVIDROME_PASSWORD:
+        return False
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
+        resp = await client.get("/rest/deletePlaylist", params=_params(id=playlist_id))
+        resp.raise_for_status()
+        sr = resp.json().get("subsonic-response", {})
+        return sr.get("status") == "ok"
+
+
+def _cover_params() -> str:
+    """Generate URL query string for getCoverArt auth."""
+    import urllib.parse
+    return urllib.parse.urlencode(_params())
+
+
 async def create_playlist(name: str, song_ids: list[str]) -> bool:
     """Create a playlist in Navidrome via Subsonic API."""
-    if not NAVIDROME_PASSWORD or not song_ids:
+    if not NAVIDROME_PASSWORD:
         return False
     async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=30) as client:
         # Step 1: Create empty playlist
