@@ -67,6 +67,15 @@ async def remove_tracks_from_playlist(playlist_id: str, req: RemoveTracksRequest
     return {"status": "ok"}
 
 
+@router.put("/playlist/{playlist_id}/reorder")
+async def reorder_playlist(playlist_id: str, req: AddTracksByIdRequest, user: dict = Depends(auth.get_current_user)):
+    """Reorder playlist tracks. Receives full ordered list of song_ids."""
+    ok = await library.reorder_playlist(playlist_id, req.song_ids)
+    if not ok:
+        raise HTTPException(500, "Failed to reorder playlist")
+    return {"status": "ok"}
+
+
 @router.post("/playlist/{playlist_id}/remove-by-name")
 async def remove_track_by_name(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(auth.get_current_user)):
     """Remove a track from playlist by name/artist match."""

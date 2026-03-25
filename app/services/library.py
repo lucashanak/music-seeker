@@ -288,6 +288,37 @@ async def remove_track_by_name(playlist_id: str, name: str, artist: str) -> bool
     return False
 
 
+async def reorder_playlist(playlist_id: str, song_ids: list[str]) -> bool:
+    """Reorder a playlist by removing all tracks and re-adding in new order."""
+    if not NAVIDROME_PASSWORD or not song_ids:
+        return False
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=30) as client:
+        # Remove all existing tracks (by indices, descending to avoid shift)
+        pl = await get_playlist(playlist_id)
+        if not pl:
+            return False
+        count = len(pl["tracks"])
+        if count > 0:
+            # Remove all tracks in one call (all indices)
+            param_list = list(_params(playlistId=playlist_id).items())
+            for i in range(count - 1, -1, -1):
+                param_list.append(("songIndexToRemove", str(i)))
+            resp = await client.get("/rest/updatePlaylist", params=param_list)
+            resp.raise_for_status()
+
+        # Re-add in new order (batches of 20)
+        batch_size = 20
+        for i in range(0, len(song_ids), batch_size):
+            batch = song_ids[i:i + batch_size]
+            param_list = list(_params(playlistId=playlist_id).items())
+            for sid in batch:
+                param_list.append(("songIdToAdd", sid))
+            resp = await client.get("/rest/updatePlaylist", params=param_list)
+            resp.raise_for_status()
+
+        return True
+
+
 async def delete_playlist(playlist_id: str) -> bool:
     """Delete a playlist from Navidrome."""
     if not NAVIDROME_PASSWORD:

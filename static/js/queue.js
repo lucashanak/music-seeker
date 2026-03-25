@@ -21,7 +21,8 @@ export function renderQueueInto(el) {
     return;
   }
   el.innerHTML = store.playerQueue.map((item, i) => `
-    <div class="queue-item${i === store.playerIndex ? ' now-playing' : ''}" data-qi="${i}">
+    <div class="queue-item${i === store.playerIndex ? ' now-playing' : ''}" data-qi="${i}" draggable="true">
+      <span class="qi-drag" title="Drag to reorder">&#x2630;</span>
       <span class="qi-num">${i === store.playerIndex ? '&#9654;' : i + 1}</span>
       <img class="qi-img" src="${item.image || ''}" alt="" onerror="this.style.background='var(--bg-elevated)'">
       <div class="qi-info">
@@ -31,6 +32,7 @@ export function renderQueueInto(el) {
       <button class="qi-remove" data-qi-rm="${i}" title="Remove">&times;</button>
     </div>
   `).join('');
+  _attachDragHandlers(el);
   $$('.queue-item', el).forEach(qi => {
     qi.addEventListener('click', (e) => {
       if (e.target.closest('.qi-remove')) return;
@@ -95,6 +97,68 @@ export function closeQueuePanel(fromPopstate) {
   store.queuePanelOpen = false;
   if (!fromPopstate) historyBack();
 }
+
+// ── Drag & Drop Reorder ──
+let _dragIdx = -1;
+function _attachDragHandlers(el) {
+  $$('.queue-item', el).forEach(qi => {
+    qi.addEventListener('dragstart', (e) => {
+      _dragIdx = parseInt(qi.dataset.qi);
+      qi.classList.add('qi-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    qi.addEventListener('dragend', () => {
+      qi.classList.remove('qi-dragging');
+      _dragIdx = -1;
+    });
+    qi.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const target = qi;
+      const targetIdx = parseInt(target.dataset.qi);
+      if (targetIdx !== _dragIdx) {
+        target.classList.add('qi-drag-over');
+      }
+    });
+    qi.addEventListener('dragleave', () => {
+      qi.classList.remove('qi-drag-over');
+    });
+    qi.addEventListener('drop', (e) => {
+      e.preventDefault();
+      qi.classList.remove('qi-drag-over');
+      const toIdx = parseInt(qi.dataset.qi);
+      if (_dragIdx < 0 || _dragIdx === toIdx) return;
+      _moveQueueItem(_dragIdx, toIdx);
+      _dragIdx = -1;
+    });
+  });
+}
+
+function _moveQueueItem(from, to) {
+  const [item] = store.playerQueue.splice(from, 1);
+  store.playerQueue.splice(to, 0, item);
+  // Adjust playerIndex
+  if (store.playerIndex === from) {
+    store.playerIndex = to;
+  } else if (from < store.playerIndex && to >= store.playerIndex) {
+    store.playerIndex--;
+  } else if (from > store.playerIndex && to <= store.playerIndex) {
+    store.playerIndex++;
+  }
+  renderQueue();
+  saveQueueDebounced();
+  // Playlist mode: sync reorder to Navidrome playlist
+  if (store.playlistMode) {
+    const songIds = store.playerQueue.map(t => t.id).filter(Boolean);
+    if (songIds.length) {
+      import('./api.js').then(m => m.apiJson(`/api/library/playlist/${store.playlistMode.id}/reorder`, {
+        method: 'PUT',
+        body: { song_ids: songIds },
+      })).catch(() => {});
+    }
+  }
+}
+
 
 // ── Full Player Queue Panel ──
 export function openFpQueuePanel() {

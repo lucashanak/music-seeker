@@ -117,6 +117,10 @@ body.player-active .player-bar { display: flex; }
 .queue-item .qi-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; width: 24px; height: 24px; font-size: 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%; opacity: 0; transition: all .15s; flex-shrink: 0; }
 .queue-item:hover .qi-remove { opacity: 1; }
 .queue-item .qi-remove:hover { color: var(--red); background: rgba(255,255,255,.05); }
+.queue-item .qi-drag { cursor: grab; color: var(--text-dim); font-size: 12px; width: 16px; text-align: center; flex-shrink: 0; opacity: 0.4; transition: opacity .15s; user-select: none; }
+.queue-item:hover .qi-drag { opacity: 1; }
+.queue-item.qi-dragging { opacity: 0.4; }
+.queue-item.qi-drag-over { border-top: 2px solid var(--accent); margin-top: -2px; }
 
 /* ── Recommendations ── */
 .recs-section { padding: 0 12px 12px; }
