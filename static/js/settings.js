@@ -448,15 +448,23 @@ export function init() {
     } catch {}
   });
 
-  // DLNA scan button
+  // DLNA scan button — active SSDP scan
   $('#dlnaScanBtn').addEventListener('click', async () => {
     const status = $('#dlnaScanStatus');
-    status.textContent = 'Scanning...';
-    await _loadDlnaDevices();
-    const sel = $('#settingDlnaDevice');
-    const count = sel.options.length - 1; // minus "Disabled"
-    status.textContent = count > 0 ? `Found ${count} device(s)` : 'No devices found';
-    setTimeout(() => { status.textContent = ''; }, 3000);
+    const btn = $('#dlnaScanBtn');
+    btn.disabled = true;
+    status.textContent = 'Scanning LAN for DLNA devices...';
+    try {
+      await apiJson('/api/dlna/scan', { method: 'POST' });
+      await _loadDlnaDevices();
+      const sel = $('#settingDlnaDevice');
+      const count = sel.options.length - 1;
+      status.textContent = count > 0 ? `Found ${count} device(s)` : 'No devices found';
+    } catch {
+      status.textContent = 'Scan failed';
+    }
+    btn.disabled = false;
+    setTimeout(() => { status.textContent = ''; }, 5000);
   });
   // DLNA dropdown selects URL into manual field
   $('#settingDlnaDevice').addEventListener('change', () => {

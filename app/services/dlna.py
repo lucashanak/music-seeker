@@ -123,6 +123,100 @@ async def _run_discovery():
         pass
 
 
+async def scan_devices() -> list[dict]:
+    """Scan LAN for DLNA renderers by probing common UPnP ports via HTTP.
+    Works from Docker bridge networks where SSDP multicast doesn't reach."""
+    import httpx
+
+    # Determine subnet to scan from gateway
+    gateway_ip = ""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        # Use same /24 subnet
+        gateway_ip = ".".join(local_ip.split(".")[:3])
+    except Exception:
+        pass
+
+    # Also try DLNA_SERVER_URL subnet
+    server_url = _get_server_url()
+    try:
+        server_ip = server_url.split("//")[1].split(":")[0]
+        gateway_ip = ".".join(server_ip.split(".")[:3])
+    except Exception:
+        pass
+
+    if not gateway_ip:
+        return []
+
+    # Common UPnP description paths — most common first
+    paths = [
+        "/description.xml",         # Generic UPnP (most common)
+        "/upnp_descriptor_0",      # Onkyo
+    ]
+    ports = [8888, 49152, 60006, 1400]
+
+    found = []
+    factory = await _get_factory()
+    sem = asyncio.Semaphore(50)  # High concurrency — probes are fast TCP connects
+
+    async def probe(ip: str, port: int, path: str):
+        url = f"http://{ip}:{port}{path}"
+        async with sem:
+            try:
+                async with httpx.AsyncClient(timeout=0.8) as client:
+                    resp = await client.get(url)
+                    if resp.status_code == 200 and "MediaRenderer" in resp.text:
+                        return url
+            except Exception:
+                pass
+        return None
+
+    # Probe IPs 1-254 on all port/path combos
+    tasks = []
+    for i in range(1, 255):
+        ip = f"{gateway_ip}.{i}"
+        for port in ports:
+            for path in paths:
+                tasks.append(probe(ip, port, path))
+
+    results = await asyncio.gather(*tasks)
+    urls = [r for r in results if r]
+
+    # Deduplicate by host
+    seen_hosts = set()
+    unique_urls = []
+    for url in urls:
+        host = url.split("//")[1].split("/")[0]
+        if host not in seen_hosts:
+            seen_hosts.add(host)
+            unique_urls.append(url)
+
+    # Fetch device descriptions
+    for url in unique_urls:
+        if url in _devices:
+            found.append(_devices[url])
+            continue
+        try:
+            if factory:
+                device = await asyncio.wait_for(factory.async_create_device(url), timeout=5)
+                dev = {
+                    "name": device.friendly_name or url,
+                    "location": url,
+                    "udn": device.udn or url,
+                    "ip": url.split("//")[1].split(":")[0],
+                    "upnp_device": device,
+                }
+                _devices[url] = dev
+                found.append(dev)
+        except Exception:
+            found.append({"name": url, "location": url, "udn": url, "ip": url.split("//")[1].split(":")[0]})
+
+    return found
+
+
 async def cast_to_device(device_id: str, name: str, artist: str, token: str,
                           album: str = "", image: str = "", duration_ms: int = 0) -> bool:
     global _active_device, _dmr

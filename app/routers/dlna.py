@@ -28,6 +28,17 @@ async def get_devices(user: dict = Depends(auth.get_current_user)):
     return {"devices": dlna.get_devices()}
 
 
+@router.post("/scan")
+async def scan_devices(user: dict = Depends(auth.get_current_user)):
+    """Active SSDP scan for DLNA renderers on LAN."""
+    found = await dlna.scan_devices()
+    devices = [
+        {"id": d.get("udn", ""), "name": d.get("name", ""), "ip": d.get("ip", ""), "location": d.get("location", "")}
+        for d in found
+    ]
+    return {"devices": devices}
+
+
 @router.post("/cast")
 async def cast_to_device(req: CastRequest, user: dict = Depends(auth.get_current_user)):
     # Use the user's token for stream authentication
