@@ -21,9 +21,10 @@ async def player_stream(name: str, artist: str = "", user: dict = Depends(_strea
         path = result["path"]
         ext = os.path.splitext(path)[1].lower()
         if ext == ".mp3" and os.path.isfile(path):
-            # Serve MP3 directly with Range support (Safari needs this for duration/seek)
-            return FileResponse(path, media_type="audio/mpeg", headers=headers)
-        # Non-MP3: transcode to MP3 via ffmpeg
+            # Serve MP3 with Content-Length for Safari duration/seek
+            size = os.path.getsize(path)
+            headers["Content-Length"] = str(size)
+            headers["Accept-Ranges"] = "none"
         return StreamingResponse(player.stream_local_file(path), media_type="audio/mpeg", headers=headers)
     elif source == "navidrome":
         return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg", headers=headers)

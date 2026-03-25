@@ -386,6 +386,10 @@ export function init() {
       nextTrack();
     }
   });
+  // Safari end-of-track detection: 'ended' event may not fire for streams
+  let _endedFired = false;
+  audio.addEventListener('play', () => { _endedFired = false; });
+
   audio.addEventListener('timeupdate', () => {
     // Safari: audio.duration may be NaN/Infinity for streamed content — fallback to track metadata
     let dur = audio.duration;
@@ -394,6 +398,19 @@ export function init() {
       if (item && item.duration_ms) dur = item.duration_ms / 1000;
     }
     if (!dur || !isFinite(dur)) return;
+
+    // Safari fallback: detect end of track when currentTime reaches expected duration
+    if (!_endedFired && audio.currentTime >= dur - 0.5 && dur > 5) {
+      _endedFired = true;
+      audio.pause();
+      if (store.repeatMode === 'one') {
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+      } else {
+        nextTrack();
+      }
+      return;
+    }
     const pct = (audio.currentTime / dur) * 100;
     $('#playerProgressFill').style.width = pct + '%';
     $('#playerTimeCurrent').textContent = fmtTime(audio.currentTime);
