@@ -1,7 +1,7 @@
 // queue.js — Queue panel rendering (renderQueue), small player queue panel
 
 import { store } from './store.js';
-import { $, $$, esc, historyBack } from './utils.js';
+import { $, $$, esc, historyBack, showToast } from './utils.js';
 
 // Forward references set during init to avoid circular imports
 let loadAndPlay, hidePlayerBar, saveQueueDebounced, audio;
@@ -65,10 +65,16 @@ export function renderQueueInto(el) {
   });
 }
 
+export function updateSaveButton() {
+  const btn = $('#fpSaveQueue');
+  if (btn) btn.style.display = (!store.playlistMode && store.playerQueue.length > 0) ? '' : 'none';
+}
+
 export function renderQueue() {
   renderQueueInto($('#queueList'));
   if (store.fpQueuePanelOpen) renderQueueInto($('#fpQueuePanelList'));
   if (store.fullPlayerOpen && window.innerWidth > 640) renderQueueInto($('#fpQueueList'));
+  updateSaveButton();
 }
 
 export function scrollToNowPlaying(el) {
@@ -186,6 +192,46 @@ export function init() {
   $('#playerQueueBtn').addEventListener('click', () => {
     store.queuePanelOpen ? closeQueuePanel() : openQueuePanel();
   });
+  // Save queue as Navidrome playlist
+  $('#fpSaveQueue').addEventListener('click', async () => {
+    if (!store.playerQueue.length) return;
+    const name = prompt('Save queue as playlist:');
+    if (!name || !name.trim()) return;
+    const btn = $('#fpSaveQueue');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    try {
+      const { apiJson } = await import('./api.js');
+      // Create playlist
+      await apiJson('/api/library/playlist', { method: 'POST', body: { name: name.trim() } });
+      // Get new playlist ID
+      const data = await apiJson('/api/library/playlists');
+      const pl = (data.playlists || []).find(p => p.name === name.trim());
+      if (!pl) throw new Error('Playlist not created');
+      // Add all tracks by name
+      let added = 0;
+      for (const track of store.playerQueue) {
+        try {
+          await apiJson(`/api/library/playlist/${pl.id}/add-by-name`, {
+            method: 'POST',
+            body: { name: track.name || '', artist: track.artist || '', album: track.album || '' },
+          });
+          added++;
+        } catch {}
+      }
+      showToast(`Saved "${name.trim()}" (${added}/${store.playerQueue.length} tracks)`);
+      // Activate playlist mode
+      store.playlistMode = { id: pl.id, name: name.trim() };
+      import('./player.js').then(m => m.updatePlaylistBadge());
+      updateSaveButton();
+    } catch (e) {
+      showToast('Failed to save: ' + (e.message || ''));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save';
+    }
+  });
+
   // Click playlist badge to deactivate playlist mode
   const plBadge = $('#fpPlaylistBadge');
   if (plBadge) plBadge.addEventListener('click', () => {
