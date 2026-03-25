@@ -77,9 +77,18 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 - **Per-User Download Folders** — Each user's downloads go to `/music/{username}/`, with disk usage tracking and admin cleanup
 - **Browser Notifications** — Get notified when downloads complete (even in background tabs)
 
+### DLNA/UPnP Cast
+- **Cast to Network Speakers** — Stream music to DLNA/UPnP renderers (Onkyo, Denon, Yamaha, Sonos, etc.) directly from the server
+- **Device Discovery** — Auto-discovers DLNA renderers on LAN via SSDP, or configure manually via Settings
+- **Full Playback Control** — Play, pause, stop, seek, and volume control from MusicSeeker UI
+- **DIDL-Lite Metadata** — Sends track title, artist, album, and cover art to the renderer display
+- **Cast Mode** — Cast button in player bar turns green when active. Click again to stop casting and return to local playback
+- **Status Polling** — Progress bar and time display update in real-time while casting
+
 ### UI
 - **Modern Dark Theme** — Spotify-inspired design with lime green accent, Inter font, glassmorphism navigation
 - **Responsive** — Desktop top nav with full layout, mobile bottom tab bar with bottom-sheet modals
+- **Keyboard Shortcuts** — Space (play/pause), Arrow keys (next/prev, volume up/down)
 - **No Build Step** — Entire frontend is a single HTML file served by FastAPI
 
 ## Screenshots
@@ -92,9 +101,9 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container.
 |-----------------------|-------------------|--------|
 | ![Player](screenshots/full-player.png) | ![Spotify](screenshots/my-spotify.png) | ![Mobile](screenshots/mobile.png) |
 
-| Library Playlists | Playlist Detail | Recommendations |
-|-------------------|-----------------|-----------------|
-| ![Library](screenshots/library.png) | ![Playlist](screenshots/playlist-detail.png) | ![Recs](screenshots/recommendations.png) |
+| Login | Podcasts | Settings |
+|-------|----------|----------|
+| ![Login](screenshots/login.png) | ![Podcasts](screenshots/podcasts.png) | ![Settings](screenshots/settings.png) |
 
 ## Requirements
 
@@ -187,10 +196,14 @@ Adds the artist to Lidarr and triggers a search. Lidarr handles the actual downl
 
 ## Getting a Spotify Refresh Token
 
-Search works without Spotify credentials using Deezer (default) or YouTube Music. Spotify credentials are only needed if you want to use Spotify as your search provider, browse your personal playlists/Liked Songs, or search podcasts. A refresh token is additionally needed for browsing your personal playlists and Liked Songs. When Spotify credentials are missing, dependent features are gracefully greyed out.
+Search works without Spotify credentials using Deezer (default) or YouTube Music. Spotify credentials are only needed if you want to use Spotify as your search provider, browse your personal playlists/Liked Songs, or search podcasts.
+
+> **Easier option:** You can authorize with Spotify directly from MusicSeeker Settings page — no manual token exchange needed. Just enter your Client ID and Client Secret, click "Authorize with Spotify", and follow the OAuth flow. Per-user tokens are stored automatically.
+
+If you prefer manual setup or need a global token, follow the steps below. When Spotify credentials are missing, dependent features are gracefully greyed out.
 
 1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and create an app
-2. Set the Redirect URI to `http://localhost:8888/callback`
+2. Set the Redirect URI to `http://localhost:8090/api/spotify/callback` (or your external URL)
 3. Note your **Client ID** and **Client Secret**
 4. Open this URL in your browser (replace `YOUR_CLIENT_ID`):
 
@@ -284,6 +297,7 @@ services:
       - SLSKD_API_KEY=${SLSKD_API_KEY}
       - ADMIN_USER=admin
       - ADMIN_PASS=${ADMIN_PASS}
+      - DLNA_SERVER_URL=http://your-server-ip:8090
     volumes:
       - /mnt/nas/Media/_Music:/music
       - ${INSTALL_DIRECTORY}/config/music-seeker:/app/data
@@ -315,6 +329,8 @@ services:
 │ player.py   │ Streaming+Queue │
 │ auth.py     │ HMAC tokens    │
 │ jobs.py     │ Job queue      │
+│ dlna.py     │ UPnP/DLNA cast │
+│ favorites.py│ Artist following│
 └──────────────────────────────┘
 ```
 
@@ -381,6 +397,21 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `POST` | `/api/player/recommendations` | Get recommendations from track list |
 | `GET` | `/api/player/resolve-source?name=..&artist=..` | Resolve stream source type |
 | `GET` | `/api/radio?track=..&artist=..` | Get radio tracks |
+| `GET` | `/api/favorites` | List followed artists |
+| `POST` | `/api/favorites` | Follow an artist |
+| `DELETE` | `/api/favorites/:id` | Unfollow artist |
+| `PUT` | `/api/favorites/:id` | Update artist settings (auto-download) |
+| `POST` | `/api/favorites/:id/clear` | Clear new release badge |
+| `POST` | `/api/favorites/check` | Check for new releases now |
+| `GET` | `/api/dlna/devices` | List discovered DLNA renderers |
+| `POST` | `/api/dlna/cast` | Cast track to a DLNA renderer |
+| `POST` | `/api/dlna/play` | Resume playback on renderer |
+| `POST` | `/api/dlna/pause` | Pause playback on renderer |
+| `POST` | `/api/dlna/stop` | Stop casting |
+| `POST` | `/api/dlna/seek` | Seek to position (seconds) |
+| `POST` | `/api/dlna/volume` | Set renderer volume (0-100) |
+| `GET` | `/api/dlna/status` | Get cast status (position, duration, volume) |
+| `HEAD` | `/api/player/stream?name=..&artist=..` | Stream metadata (for DLNA MIME check) |
 | `GET` | `/api/settings` | Get app settings |
 | `PUT` | `/api/settings` | Update settings (admin only) |
 | `GET` | `/api/users` | List users (admin only) |
@@ -413,6 +444,12 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 | `LIDARR_ROOT_FOLDER` | No | `{MUSIC_DIR}/_lidarr` | Root folder path as seen by Lidarr |
 | `PODCAST_SYNC_HOURS` | No | `6` | Auto-sync interval for podcast subscriptions (hours) |
 | `JWT_SECRET` | No | auto-generated | Secret for signing auth tokens |
+| `DLNA_SERVER_URL` | No | auto-detected | URL for DLNA renderers to fetch streams (e.g. `http://192.168.1.22:8090`) |
+| `DLNA_RENDERER_URL` | No | — | Manual DLNA renderer description URL (for Docker bridge networks where SSDP fails) |
+| `RECOMMENDATION_SOURCE` | No | `combined` | Recommendation engine: `combined`, `lastfm`, `deezer` |
+| `DEFAULT_FORMAT` | No | `flac` | Default download format |
+| `DEFAULT_METHOD` | No | `yt-dlp` | Default download method |
+| `MAX_CONCURRENT` | No | `10` | Maximum concurrent downloads |
 
 ## License
 
