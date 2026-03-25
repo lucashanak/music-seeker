@@ -23,7 +23,7 @@ jobs:
           node-version: 20
 
       - name: Install Rust
-        uses: dtolnay/rust-action/setup@v1
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Generate icons from SVG
         run: |
