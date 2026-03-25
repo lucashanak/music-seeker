@@ -472,7 +472,16 @@ export function init() {
     $('#settingDlnaUrl').value = val;
   });
 
-  // Clear Cache & Reload
+  // Refresh (cache only, keep login)
+  $('#refreshCacheBtn').addEventListener('click', async () => {
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    } catch(e) {}
+    window.location.href = window.location.origin + '/?_=' + Date.now();
+  });
+
+  // Clear All & Logout
   $('#clearCacheBtn').addEventListener('click', async () => {
     try {
       localStorage.clear();

@@ -553,9 +553,14 @@
           Android (.apk)
         </a>
       </div>
-      <button class="btn-save" id="clearCacheBtn" style="margin-top:12px;width:100%;background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);">
-        Clear Cache &amp; Reload
-      </button>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn-save" id="refreshCacheBtn" style="flex:1;background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);">
+          Refresh
+        </button>
+        <button class="btn-save" id="clearCacheBtn" style="flex:1;background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);">
+          Clear All &amp; Logout
+        </button>
+      </div>
       <p style="font-size:11px;color:var(--text-muted);margin-top:8px;">
         macOS 10.15+ / Android 7.0+. Built with Tauri.
       </p>
