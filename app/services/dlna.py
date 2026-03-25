@@ -320,9 +320,25 @@ async def seek(position_seconds: float) -> bool:
         h = int(position_seconds // 3600)
         m = int((position_seconds % 3600) // 60)
         s = int(position_seconds % 60)
-        await _dmr.async_seek_rel_time(f"{h:02d}:{m:02d}:{s:02d}")
+        target = f"{h:02d}:{m:02d}:{s:02d}"
+        # Try absolute seek first, then relative
+        try:
+            await _dmr.async_seek_abs_time(target)
+        except Exception:
+            try:
+                await _dmr.async_seek_rel_time(target)
+            except Exception:
+                # Direct action call as fallback
+                srv = _dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:2") or \
+                      _dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:1")
+                if srv:
+                    action = srv.action("Seek")
+                    await action.async_call(InstanceID=0, Unit="ABS_TIME", Target=target)
+                else:
+                    return False
         return True
-    except Exception:
+    except Exception as e:
+        logger.warning(f"DLNA seek error: {e}")
         return False
 
 
@@ -336,6 +352,21 @@ async def set_volume(volume: int) -> bool:
         return False
 
 
+def _parse_time(t: str) -> float:
+    """Parse HH:MM:SS or H:MM:SS to seconds."""
+    if not t or t == "NOT_IMPLEMENTED":
+        return 0
+    parts = t.split(":")
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        elif len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+    except (ValueError, IndexError):
+        pass
+    return 0
+
+
 async def get_status() -> dict | None:
     if not _dmr or not _active_device:
         return None
@@ -347,29 +378,35 @@ async def get_status() -> dict | None:
             "duration_seconds": 0,
             "volume": 0,
         }
-        try:
-            state = _dmr.transport_state
-            info["state"] = str(state) if state else "unknown"
-        except Exception:
-            pass
-        try:
-            pos = _dmr.media_position
-            if pos is not None:
-                info["position_seconds"] = pos.total_seconds() if hasattr(pos, 'total_seconds') else float(pos)
-        except Exception:
-            pass
-        try:
-            dur = _dmr.media_duration
-            if dur is not None:
-                info["duration_seconds"] = dur.total_seconds() if hasattr(dur, 'total_seconds') else float(dur)
-        except Exception:
-            pass
-        try:
-            vol = _dmr.volume_level
-            if vol is not None:
-                info["volume"] = int(vol * 100)
-        except Exception:
-            pass
+        # Query transport info directly via UPnP actions
+        av_srv = _dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:2") or \
+                 _dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:1")
+        rc_srv = _dmr.device.services.get("urn:schemas-upnp-org:service:RenderingControl:2") or \
+                 _dmr.device.services.get("urn:schemas-upnp-org:service:RenderingControl:1")
+
+        if av_srv:
+            try:
+                ti = av_srv.action("GetTransportInfo")
+                result = await ti.async_call(InstanceID=0)
+                info["state"] = result.get("CurrentTransportState", "unknown")
+            except Exception:
+                pass
+            try:
+                pi = av_srv.action("GetPositionInfo")
+                result = await pi.async_call(InstanceID=0)
+                info["position_seconds"] = _parse_time(result.get("RelTime", "0:00:00"))
+                info["duration_seconds"] = _parse_time(result.get("TrackDuration", "0:00:00"))
+            except Exception:
+                pass
+
+        if rc_srv:
+            try:
+                gv = rc_srv.action("GetVolume")
+                result = await gv.async_call(InstanceID=0, Channel="Master")
+                info["volume"] = int(result.get("CurrentVolume", 0))
+            except Exception:
+                pass
+
         return info
     except Exception:
         return None
