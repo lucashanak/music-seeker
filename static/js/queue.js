@@ -72,12 +72,14 @@ export function updateSaveButton() {
 
 export function renderQueue() {
   renderQueueInto($('#queueList'));
-  if (store.fpQueuePanelOpen) renderQueueInto($('#fpQueuePanelList'));
+  if (store.fpQueuePanelOpen) {
+    renderQueueInto($('#fpQueuePanelList'));
+  }
   if (store.fullPlayerOpen && window.innerWidth > 640) {
     renderQueueInto($('#fpQueueList'));
-    // Re-append recs section after queue re-render (they share one scroll container)
-    import('./recommendations.js').then(m => { if (m.hasRecs()) m.appendRecsToQueue(); });
   }
+  // Re-append recs after queue re-render (they share scroll containers)
+  import('./recommendations.js').then(m => { if (m.hasRecs()) m.appendRecsToQueue(); });
   updateSaveButton();
 }
 
@@ -178,6 +180,7 @@ export function openFpQueuePanel() {
   $('#fpQueuePanel').classList.add('open');
   history.pushState({ layer: 'fpQueuePanel' }, '');
   scrollToNowPlaying($('#fpQueuePanelList'));
+  import('./recommendations.js').then(m => m.onPanelOpened());
 }
 
 export function closeFpQueuePanel(fromPopstate) {

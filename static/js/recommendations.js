@@ -69,32 +69,38 @@ async function loadRecs() {
   }
 }
 
-function _getOrCreateRecsContainer() {
-  let el = $('#fpRecsList');
-  if (el) return el;
-  // Create recs section inside fpQueueList
-  const queueList = $('#fpQueueList');
-  if (!queueList) return null;
+function _ensureRecsIn(queueListEl) {
+  if (!queueListEl) return null;
+  let list = queueListEl.querySelector('.recs-list');
+  if (list) return list;
   const section = document.createElement('div');
   section.className = 'recs-section';
-  section.innerHTML = `<div class="panel-header" style="font-size:13px;border-top:1px solid var(--border);padding-top:12px;">Recommended</div><div class="recs-list" id="fpRecsList"></div>`;
-  queueList.appendChild(section);
-  return $('#fpRecsList');
+  section.innerHTML = `<div class="panel-header" style="font-size:13px;border-top:1px solid var(--border);padding-top:12px;">Recommended</div><div class="recs-list"></div>`;
+  queueListEl.appendChild(section);
+  return section.querySelector('.recs-list');
+}
+
+function _getAllRecsContainers() {
+  // Desktop queue side + mobile queue panel
+  const containers = [];
+  const desktop = _ensureRecsIn($('#fpQueueList'));
+  if (desktop) containers.push(desktop);
+  const mobile = _ensureRecsIn($('#fpQueuePanelList'));
+  if (mobile) containers.push(mobile);
+  return containers;
 }
 
 function renderLoading() {
-  const el = _getOrCreateRecsContainer();
-  if (el) el.innerHTML = Array(3).fill('<div class="skeleton" style="height:48px;border-radius:8px;margin-bottom:6px;"></div>').join('');
+  _getAllRecsContainers().forEach(el => {
+    el.innerHTML = Array(3).fill('<div class="skeleton" style="height:48px;border-radius:8px;margin-bottom:6px;"></div>').join('');
+  });
 }
 
-function renderRecs() {
-  const el = _getOrCreateRecsContainer();
-  if (!el) return;
+function _recsHtml() {
   if (!recsCache.length) {
-    el.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:12px;padding:12px;">No recommendations available</div>';
-    return;
+    return '<div style="text-align:center;color:var(--text-muted);font-size:12px;padding:12px;">No recommendations available</div>';
   }
-  el.innerHTML = recsCache.map((t, i) => `
+  return recsCache.map((t, i) => `
     <div class="rec-item${i === recsPlayingIdx ? ' rec-playing' : ''}" data-rec-idx="${i}">
       <span class="rec-num">${i === recsPlayingIdx ? '&#9654;' : ''}</span>
       <img class="rec-img" src="${t.image || ''}" alt="" loading="lazy">
@@ -109,7 +115,9 @@ function renderRecs() {
         </button>
       </div>
     </div>`).join('');
+}
 
+function _attachRecsHandlers(el) {
   // Click on rec = play it directly (virtual, not added to queue)
   $$('.rec-item', el).forEach(item => {
     item.addEventListener('click', (e) => {
@@ -122,7 +130,6 @@ function renderRecs() {
       renderRecs();
     });
   });
-
   // "+" = add to actual queue
   $$('.rec-add-queue', el).forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -132,7 +139,6 @@ function renderRecs() {
       import('./player.js').then(m => m.addToQueue([track]));
     });
   });
-
   // Playlist icon = add to Navidrome playlist
   $$('.rec-add-playlist', el).forEach(btn => {
     btn.addEventListener('click', async (e) => {
@@ -159,13 +165,21 @@ function renderRecs() {
   });
 }
 
+function renderRecs() {
+  const html = _recsHtml();
+  _getAllRecsContainers().forEach(el => {
+    el.innerHTML = html;
+    _attachRecsHandlers(el);
+  });
+}
+
 // ── Re-append recs to queue list after queue re-render ──
 export function hasRecs() { return recsCache.length > 0 || recsLoading; }
 export function appendRecsToQueue() { renderRecs(); }
 
-// ── Called when full player opens ──
+// ── Called when full player or queue panel opens ──
 export function onPanelOpened() {
-  if (!store.fullPlayerOpen || !store.playerQueue.length) return;
+  if (!store.playerQueue.length) return;
   if (recsDirty || !recsCache.length) {
     loadRecs();
   } else {
