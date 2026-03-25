@@ -8,6 +8,16 @@ import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 
 const audio = $('#audioElement');
+let _endedFired = false;
+
+// ── Helper: get duration with Safari fallback ──
+function _getDuration() {
+  let dur = audio.duration;
+  if (dur && isFinite(dur) && dur > 0) return dur;
+  const item = store.playerQueue[store.playerIndex] || _currentRecItem;
+  if (item && item.duration_ms > 0) return item.duration_ms / 1000;
+  return null;
+}
 
 // ── Play Track ──
 export function playTrack(item) {
@@ -48,6 +58,7 @@ export function addToQueue(items, playNow = false) {
 // ── Load and Play Current Track ──
 export function loadAndPlay() {
   if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) return;
+  _endedFired = false;
   // Stop any virtual rec playback — we're back in the real queue
   import('./recommendations.js').then(m => m.stopRecPlayback());
   const item = store.playerQueue[store.playerIndex];
@@ -209,6 +220,7 @@ function _nextTrackInQueue() {
 // ── Play a track from recommendations (virtual, not in queue) ──
 let _currentRecItem = null;
 export function playRecTrack(item) {
+  _endedFired = false;
   _currentRecItem = item;
   $('#playerImg').src = item.image || '';
   $('#playerTitle').textContent = item.name || '';
@@ -386,25 +398,17 @@ export function init() {
       nextTrack();
     }
   });
-  // Safari end-of-track detection: 'ended' event may not fire for streams
-  let _endedFired = false;
-  audio.addEventListener('play', () => { _endedFired = false; });
-
   audio.addEventListener('timeupdate', () => {
-    // Safari: audio.duration may be NaN/Infinity for streamed content — fallback to track metadata
-    let dur = audio.duration;
-    if (!dur || !isFinite(dur)) {
-      const item = store.playerQueue[store.playerIndex];
-      if (item && item.duration_ms) dur = item.duration_ms / 1000;
-    }
-    if (!dur || !isFinite(dur)) return;
+    const dur = _getDuration();
+    if (!dur) return;
 
-    // Safari fallback: detect end of track when currentTime reaches expected duration
+    // Safari fallback: 'ended' event may not fire for streams without Content-Length
     if (!_endedFired && audio.currentTime >= dur - 0.5 && dur > 5) {
       _endedFired = true;
       audio.pause();
       if (store.repeatMode === 'one') {
         audio.currentTime = 0;
+        _endedFired = false;
         audio.play().catch(() => {});
       } else {
         nextTrack();
@@ -442,16 +446,12 @@ export function init() {
     audio.volume = store.playerVolume;
   });
   function _seekFromEvent(bar, e) {
-    let dur = audio.duration;
-    if (!dur || !isFinite(dur)) {
-      const item = store.playerQueue[store.playerIndex];
-      if (item && item.duration_ms) dur = item.duration_ms / 1000;
-    }
-    if (!dur || !isFinite(dur)) return;
+    const dur = _getDuration();
+    if (!dur) return;
     const rect = bar.getBoundingClientRect();
     const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
     const pct = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-    audio.currentTime = pct * dur;
+    try { audio.currentTime = pct * dur; } catch {}
   }
   const miniBar = $('#playerProgressBar');
   miniBar.addEventListener('click', (e) => _seekFromEvent(miniBar, e));

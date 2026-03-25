@@ -113,17 +113,15 @@ export function init() {
 
   // Full player seek
   function _fpSeek(e) {
-    let dur = audio.duration;
-    if (!dur || !isFinite(dur)) {
-      const item = store.playerQueue[store.playerIndex];
-      if (item && item.duration_ms) dur = item.duration_ms / 1000;
-    }
-    if (!dur || !isFinite(dur)) return;
+    const dur = audio.duration && isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : (() => { const item = store.playerQueue[store.playerIndex]; return item?.duration_ms > 0 ? item.duration_ms / 1000 : null; })();
+    if (!dur) return;
     const bar = $('#fpProgressBar');
     const rect = bar.getBoundingClientRect();
     const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
     const pct = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-    audio.currentTime = pct * dur;
+    try { audio.currentTime = pct * dur; } catch {}
   }
   $('#fpProgressBar').addEventListener('click', _fpSeek);
   $('#fpProgressBar').addEventListener('touchstart', (e) => { e.preventDefault(); _fpSeek(e); }, { passive: false });

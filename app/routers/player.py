@@ -19,13 +19,8 @@ async def player_stream(name: str, artist: str = "", user: dict = Depends(_strea
     headers = {"X-Stream-Source": source}
     if source == "local":
         path = result["path"]
-        ext = os.path.splitext(path)[1].lower()
-        if ext == ".mp3" and os.path.isfile(path):
-            # Serve MP3 with Content-Length for Safari duration/seek
-            size = os.path.getsize(path)
-            headers["Content-Length"] = str(size)
-            headers["Accept-Ranges"] = "none"
-        return StreamingResponse(player.stream_local_file(path), media_type="audio/mpeg", headers=headers)
+        # FileResponse supports Range requests (required by Safari for duration/seek)
+        return FileResponse(path, media_type="audio/mpeg", headers=headers)
     elif source == "navidrome":
         return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg", headers=headers)
     else:
