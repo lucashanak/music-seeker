@@ -8,7 +8,6 @@ import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 
 const audio = $('#audioElement');
-let _endedFired = false;
 
 // ── Helper: get duration with Safari fallback ──
 function _getDuration() {
@@ -58,7 +57,6 @@ export function addToQueue(items, playNow = false) {
 // ── Load and Play Current Track ──
 export function loadAndPlay() {
   if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) return;
-  _endedFired = false;
   // Stop any virtual rec playback — we're back in the real queue
   import('./recommendations.js').then(m => m.stopRecPlayback());
   const item = store.playerQueue[store.playerIndex];
@@ -220,7 +218,6 @@ function _nextTrackInQueue() {
 // ── Play a track from recommendations (virtual, not in queue) ──
 let _currentRecItem = null;
 export function playRecTrack(item) {
-  _endedFired = false;
   _currentRecItem = item;
   $('#playerImg').src = item.image || '';
   $('#playerTitle').textContent = item.name || '';
@@ -401,20 +398,6 @@ export function init() {
   audio.addEventListener('timeupdate', () => {
     const dur = _getDuration();
     if (!dur) return;
-
-    // Safari fallback: 'ended' event may not fire for streams without Content-Length
-    if (!_endedFired && audio.currentTime >= dur - 0.5 && dur > 5) {
-      _endedFired = true;
-      audio.pause();
-      if (store.repeatMode === 'one') {
-        audio.currentTime = 0;
-        _endedFired = false;
-        audio.play().catch(() => {});
-      } else {
-        nextTrack();
-      }
-      return;
-    }
     const pct = (audio.currentTime / dur) * 100;
     $('#playerProgressFill').style.width = pct + '%';
     $('#playerTimeCurrent').textContent = fmtTime(audio.currentTime);
