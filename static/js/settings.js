@@ -472,6 +472,13 @@ export function init() {
     $('#settingDlnaUrl').value = val;
   });
 
+  // Clear Cache & Reload
+  $('#clearCacheBtn').addEventListener('click', () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    caches.keys().then(ks => Promise.all(ks.map(k => caches.delete(k)))).then(() => location.reload(true));
+  });
+
   // Disk Usage
   $('#refreshDiskUsage').addEventListener('click', loadDiskUsage);
   $('#diskUsageSection').addEventListener('toggle', (e) => {
