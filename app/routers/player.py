@@ -1,5 +1,7 @@
+import os
+
 from fastapi import APIRouter, HTTPException, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 
 from app.models import QueueState, AddToQueueRequest, RecommendationRequest
 from app.services import auth, player, radio, settings as app_settings
@@ -16,7 +18,13 @@ async def player_stream(name: str, artist: str = "", user: dict = Depends(_strea
     source = result["source"]
     headers = {"X-Stream-Source": source}
     if source == "local":
-        return StreamingResponse(player.stream_local_file(result["path"]), media_type="audio/mpeg", headers=headers)
+        path = result["path"]
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".mp3" and os.path.isfile(path):
+            # Serve MP3 directly with Range support (Safari needs this for duration/seek)
+            return FileResponse(path, media_type="audio/mpeg", headers=headers)
+        # Non-MP3: transcode to MP3 via ffmpeg
+        return StreamingResponse(player.stream_local_file(path), media_type="audio/mpeg", headers=headers)
     elif source == "navidrome":
         return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg", headers=headers)
     else:

@@ -387,11 +387,17 @@ export function init() {
     }
   });
   audio.addEventListener('timeupdate', () => {
-    if (!audio.duration) return;
-    const pct = (audio.currentTime / audio.duration) * 100;
+    // Safari: audio.duration may be NaN/Infinity for streamed content — fallback to track metadata
+    let dur = audio.duration;
+    if (!dur || !isFinite(dur)) {
+      const item = store.playerQueue[store.playerIndex];
+      if (item && item.duration_ms) dur = item.duration_ms / 1000;
+    }
+    if (!dur || !isFinite(dur)) return;
+    const pct = (audio.currentTime / dur) * 100;
     $('#playerProgressFill').style.width = pct + '%';
     $('#playerTimeCurrent').textContent = fmtTime(audio.currentTime);
-    $('#playerTimeTotal').textContent = fmtTime(audio.duration);
+    $('#playerTimeTotal').textContent = fmtTime(dur);
     // Sync mini bar top progress line
     document.getElementById('playerBar').style.setProperty('--player-progress', pct + '%');
     // Sync full player
@@ -400,7 +406,7 @@ export function init() {
     const fpCur = $('#fpTimeCurrent');
     if (fpCur) fpCur.textContent = fmtTime(audio.currentTime);
     const fpTot = $('#fpTimeTotal');
-    if (fpTot) fpTot.textContent = fmtTime(audio.duration);
+    if (fpTot) fpTot.textContent = fmtTime(dur);
   });
   audio.addEventListener('error', () => {
     showToast('Stream error, skipping...');
@@ -419,11 +425,16 @@ export function init() {
     audio.volume = store.playerVolume;
   });
   function _seekFromEvent(bar, e) {
-    if (!audio.duration) return;
+    let dur = audio.duration;
+    if (!dur || !isFinite(dur)) {
+      const item = store.playerQueue[store.playerIndex];
+      if (item && item.duration_ms) dur = item.duration_ms / 1000;
+    }
+    if (!dur || !isFinite(dur)) return;
     const rect = bar.getBoundingClientRect();
     const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
     const pct = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-    audio.currentTime = pct * audio.duration;
+    audio.currentTime = pct * dur;
   }
   const miniBar = $('#playerProgressBar');
   miniBar.addEventListener('click', (e) => _seekFromEvent(miniBar, e));
