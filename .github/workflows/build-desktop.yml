@@ -142,17 +142,63 @@ jobs:
         working-directory: desktop
         run: npx tauri android init
 
-      - name: Add Android permissions
+      - name: Patch Android project
         run: |
-          MANIFEST="desktop/src-tauri/gen/android/app/src/main/AndroidManifest.xml"
-          # Add permissions before <application> tag
+          GEN="desktop/src-tauri/gen/android"
+
+          # 1. Add permissions to AndroidManifest.xml
+          MANIFEST="$GEN/app/src/main/AndroidManifest.xml"
           sed -i '/<application/i \
               <uses-permission android:name="android.permission.INTERNET" />\
               <uses-permission android:name="android.permission.RECORD_AUDIO" />\
               <uses-permission android:name="android.permission.WAKE_LOCK" />\
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />' "$MANIFEST"
-          echo "=== AndroidManifest.xml ==="
-          cat "$MANIFEST"
+
+          # 2. Find the MainActivity and patch it for WebView permissions + status bar
+          MAIN_ACT=$(find "$GEN" -name "MainActivity.kt" | head -1)
+          echo "Found MainActivity: $MAIN_ACT"
+          PACKAGE=$(head -1 "$MAIN_ACT" | sed 's/package //')
+          cat > "$MAIN_ACT" << 'KOTLIN'
+          package PACKAGE_PLACEHOLDER
+
+          import android.os.Bundle
+          import android.webkit.PermissionRequest
+          import android.webkit.WebChromeClient
+          import android.webkit.WebView
+          import androidx.core.view.WindowCompat
+          import androidx.core.app.ActivityCompat
+          import android.Manifest
+          import android.content.pm.PackageManager
+
+          class MainActivity : TauriActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  // Don't render behind status bar
+                  WindowCompat.setDecorFitsSystemWindows(window, true)
+
+                  // Request mic permission at runtime
+                  if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                      ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+                  }
+              }
+
+              override fun onWebViewCreate(webView: WebView) {
+                  webView.webChromeClient = object : WebChromeClient() {
+                      override fun onPermissionRequest(request: PermissionRequest) {
+                          runOnUiThread {
+                              request.grant(request.resources)
+                          }
+                      }
+                  }
+              }
+          }
+          KOTLIN
+          sed -i "s/PACKAGE_PLACEHOLDER/$PACKAGE/" "$MAIN_ACT"
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' "$MAIN_ACT"
+          echo "=== Patched MainActivity.kt ==="
+          cat "$MAIN_ACT"
 
       - name: Build Android APK
         working-directory: desktop
