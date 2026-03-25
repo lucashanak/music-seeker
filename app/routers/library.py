@@ -67,6 +67,15 @@ async def remove_tracks_from_playlist(playlist_id: str, req: RemoveTracksRequest
     return {"status": "ok"}
 
 
+@router.put("/playlist/{playlist_id}/rename")
+async def rename_playlist(playlist_id: str, req: CreatePlaylistRequest, user: dict = Depends(auth.get_current_user)):
+    """Rename a playlist."""
+    ok = await library.rename_playlist(playlist_id, req.name)
+    if not ok:
+        raise HTTPException(500, "Failed to rename playlist")
+    return {"status": "ok"}
+
+
 @router.put("/playlist/{playlist_id}/reorder")
 async def reorder_playlist(playlist_id: str, req: AddTracksByIdRequest, user: dict = Depends(auth.get_current_user)):
     """Reorder playlist tracks. Receives full ordered list of song_ids."""

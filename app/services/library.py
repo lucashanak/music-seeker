@@ -288,6 +288,17 @@ async def remove_track_by_name(playlist_id: str, name: str, artist: str) -> bool
     return False
 
 
+async def rename_playlist(playlist_id: str, name: str) -> bool:
+    """Rename a Navidrome playlist."""
+    if not NAVIDROME_PASSWORD or not name:
+        return False
+    async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
+        resp = await client.get("/rest/updatePlaylist", params=_params(playlistId=playlist_id, name=name))
+        resp.raise_for_status()
+        sr = resp.json().get("subsonic-response", {})
+        return sr.get("status") == "ok"
+
+
 async def reorder_playlist(playlist_id: str, song_ids: list[str]) -> bool:
     """Reorder a playlist by removing all tracks and re-adding in new order."""
     if not NAVIDROME_PASSWORD or not song_ids:

@@ -132,6 +132,57 @@ export function init() {
     }
   });
 
+  // Rename Playlist
+  const renameBtn = $('#renameLibPlaylist');
+  if (renameBtn) renameBtn.addEventListener('click', async () => {
+    if (!currentLibPlaylistId) return;
+    const name = prompt('Rename playlist:', currentLibPlaylistName);
+    if (!name || !name.trim() || name.trim() === currentLibPlaylistName) return;
+    try {
+      await apiJson(`/api/library/playlist/${currentLibPlaylistId}/rename`, {
+        method: 'PUT',
+        body: { name: name.trim() },
+      });
+      currentLibPlaylistName = name.trim();
+      $('#libDetailName').textContent = name.trim();
+      if (store.playlistMode && store.playlistMode.id === currentLibPlaylistId) {
+        store.playlistMode.name = name.trim();
+      }
+      libraryCache = null;
+      showToast('Playlist renamed');
+    } catch (e) {
+      showToast('Failed to rename');
+    }
+  });
+
+  // Duplicate Playlist
+  const dupBtn = $('#duplicateLibPlaylist');
+  if (dupBtn) dupBtn.addEventListener('click', async () => {
+    if (!currentLibPlaylistId || !currentLibPlaylistTracks.length) return;
+    const name = prompt('Duplicate as:', currentLibPlaylistName + ' (copy)');
+    if (!name || !name.trim()) return;
+    try {
+      // Create new playlist
+      await apiJson('/api/library/playlist', { method: 'POST', body: { name: name.trim() } });
+      // Find new playlist ID
+      const data = await apiJson('/api/library/playlists');
+      const pl = (data.playlists || []).find(p => p.name === name.trim());
+      if (!pl) throw new Error('Playlist not created');
+      // Add all tracks
+      const songIds = currentLibPlaylistTracks.map(t => t.id).filter(Boolean);
+      if (songIds.length) {
+        await apiJson(`/api/library/playlist/${pl.id}/tracks`, {
+          method: 'PUT',
+          body: { song_ids: songIds },
+        });
+      }
+      libraryCache = null;
+      showToast(`Duplicated as "${name.trim()}" (${songIds.length} tracks)`);
+    } catch (e) {
+      showToast('Failed to duplicate');
+    }
+  });
+
   // New Playlist
   const newBtn = $('#newLibPlaylist');
   if (newBtn) newBtn.addEventListener('click', async () => {
