@@ -517,18 +517,24 @@
     </div>
   </details>
   <details class="setting-section" id="desktopAppSection">
-    <summary class="setting-section-title">Desktop App</summary>
+    <summary class="setting-section-title">Native Apps</summary>
     <div class="setting-section-body">
       <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">
-        Run MusicSeeker as a standalone macOS app with its own window and dock icon.
+        Run MusicSeeker as a standalone app with its own window.
         The app connects to the server — no updates needed when the backend changes.
       </p>
-      <a href="https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.dmg"
-         class="btn-save" style="text-decoration:none;display:inline-block;text-align:center;">
-        Download for macOS (.dmg)
-      </a>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <a href="https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.dmg"
+           class="btn-save" style="text-decoration:none;display:inline-block;text-align:center;">
+          macOS (.dmg)
+        </a>
+        <a href="https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.apk"
+           class="btn-save" style="text-decoration:none;display:inline-block;text-align:center;">
+          Android (.apk)
+        </a>
+      </div>
       <p style="font-size:11px;color:var(--text-muted);margin-top:8px;">
-        Requires macOS 10.15+. Built with Tauri.
+        macOS 10.15+ / Android 7.0+. Built with Tauri.
       </p>
     </div>
   </details>

@@ -1,10 +1,8 @@
-name: Build Desktop App
+name: Build Apps
 
 on:
   workflow_dispatch:
   push:
-    paths:
-      - 'desktop/**'
     tags:
       - 'v*'
 
@@ -29,12 +27,10 @@ jobs:
         run: |
           brew install librsvg
           cd desktop/src-tauri/icons
-          # Generate PNG at various sizes
           for size in 32 128 256 512 1024; do
             rsvg-convert -w $size -h $size icon.svg > icon_${size}.png
           done
           cp icon_512.png icon.png
-          # Generate .icns for macOS
           mkdir -p icon.iconset
           cp icon_32.png icon.iconset/icon_16x16@2x.png
           cp icon_128.png icon.iconset/icon_128x128.png
@@ -69,3 +65,74 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: desktop/src-tauri/target/release/bundle/dmg/MusicSeeker.dmg
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Generate icons from SVG
+        run: |
+          sudo apt-get install -y librsvg2-bin
+          cd desktop/src-tauri/icons
+          for size in 32 128 256 512 1024; do
+            rsvg-convert -w $size -h $size icon.svg > icon_${size}.png
+          done
+          cp icon_512.png icon.png
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm install
+
+      - name: Init Android project
+        working-directory: desktop
+        run: npx tauri android init
+
+      - name: Build Android APK
+        working-directory: desktop
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: npx tauri android build --apk
+
+      - name: Find and rename APK
+        run: |
+          find desktop/src-tauri/gen/android -name "*.apk" -type f | head -5
+          APK=$(find desktop/src-tauri/gen/android -name "*universal*.apk" -o -name "*release*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            APK=$(find desktop/src-tauri/gen/android -name "*.apk" | head -1)
+          fi
+          cp "$APK" desktop/MusicSeeker.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicSeeker-Android
+          path: desktop/MusicSeeker.apk
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/MusicSeeker.apk

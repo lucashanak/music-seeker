@@ -31,6 +31,9 @@
     ],
     "macOS": {
       "minimumSystemVersion": "10.15"
+    },
+    "android": {
+      "minSdkVersion": 24
     }
   }
 }
