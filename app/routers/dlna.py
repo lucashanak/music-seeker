@@ -41,14 +41,14 @@ async def scan_devices(user: dict = Depends(auth.get_current_user)):
 
 @router.post("/cast")
 async def cast_to_device(req: CastRequest, user: dict = Depends(auth.get_current_user)):
+    import asyncio
     # Use the user's token for stream authentication
     token = auth._create_token(user["username"], user.get("admin", False))
-    ok = await dlna.cast_to_device(
+    # Non-blocking: cast runs in background, UI doesn't freeze
+    asyncio.create_task(dlna.cast_to_device(
         req.device_id, req.name, req.artist, token,
         album=req.album, image=req.image, duration_ms=req.duration_ms,
-    )
-    if not ok:
-        raise HTTPException(500, "Failed to cast to device")
+    ))
     return {"status": "casting"}
 
 
