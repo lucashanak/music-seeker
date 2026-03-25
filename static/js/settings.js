@@ -473,10 +473,15 @@ export function init() {
   });
 
   // Clear Cache & Reload
-  $('#clearCacheBtn').addEventListener('click', () => {
-    localStorage.clear();
-    sessionStorage.clear();
-    caches.keys().then(ks => Promise.all(ks.map(k => caches.delete(k)))).then(() => location.reload(true));
+  $('#clearCacheBtn').addEventListener('click', async () => {
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    } catch(e) {}
+    // Force bypass cache by appending cache-busting param
+    window.location.href = window.location.origin + '/?_=' + Date.now();
   });
 
   // Disk Usage
