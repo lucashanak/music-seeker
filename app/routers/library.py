@@ -4,7 +4,7 @@ from fastapi.responses import Response
 import asyncio
 
 from app.models import CreatePlaylistRequest, AddTracksByIdRequest, RemoveTracksRequest, AddTrackByNameRequest
-from app.services import auth, library, downloader
+from app.services import auth, library, downloader, player
 from app.services.jobs import create_job
 
 router = APIRouter(prefix="/api/library", tags=["library"])
@@ -98,6 +98,49 @@ async def add_and_download(playlist_id: str, req: AddTrackByNameRequest, user: d
     )
     asyncio.create_task(downloader.run_download(job))
     return {"status": "downloading", "job_id": job.id}
+
+
+@router.post("/track/delete")
+async def delete_track(req: AddTrackByNameRequest, user: dict = Depends(auth.get_current_user)):
+    """Delete a track file from disk. Returns playlists it belongs to for confirmation."""
+    # Check which playlists contain this track
+    playlists = await library.get_playlists()
+    in_playlists = []
+    for pl in playlists:
+        detail = await library.get_playlist(pl["id"])
+        if not detail:
+            continue
+        for t in detail["tracks"]:
+            if library._matches(t.get("name", ""), req.name) and library._artist_matches(t.get("artist", ""), req.artist):
+                in_playlists.append({"id": pl["id"], "name": pl["name"]})
+                break
+
+    # Delete the file
+    ok = player.delete_track_file(req.name, req.artist)
+    if not ok:
+        raise HTTPException(404, "Track file not found")
+
+    # Trigger Navidrome scan to update index
+    await downloader._trigger_navidrome_scan()
+
+    return {"status": "deleted", "in_playlists": in_playlists}
+
+
+@router.post("/track/check-playlists")
+async def check_track_playlists(req: AddTrackByNameRequest, user: dict = Depends(auth.get_current_user)):
+    """Check which playlists contain a track (for delete confirmation)."""
+    playlists = await library.get_playlists()
+    in_playlists = []
+    for pl in playlists:
+        detail = await library.get_playlist(pl["id"])
+        if not detail:
+            continue
+        for t in detail["tracks"]:
+            if library._matches(t.get("name", ""), req.name) and library._artist_matches(t.get("artist", ""), req.artist):
+                in_playlists.append({"id": pl["id"], "name": pl["name"]})
+                break
+    has_file = player.find_track_file(req.name, req.artist) is not None
+    return {"has_file": has_file, "in_playlists": in_playlists}
 
 
 @router.delete("/playlist/{playlist_id}")

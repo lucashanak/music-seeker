@@ -63,6 +63,32 @@ def _resolve_local_file(name: str, artist: str) -> dict | None:
     return None
 
 
+def find_track_file(name: str, artist: str) -> str | None:
+    """Find the file path of a downloaded track. Returns path or None."""
+    result = _resolve_local_file(name, artist)
+    return result["path"] if result else None
+
+
+def delete_track_file(name: str, artist: str) -> bool:
+    """Delete a downloaded track file from disk."""
+    path = find_track_file(name, artist)
+    if not path:
+        return False
+    try:
+        os.remove(path)
+        # Clean up empty parent dirs
+        parent = Path(path).parent
+        while parent != MUSIC_DIR and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+        # Invalidate URL cache
+        key = _cache_key(name, artist)
+        _url_cache.pop(key, None)
+        return True
+    except Exception:
+        return False
+
+
 async def resolve_stream(name: str, artist: str) -> dict | None:
     """Resolve a track to a streamable source. Local file > Navidrome > YouTube."""
     # Check cache first

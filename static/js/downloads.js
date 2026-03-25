@@ -47,6 +47,13 @@ export function openModal(item) {
     dlBtn.disabled = false;
     dlBtn.textContent = 'Download';
   }
+  // Show delete button for tracks already in library
+  const delBtn = $('#modalDeleteTrack');
+  if (delBtn) {
+    delBtn.style.display = (item.inLibrary && (type === 'track')) ? '' : 'none';
+    delBtn.disabled = false;
+    delBtn.textContent = 'Delete from Library';
+  }
   $('#downloadModal').classList.add('open');
 
   // Update radio/favorite buttons visibility
@@ -277,6 +284,39 @@ export function init() {
     const { resolveItemTracks, addToQueue } = await import('./player.js');
     const tracks = await resolveItemTracks(item);
     if (tracks.length) addToQueue(tracks);
+  });
+
+  // Modal delete track
+  $('#modalDeleteTrack').addEventListener('click', async () => {
+    if (!store.modalItem) return;
+    const item = store.modalItem;
+    const btn = $('#modalDeleteTrack');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    try {
+      // Check playlists first
+      const check = await apiJson('/api/library/track/check-playlists', {
+        method: 'POST',
+        body: { name: item.name || '', artist: item.artist || '' },
+      });
+      let msg = `Delete "${item.artist} - ${item.name}" from library?`;
+      if (check.in_playlists && check.in_playlists.length) {
+        msg += `\n\nThis track is in ${check.in_playlists.length} playlist(s):\n` +
+          check.in_playlists.map(p => `• ${p.name}`).join('\n');
+      }
+      if (!confirm(msg)) { btn.disabled = false; btn.textContent = 'Delete from Library'; return; }
+      btn.textContent = 'Deleting...';
+      await apiJson('/api/library/track/delete', {
+        method: 'POST',
+        body: { name: item.name || '', artist: item.artist || '' },
+      });
+      showToast('Track deleted');
+      closeModal();
+    } catch (e) {
+      showToast(e.message || 'Failed to delete');
+      btn.disabled = false;
+      btn.textContent = 'Delete from Library';
+    }
   });
 
   // Modal radio button
