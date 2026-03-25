@@ -83,6 +83,7 @@ def get_public() -> dict:
         "podcast_provider": _settings["podcast_provider"],
         "max_concurrent": _settings["max_concurrent"],
         "recommendation_source": _settings["recommendation_source"],
+        "dlna_renderer_url": _settings["dlna_renderer_url"],
     }
 
 
