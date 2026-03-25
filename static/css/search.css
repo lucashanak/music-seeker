@@ -1,7 +1,7 @@
 /* ── Search ── */
 .search-container {
   display: flex; flex-direction: column; gap: 14px; margin-bottom: 28px;
-  position: sticky; top: var(--nav-height); z-index: 90;
+  position: sticky; top: calc(var(--nav-height) + env(safe-area-inset-top, 0px)); z-index: 90;
   background: var(--bg); padding-top: 8px; padding-bottom: 8px;
 }
 .search-row {

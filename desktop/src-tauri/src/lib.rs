@@ -56,6 +56,38 @@ pub fn run() {
                 });
             }
 
+            // On mobile: inject a refresh/clear-cache button into the Settings page
+            #[cfg(mobile)]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.eval(r#"
+                        document.addEventListener('DOMContentLoaded', function() {
+                            // Wait for settings page to exist, then inject refresh button
+                            const observer = new MutationObserver(function() {
+                                const section = document.getElementById('desktopAppSection');
+                                if (section && !document.getElementById('tauriRefreshBtn')) {
+                                    const body = section.querySelector('.setting-section-body');
+                                    if (body) {
+                                        const btn = document.createElement('button');
+                                        btn.id = 'tauriRefreshBtn';
+                                        btn.className = 'btn-save';
+                                        btn.style.cssText = 'margin-top:12px;width:100%;';
+                                        btn.textContent = 'Clear Cache & Reload';
+                                        btn.onclick = function() {
+                                            localStorage.clear();
+                                            sessionStorage.clear();
+                                            caches.keys().then(ks => Promise.all(ks.map(k => caches.delete(k)))).then(() => location.reload(true));
+                                        };
+                                        body.appendChild(btn);
+                                    }
+                                }
+                            });
+                            observer.observe(document.body, { childList: true, subtree: true });
+                        });
+                    "#);
+                }
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

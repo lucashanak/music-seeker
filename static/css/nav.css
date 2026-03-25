@@ -5,7 +5,8 @@ nav {
   backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
   border-bottom: 1px solid rgba(42,42,61,.6);
   padding: 0 28px;
-  display: flex; align-items: center; height: var(--nav-height); gap: 6px;
+  padding-top: env(safe-area-inset-top, 0);
+  display: flex; align-items: center; height: calc(var(--nav-height) + env(safe-area-inset-top, 0px)); gap: 6px;
 }
 
 .nav-btn {
