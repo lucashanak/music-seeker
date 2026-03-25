@@ -1,7 +1,7 @@
 // library.js — Navidrome library playlists management
 
 import { store } from './store.js';
-import { $, $$, esc, showToast, historyBack } from './utils.js';
+import { $, $$, esc, showToast, historyBack, showPlaylistPicker } from './utils.js';
 import { apiJson } from './api.js';
 import { renderResults } from './search.js';
 
@@ -180,6 +180,35 @@ export function init() {
       showToast(`Duplicated as "${name.trim()}" (${songIds.length} tracks)`);
     } catch (e) {
       showToast('Failed to duplicate');
+    }
+  });
+
+  // Merge Playlists
+  const mergeBtn = $('#mergeLibPlaylist');
+  if (mergeBtn) mergeBtn.addEventListener('click', async () => {
+    if (!currentLibPlaylistId) return;
+    try {
+      const data = await apiJson('/api/library/playlists');
+      const others = (data.playlists || []).filter(p => p.id !== currentLibPlaylistId);
+      if (!others.length) { showToast('No other playlists'); return; }
+      const picked = await showPlaylistPicker(others);
+      if (!picked || !picked.length) return;
+      let added = 0;
+      for (const pl of picked) {
+        const plData = await apiJson(`/api/library/playlist/${pl.id}`);
+        const songIds = (plData.tracks || []).map(t => t.id).filter(Boolean);
+        if (songIds.length) {
+          await apiJson(`/api/library/playlist/${currentLibPlaylistId}/tracks`, {
+            method: 'PUT',
+            body: { song_ids: songIds },
+          });
+          added += songIds.length;
+        }
+      }
+      showToast(`Merged ${added} tracks from ${picked.length} playlist(s)`);
+      loadLibraryDetail(currentLibPlaylistId);
+    } catch (e) {
+      showToast('Failed to merge');
     }
   });
 
