@@ -38,6 +38,10 @@ export function renderQueueInto(el) {
       if (idx !== store.playerIndex) { store.playerIndex = idx; loadAndPlay(); }
     });
   });
+  // Scroll to now-playing track
+  const nowPlaying = el.querySelector('.now-playing');
+  if (nowPlaying) nowPlaying.scrollIntoView({ block: 'center', behavior: 'instant' });
+
   $$('.qi-remove', el).forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
