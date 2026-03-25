@@ -25,8 +25,7 @@ body.player-active .player-bar { display: flex; }
 .player-controls .player-play-btn { width: 42px; height: 42px; color: #000; background: var(--accent); border-radius: 50%; }
 .player-controls .player-play-btn:hover { box-shadow: 0 0 16px var(--accent-glow); transform: scale(1.05); background: var(--accent); color: #000; }
 .player-progress-wrap { flex: 1 1 0; display: flex; align-items: center; gap: 8px; min-width: 100px; max-width: 600px; }
-.player-progress-bar { flex: 1; height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; cursor: pointer; position: relative; }
-.player-progress-bar::before { content: ''; position: absolute; top: -10px; bottom: -10px; left: 0; right: 0; }
+.player-progress-bar { flex: 1; height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; cursor: pointer; position: relative; padding: 10px 0; background-clip: content-box; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 .player-progress-bar:hover { height: 6px; }
 .player-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; width: 0%; transition: width .1s linear; }
 .player-time { font-size: 10px; color: var(--text-dim); flex-shrink: 0; min-width: 32px; text-align: center; }
@@ -63,8 +62,7 @@ body.player-active .player-bar { display: flex; }
 .fp-title { font-size: 20px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
 .fp-artist { font-size: 14px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fp-progress { width: 100%; padding: 20px 32px 0; flex-shrink: 0; }
-.fp-progress-bar { width: 100%; height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; cursor: pointer; position: relative; }
-.fp-progress-bar::before { content: ''; position: absolute; top: -10px; bottom: -10px; left: 0; right: 0; }
+.fp-progress-bar { width: 100%; height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; cursor: pointer; position: relative; padding: 10px 0; background-clip: content-box; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 .fp-progress-bar:hover { height: 6px; }
 .fp-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; width: 0%; transition: width .1s linear; }
 .fp-times { display: flex; justify-content: space-between; margin-top: 8px; font-size: 11px; color: var(--text-dim); }

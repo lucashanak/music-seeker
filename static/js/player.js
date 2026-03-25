@@ -140,6 +140,19 @@ export function hidePlayerBar() {
 
 // ── Next / Prev ──
 export function nextTrack() {
+  // If playing a virtual rec track, advance to next rec
+  import('./recommendations.js').then(m => {
+    if (m.isPlayingRec()) {
+      m.playNextRec().then(filled => {
+        if (!filled) { audio.pause(); updatePlayPauseIcon(false); }
+      });
+      return;
+    }
+    _nextTrackInQueue();
+  });
+}
+
+function _nextTrackInQueue() {
   if (store.shuffleEnabled && store.playerQueue.length > 1) {
     let next;
     do { next = Math.floor(Math.random() * store.playerQueue.length); } while (next === store.playerIndex);
@@ -405,12 +418,16 @@ export function init() {
     store.playerVolume = e.target.value / 100;
     audio.volume = store.playerVolume;
   });
-  $('#playerProgressBar').addEventListener('click', (e) => {
+  function _seekFromEvent(bar, e) {
     if (!audio.duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pct = (e.clientX - rect.left) / rect.width;
+    const rect = bar.getBoundingClientRect();
+    const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+    const pct = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
     audio.currentTime = pct * audio.duration;
-  });
+  }
+  const miniBar = $('#playerProgressBar');
+  miniBar.addEventListener('click', (e) => _seekFromEvent(miniBar, e));
+  miniBar.addEventListener('touchstart', (e) => { e.preventDefault(); _seekFromEvent(miniBar, e); }, { passive: false });
 
   // Download current track
   $('#playerDownloadBtn').addEventListener('click', async () => {

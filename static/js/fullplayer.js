@@ -112,12 +112,16 @@ export function init() {
   $('#fpNext').addEventListener('click', () => nextTrack());
 
   // Full player seek
-  $('#fpProgressBar').addEventListener('click', (e) => {
+  function _fpSeek(e) {
     if (!audio.duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pct = (e.clientX - rect.left) / rect.width;
+    const bar = $('#fpProgressBar');
+    const rect = bar.getBoundingClientRect();
+    const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+    const pct = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
     audio.currentTime = pct * audio.duration;
-  });
+  }
+  $('#fpProgressBar').addEventListener('click', _fpSeek);
+  $('#fpProgressBar').addEventListener('touchstart', (e) => { e.preventDefault(); _fpSeek(e); }, { passive: false });
 
   // Full player volume
   $('#fpVolume').addEventListener('input', (e) => {
