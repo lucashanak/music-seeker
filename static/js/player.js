@@ -457,6 +457,80 @@ export function init() {
     finally { setTimeout(() => { btn.style.color = ''; }, 1000); }
   });
 
+  // Cast button
+  $('#playerCastBtn').addEventListener('click', async () => {
+    if (store.castDevice) {
+      // Already casting — stop and return to local
+      await apiJson('/api/dlna/stop', { method: 'POST' }).catch(() => {});
+      store.castDevice = null;
+      clearInterval(store.castPollTimer);
+      store.castPollTimer = null;
+      $('#playerCastBtn').style.color = '';
+      showToast('Cast stopped');
+      return;
+    }
+    try {
+      const data = await apiJson('/api/dlna/devices');
+      const devices = data.devices || [];
+      if (!devices.length) { showToast('No DLNA devices found'); return; }
+      // Simple picker for single or few devices
+      if (devices.length === 1) {
+        _castToDevice(devices[0]);
+      } else {
+        const names = devices.map((d, i) => `${i + 1}. ${d.name}`).join('\n');
+        const choice = prompt('Cast to:\n' + names + '\n\nEnter number:');
+        if (!choice) return;
+        const idx = parseInt(choice) - 1;
+        if (idx >= 0 && idx < devices.length) _castToDevice(devices[idx]);
+      }
+    } catch (e) {
+      showToast('Cast failed: ' + (e.message || ''));
+    }
+  });
+
+  async function _castToDevice(device) {
+    const item = store.playerQueue[store.playerIndex];
+    if (!item) return;
+    try {
+      await apiJson('/api/dlna/cast', { method: 'POST', body: {
+        device_id: device.id, name: item.name || '', artist: item.artist || '',
+        album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
+      }});
+      store.castDevice = device;
+      audio.pause();
+      $('#playerCastBtn').style.color = 'var(--accent)';
+      showToast(`Casting to ${device.name}`);
+      _startCastPoll();
+    } catch (e) {
+      showToast('Cast failed: ' + (e.message || ''));
+    }
+  }
+
+  function _startCastPoll() {
+    clearInterval(store.castPollTimer);
+    store.castPollTimer = setInterval(async () => {
+      if (!store.castDevice) { clearInterval(store.castPollTimer); return; }
+      try {
+        const status = await apiJson('/api/dlna/status');
+        if (!status.active) { store.castDevice = null; $('#playerCastBtn').style.color = ''; clearInterval(store.castPollTimer); return; }
+        const dur = status.duration_seconds || 0;
+        const pos = status.position_seconds || 0;
+        if (dur > 0) {
+          const pct = (pos / dur) * 100;
+          $('#playerProgressFill').style.width = pct + '%';
+          const fpFill = $('#fpProgressFill');
+          if (fpFill) fpFill.style.width = pct + '%';
+        }
+        $('#playerTimeCurrent').textContent = fmtTime(pos);
+        $('#playerTimeTotal').textContent = fmtTime(dur);
+        const fpCur = $('#fpTimeCurrent');
+        if (fpCur) fpCur.textContent = fmtTime(pos);
+        const fpTot = $('#fpTimeTotal');
+        if (fpTot) fpTot.textContent = fmtTime(dur);
+      } catch {}
+    }, 2000);
+  }
+
   // Play button on cards (event delegation)
   document.addEventListener('click', async (e) => {
     const btn = e.target.closest('.card-play-btn');

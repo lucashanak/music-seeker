@@ -106,6 +106,10 @@ export const store = {
   // ── Playlist Mode ──
   playlistMode: null, // { id, name } or null
 
+  // ── DLNA Cast ──
+  castDevice: null, // { id, name } or null
+  castPollTimer: null,
+
   // ── Full Player ──
   fullPlayerOpen: false,
   shuffleEnabled: false,

@@ -50,6 +50,7 @@ class SettingsUpdate(BaseModel):
     slskd_api_key: str | None = None
     recommendation_source: str | None = None
     spotify_refresh_token: str | None = None
+    dlna_renderer_url: str | None = None
 
 
 class CreateUserRequest(BaseModel):

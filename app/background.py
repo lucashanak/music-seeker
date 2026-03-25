@@ -71,3 +71,6 @@ async def startup():
     auth.init_admin(ADMIN_USER, ADMIN_PASS)
     asyncio.create_task(_podcast_auto_sync())
     asyncio.create_task(_favorites_release_check())
+    # Start DLNA renderer discovery
+    from app.services import dlna
+    await dlna.start_discovery()

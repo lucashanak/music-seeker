@@ -19,6 +19,7 @@ _defaults = {
     "slskd_api_key": os.environ.get("SLSKD_API_KEY", ""),
     "recommendation_source": os.environ.get("RECOMMENDATION_SOURCE", "combined"),
     "spotify_refresh_token": "",
+    "dlna_renderer_url": os.environ.get("DLNA_RENDERER_URL", ""),
 }
 
 _settings = {**_defaults}
