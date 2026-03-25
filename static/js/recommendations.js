@@ -58,7 +58,7 @@ async function loadRecs() {
   try {
     const data = await apiJson('/api/player/recommendations', {
       method: 'POST',
-      body: { tracks: store.playerQueue.slice(-20), limit: 15 },
+      body: { tracks: store.playerQueue.slice(-20), limit: 10 },
     });
     recsCache = data.tracks || [];
     recsDirty = false;
