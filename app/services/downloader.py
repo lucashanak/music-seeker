@@ -326,6 +326,20 @@ async def _run_ytdlp(job: Job):
         job.progress = int((i - 1) / total * 100)
 
         image = track.get("image", "")
+        # Resolve cover art if missing (e.g. tracks added via add-and-download)
+        if not image and not is_podcast and (name or artist):
+            try:
+                from app.services import search_providers
+                from app.services.settings import _settings
+                provider = _settings.get("search_provider", "deezer")
+                fallback = _settings.get("search_fallback", "")
+                resolved = await search_providers.resolve(name, artist, "track", provider=provider, fallback=fallback)
+                if resolved:
+                    image = resolved.get("image", "")
+                    if not album:
+                        album = resolved.get("album", album)
+            except Exception:
+                pass
         ok = await _download_track_ytdlp(artist, name, album, job.format, image, is_podcast=is_podcast, username=job.username)
         if not ok:
             failed.append(f"{artist} - {name}")
