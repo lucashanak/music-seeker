@@ -1,13 +1,52 @@
-// recommendations.js — Smart recommendations in full player queue side + auto-queue
+// recommendations.js — Virtual recommendation queue (plays after main queue ends)
 
 import { store } from './store.js';
-import { $, $$, esc, showToast } from './utils.js';
+import { $, $$, esc, showToast, showPlaylistPicker } from './utils.js';
 import { apiJson } from './api.js';
 
 let recsCache = [];
 let recsLoading = false;
 let recsDirty = true;
-export let autoQueueEnabled = false;
+let recsPlayingIdx = -1; // -1 = not playing from recs
+
+export function isPlayingRec() { return recsPlayingIdx >= 0; }
+
+// ── Play next rec (called from player.js when queue ends) ──
+export async function playNextRec() {
+  // If already playing recs, advance to next
+  if (recsPlayingIdx >= 0) {
+    recsPlayingIdx++;
+  } else {
+    recsPlayingIdx = 0;
+  }
+
+  // Need to load recs?
+  if (!recsCache.length || recsPlayingIdx >= recsCache.length) {
+    if (store.playerQueue.length) {
+      recsDirty = true;
+      await loadRecs();
+      recsPlayingIdx = 0;
+    }
+    if (!recsCache.length) {
+      recsPlayingIdx = -1;
+      return false;
+    }
+  }
+
+  const track = recsCache[recsPlayingIdx];
+  if (!track) { recsPlayingIdx = -1; return false; }
+
+  // Play directly via player without adding to queue
+  import('./player.js').then(m => m.playRecTrack(track));
+  renderRecs();
+  return true;
+}
+
+// ── Stop virtual rec playback (when user interacts with queue) ──
+export function stopRecPlayback() {
+  recsPlayingIdx = -1;
+  renderRecs();
+}
 
 // ── Load Recommendations ──
 async function loadRecs() {
@@ -45,7 +84,8 @@ function renderRecs() {
     return;
   }
   el.innerHTML = recsCache.map((t, i) => `
-    <div class="rec-item" data-rec-idx="${i}">
+    <div class="rec-item${i === recsPlayingIdx ? ' rec-playing' : ''}" data-rec-idx="${i}">
+      <span class="rec-num">${i === recsPlayingIdx ? '&#9654;' : ''}</span>
       <img class="rec-img" src="${t.image || ''}" alt="" loading="lazy">
       <div class="rec-info">
         <div class="rec-name">${esc(t.name || '')}</div>
@@ -59,17 +99,30 @@ function renderRecs() {
       </div>
     </div>`).join('');
 
+  // Click on rec = play it directly (virtual, not added to queue)
+  $$('.rec-item', el).forEach(item => {
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.rec-add-queue') || e.target.closest('.rec-add-playlist')) return;
+      const idx = parseInt(item.dataset.recIdx);
+      const track = recsCache[idx];
+      if (!track) return;
+      recsPlayingIdx = idx;
+      import('./player.js').then(m => m.playRecTrack(track));
+      renderRecs();
+    });
+  });
+
+  // "+" = add to actual queue
   $$('.rec-add-queue', el).forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const track = recsCache[btn.dataset.recIdx];
       if (!track) return;
       import('./player.js').then(m => m.addToQueue([track]));
-      recsCache.splice(parseInt(btn.dataset.recIdx), 1);
-      renderRecs();
     });
   });
 
+  // Playlist icon = add to Navidrome playlist
   $$('.rec-add-playlist', el).forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -79,16 +132,13 @@ function renderRecs() {
         const data = await apiJson('/api/library/playlists');
         const playlists = data.playlists || [];
         if (!playlists.length) { showToast('No Navidrome playlists'); return; }
-        const names = playlists.map(p => p.name);
-        const choice = prompt('Add to playlist:\n' + names.map((n, i) => `${i + 1}. ${n}`).join('\n') + '\n\nEnter number:');
-        if (!choice) return;
-        const idx = parseInt(choice) - 1;
-        if (idx < 0 || idx >= playlists.length) return;
-        await apiJson(`/api/library/playlist/${playlists[idx].id}/add-by-name`, {
+        const picked = await showPlaylistPicker(playlists);
+        if (!picked) return;
+        await apiJson(`/api/library/playlist/${picked.id}/add-by-name`, {
           method: 'POST',
           body: { name: track.name, artist: track.artist, album: track.album || '' },
         });
-        showToast(`Added to ${playlists[idx].name}`);
+        showToast(`Added to ${picked.name}`);
       } catch (e) {
         showToast(e.message || 'Failed to add to playlist');
       }
@@ -108,37 +158,10 @@ export function onPanelOpened() {
   }
 }
 
-// ── Auto-queue: called when queue runs out ──
-export async function autoFillQueue() {
-  if (!autoQueueEnabled || recsLoading) return false;
-  if (recsCache.length) {
-    const track = recsCache.shift();
-    import('./player.js').then(m => m.addToQueue([track], true));
-    renderRecs();
-    return true;
-  }
-  if (store.playerQueue.length) {
-    recsDirty = true;
-    await loadRecs();
-    if (recsCache.length) {
-      const track = recsCache.shift();
-      import('./player.js').then(m => m.addToQueue([track], true));
-      renderRecs();
-      return true;
-    }
-  }
-  return false;
-}
-
 // ── Mark cache as dirty on queue change ──
 export function onQueueChanged() {
   recsDirty = true;
 }
 
 // ── Init ──
-export function init() {
-  const el = $('#autoQueueToggle');
-  if (el) el.addEventListener('change', (e) => {
-    autoQueueEnabled = e.target.checked;
-  });
-}
+export function init() {}

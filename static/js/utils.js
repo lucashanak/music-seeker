@@ -83,3 +83,46 @@ export function initVirtualKeyboard() {
     visualViewport.addEventListener('scroll', adjust);
   }
 }
+
+// ── Playlist Picker Modal ──
+export function showPlaylistPicker(playlists) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay open';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);';
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:var(--bg-card);border-radius:16px;padding:20px;min-width:280px;max-width:400px;max-height:70vh;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.5);';
+    modal.innerHTML = `
+      <div style="font-size:15px;font-weight:600;margin-bottom:14px;">Add to playlist</div>
+      <div style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:4px;">
+        ${playlists.map((p, i) => `
+          <button class="pl-pick-btn" data-pl-idx="${i}" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:none;background:none;color:var(--text);border-radius:10px;cursor:pointer;text-align:left;transition:background .15s;">
+            ${p.image ? `<img src="${p.image}" style="width:36px;height:36px;border-radius:6px;object-fit:cover;">` : `<div style="width:36px;height:36px;border-radius:6px;background:var(--bg-elevated);display:flex;align-items:center;justify-content:center;font-size:16px;">♪</div>`}
+            <div style="min-width:0;flex:1;">
+              <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(p.name)}</div>
+              <div style="font-size:11px;color:var(--text-muted);">${p.songCount || 0} tracks</div>
+            </div>
+          </button>`).join('')}
+      </div>
+      <button class="pl-pick-cancel" style="margin-top:12px;padding:10px;border:1px solid var(--border);background:none;color:var(--text-muted);border-radius:10px;cursor:pointer;font-size:13px;">Cancel</button>
+    `;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay || e.target.closest('.pl-pick-cancel')) {
+        overlay.remove();
+        resolve(null);
+      }
+      const btn = e.target.closest('.pl-pick-btn');
+      if (btn) {
+        overlay.remove();
+        resolve(playlists[parseInt(btn.dataset.plIdx)]);
+      }
+    });
+    // Hover style
+    modal.querySelectorAll('.pl-pick-btn').forEach(b => {
+      b.addEventListener('mouseenter', () => b.style.background = 'rgba(255,255,255,.06)');
+      b.addEventListener('mouseleave', () => b.style.background = 'none');
+    });
+  });
+}

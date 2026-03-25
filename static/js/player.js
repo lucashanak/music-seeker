@@ -33,6 +33,8 @@ export function addToQueue(items, playNow = false) {
 // ── Load and Play Current Track ──
 export function loadAndPlay() {
   if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) return;
+  // Stop any virtual rec playback — we're back in the real queue
+  import('./recommendations.js').then(m => m.stopRecPlayback());
   const item = store.playerQueue[store.playerIndex];
   $('#playerImg').src = item.image || '';
   $('#playerTitle').textContent = item.name || '';
@@ -152,21 +154,65 @@ export function nextTrack() {
       }).finally(() => { store.radioLoading = false; });
     }
   } else {
-    // Try auto-queue from recommendations
+    // Queue ended — continue with virtual recommendations
     import('./recommendations.js').then(m => {
-      if (m.autoQueueEnabled) {
-        m.autoFillQueue().then(filled => {
-          if (!filled) {
-            audio.pause();
-            updatePlayPauseIcon(false);
-          }
-        });
-      } else {
-        audio.pause();
-        updatePlayPauseIcon(false);
-      }
+      m.playNextRec().then(filled => {
+        if (!filled) {
+          audio.pause();
+          updatePlayPauseIcon(false);
+        }
+      });
     });
   }
+}
+
+// ── Play a track from recommendations (virtual, not in queue) ──
+let _currentRecItem = null;
+export function playRecTrack(item) {
+  _currentRecItem = item;
+  $('#playerImg').src = item.image || '';
+  $('#playerTitle').textContent = item.name || '';
+  $('#playerArtist').textContent = item.artist || '';
+  $('#playerProgressFill').style.width = '0%';
+  $('#playerTimeCurrent').textContent = '0:00';
+  $('#playerTimeTotal').textContent = '0:00';
+  document.getElementById('playerBar').style.setProperty('--player-progress', '0%');
+  const fpFill = $('#fpProgressFill');
+  if (fpFill) fpFill.style.width = '0%';
+  const fpCur = $('#fpTimeCurrent');
+  if (fpCur) fpCur.textContent = '0:00';
+  const fpTot = $('#fpTimeTotal');
+  if (fpTot) fpTot.textContent = '0:00';
+  const cleanName = _decodeEntities(item.name || '');
+  const cleanArtist = _decodeEntities(item.artist || '');
+  const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
+  audio.src = `/api/player/stream?${params}`;
+  audio.load();
+  audio.play().catch(() => {});
+  showPlayerBar();
+  updatePlayPauseIcon(true);
+  // Sync full player directly
+  const fpImg = $('#fpImg');
+  if (fpImg) fpImg.src = item.image || '';
+  const fpTitle = $('#fpTitle');
+  if (fpTitle) fpTitle.textContent = item.name || '';
+  const fpArtist = $('#fpArtist');
+  if (fpArtist) fpArtist.textContent = item.artist || '';
+  updateDownloadButtons(item);
+  updateMediaSessionWith(item);
+  resolveSource(item);
+}
+
+function updateMediaSessionWith(item) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: item.name || '', artist: item.artist || '', album: item.album || '',
+    artwork: item.image ? [{ src: item.image, sizes: '300x300', type: 'image/jpeg' }] : [],
+  });
+  navigator.mediaSession.setActionHandler('play', () => audio.play());
+  navigator.mediaSession.setActionHandler('pause', () => audio.pause());
+  navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+  navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
 }
 
 export function prevTrack() {

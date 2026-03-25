@@ -26,6 +26,7 @@ body.player-active .player-bar { display: flex; }
 .player-controls .player-play-btn:hover { box-shadow: 0 0 16px var(--accent-glow); transform: scale(1.05); background: var(--accent); color: #000; }
 .player-progress-wrap { flex: 1 1 0; display: flex; align-items: center; gap: 8px; min-width: 100px; max-width: 600px; }
 .player-progress-bar { flex: 1; height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; cursor: pointer; position: relative; }
+.player-progress-bar::before { content: ''; position: absolute; top: -10px; bottom: -10px; left: 0; right: 0; }
 .player-progress-bar:hover { height: 6px; }
 .player-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; width: 0%; transition: width .1s linear; }
 .player-time { font-size: 10px; color: var(--text-dim); flex-shrink: 0; min-width: 32px; text-align: center; }
@@ -63,6 +64,7 @@ body.player-active .player-bar { display: flex; }
 .fp-artist { font-size: 14px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fp-progress { width: 100%; padding: 20px 32px 0; flex-shrink: 0; }
 .fp-progress-bar { width: 100%; height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; cursor: pointer; position: relative; }
+.fp-progress-bar::before { content: ''; position: absolute; top: -10px; bottom: -10px; left: 0; right: 0; }
 .fp-progress-bar:hover { height: 6px; }
 .fp-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; width: 0%; transition: width .1s linear; }
 .fp-times { display: flex; justify-content: space-between; margin-top: 8px; font-size: 11px; color: var(--text-dim); }
@@ -121,9 +123,11 @@ body.player-active .player-bar { display: flex; }
 .recs-list { display: flex; flex-direction: column; gap: 4px; }
 .rec-item {
   display: flex; align-items: center; gap: 10px; padding: 6px 8px;
-  border-radius: 8px; transition: background .15s; cursor: default;
+  border-radius: 8px; transition: background .15s; cursor: pointer;
 }
 .rec-item:hover { background: rgba(255,255,255,.04); }
+.rec-item.rec-playing { background: rgba(162,230,64,.08); }
+.rec-num { width: 14px; font-size: 10px; color: var(--accent); flex-shrink: 0; text-align: center; }
 .rec-img { width: 36px; height: 36px; border-radius: 6px; object-fit: cover; flex-shrink: 0; background: var(--bg-elevated); }
 .rec-info { min-width: 0; flex: 1; }
 .rec-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
