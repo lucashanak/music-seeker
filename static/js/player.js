@@ -483,11 +483,37 @@ export function init() {
     if (!item.inLibrary) setTimeout(() => $('#modalDownload').click(), 100);
   });
 
-  // Keyboard: space to play/pause (when not in input)
+  // Keyboard controls (when not in input)
   document.addEventListener('keydown', (e) => {
-    if (e.code === 'Space' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) && store.playerQueue.length) {
-      e.preventDefault();
-      if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+    if (!store.playerQueue.length && !audio.src) return;
+    switch (e.code) {
+      case 'Space':
+        e.preventDefault();
+        if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+        break;
+      case 'ArrowRight':
+        e.preventDefault();
+        nextTrack();
+        break;
+      case 'ArrowLeft':
+        e.preventDefault();
+        prevTrack();
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        store.playerVolume = Math.min(1, store.playerVolume + 0.05);
+        audio.volume = store.playerVolume;
+        $('#playerVolume').value = Math.round(store.playerVolume * 100);
+        if ($('#fpVolume')) $('#fpVolume').value = Math.round(store.playerVolume * 100);
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        store.playerVolume = Math.max(0, store.playerVolume - 0.05);
+        audio.volume = store.playerVolume;
+        $('#playerVolume').value = Math.round(store.playerVolume * 100);
+        if ($('#fpVolume')) $('#fpVolume').value = Math.round(store.playerVolume * 100);
+        break;
     }
   });
 
