@@ -71,6 +71,7 @@ export function loadAndPlay() {
   const cleanArtist = _decodeEntities(item.artist || '');
   // Cast mode: send to DLNA renderer instead of local audio
   if (store.castDevice) {
+    _castSkipAutoAdvance = true; // Suppress auto-advance from Stop→SetURI transition
     apiJson('/api/dlna/cast', { method: 'POST', body: {
       device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
       album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
@@ -549,6 +550,7 @@ export function init() {
   }
 
   let _castLastState = '';
+  let _castSkipAutoAdvance = false;
   function _startCastPoll() {
     clearInterval(store.castPollTimer);
     _castLastState = '';
@@ -574,8 +576,10 @@ export function init() {
         if (fpTot) fpTot.textContent = fmtTime(dur);
         // Detect track end: state changed from playing to stopped/no_media
         const state = (status.state || '').toLowerCase();
-        if (_castLastState.includes('playing') && (state.includes('stopped') || state.includes('no_media'))) {
-          // Auto-advance to next track
+        if (_castSkipAutoAdvance && state.includes('playing')) {
+          _castSkipAutoAdvance = false; // Reset after new track starts playing
+        }
+        if (!_castSkipAutoAdvance && _castLastState.includes('playing') && (state.includes('stopped') || state.includes('no_media'))) {
           nextTrack();
         }
         _castLastState = state;
