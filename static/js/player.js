@@ -72,6 +72,7 @@ export function loadAndPlay() {
   // Cast mode: send to DLNA renderer instead of local audio
   if (store.castDevice) {
     _castSkipAutoAdvance = true; // Suppress auto-advance from Stop→SetURI transition
+    _castTransitioning = true; // Prevent status poll from clearing castDevice during track change
     apiJson('/api/dlna/cast', { method: 'POST', body: {
       device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
       album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
@@ -158,6 +159,7 @@ export function hidePlayerBar() {
 
 // ── Next / Prev ──
 export function nextTrack() {
+  if (store.castDevice) _castTransitioning = true;
   // If playing a virtual rec track, advance to next rec
   import('./recommendations.js').then(m => {
     if (m.isPlayingRec()) {
@@ -275,7 +277,7 @@ function updateMediaSessionWith(item) {
 
 export function prevTrack() {
   if (store.castDevice) {
-    // In cast mode, always go to previous track
+    _castTransitioning = true;
     if (store.playerIndex > 0) {
       store.playerIndex--;
       loadAndPlay();
@@ -551,6 +553,7 @@ export function init() {
 
   let _castLastState = '';
   let _castSkipAutoAdvance = false;
+  let _castTransitioning = false;
   function _startCastPoll() {
     clearInterval(store.castPollTimer);
     _castLastState = '';
@@ -558,7 +561,7 @@ export function init() {
       if (!store.castDevice) { clearInterval(store.castPollTimer); return; }
       try {
         const status = await apiJson('/api/dlna/status');
-        if (!status.active) { store.castDevice = null; _syncCastButtons(''); clearInterval(store.castPollTimer); return; }
+        if (!status.active && !_castTransitioning) { store.castDevice = null; _syncCastButtons(''); clearInterval(store.castPollTimer); return; }
         const dur = status.duration_seconds || 0;
         const pos = status.position_seconds || 0;
         if (dur > 0) {
@@ -576,8 +579,9 @@ export function init() {
         if (fpTot) fpTot.textContent = fmtTime(dur);
         // Detect track end: state changed from playing to stopped/no_media
         const state = (status.state || '').toLowerCase();
-        if (_castSkipAutoAdvance && state.includes('playing')) {
-          _castSkipAutoAdvance = false; // Reset after new track starts playing
+        if (state.includes('playing')) {
+          _castSkipAutoAdvance = false;
+          _castTransitioning = false;
         }
         if (!_castSkipAutoAdvance && _castLastState.includes('playing') && (state.includes('stopped') || state.includes('no_media'))) {
           nextTrack();

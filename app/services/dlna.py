@@ -15,6 +15,8 @@ _dmr = None  # DmrDevice instance
 _listener_task = None
 _requester = None
 _factory = None
+_cast_lock = asyncio.Lock()
+_cast_generation = 0  # incremented on each cast call to cancel stale ones
 
 # Server URL for DLNA renderer to fetch audio from
 DLNA_SERVER_URL = os.environ.get("DLNA_SERVER_URL", "")
@@ -219,9 +221,9 @@ async def scan_devices() -> list[dict]:
 
 async def cast_to_device(device_id: str, name: str, artist: str, token: str,
                           album: str = "", image: str = "", duration_ms: int = 0) -> bool:
-    global _active_device, _dmr
+    global _active_device, _dmr, _cast_generation
 
-    # Find device with cached upnp_device
+    # Find device
     device = None
     for d in _devices.values():
         if d["udn"] == device_id:
@@ -230,13 +232,22 @@ async def cast_to_device(device_id: str, name: str, artist: str, token: str,
     if not device:
         return False
 
-    try:
-        from async_upnp_client.aiohttp import AiohttpRequester
-        from async_upnp_client.client_factory import UpnpFactory
-        from async_upnp_client.profiles.dlna import DmrDevice
+    # Increment generation — any older cast in progress will abort
+    _cast_generation += 1
+    my_gen = _cast_generation
 
-        # Reuse existing DMR if same device, otherwise create new
-        if not _dmr or _active_device != device:
+    async with _cast_lock:
+        # Check if we've been superseded by a newer cast call
+        if my_gen != _cast_generation:
+            logger.info(f"DLNA: cast '{name}' superseded, skipping")
+            return False
+
+        try:
+            from async_upnp_client.aiohttp import AiohttpRequester
+            from async_upnp_client.client_factory import UpnpFactory
+            from async_upnp_client.profiles.dlna import DmrDevice
+
+            # Always create fresh requester+device for reliability
             requester = AiohttpRequester()
             factory = UpnpFactory(requester)
             upnp_device = await asyncio.wait_for(
@@ -244,40 +255,49 @@ async def cast_to_device(device_id: str, name: str, artist: str, token: str,
             )
             _dmr = DmrDevice(upnp_device, None)
 
-        base = _get_server_url()
-        stream_url = f"{base}/api/player/stream?name={quote(name)}&artist={quote(artist)}&token={quote(token)}"
-        metadata = _build_didl_metadata(name, artist, album, image, duration_ms, stream_url)
+            if my_gen != _cast_generation:
+                return False
 
-        # Stop current playback first (avoids 701 Transition not available)
-        try:
-            await asyncio.wait_for(_dmr.async_stop(), timeout=3)
-        except Exception:
-            pass
-        await asyncio.sleep(1)
+            base = _get_server_url()
+            stream_url = f"{base}/api/player/stream?name={quote(name)}&artist={quote(artist)}&token={quote(token)}"
+            metadata = _build_didl_metadata(name, artist, album, image, duration_ms, stream_url)
 
-        await asyncio.wait_for(
-            _dmr.async_set_transport_uri(stream_url, metadata), timeout=15
-        )
-        await asyncio.sleep(1)  # Onkyo needs time to process URI before Play
-
-        # Retry Play up to 3 times (Onkyo can be slow to transition)
-        for attempt in range(3):
+            # Stop current playback first
             try:
-                await asyncio.wait_for(_dmr.async_play(), timeout=5)
-                break
+                await asyncio.wait_for(_dmr.async_stop(), timeout=3)
             except Exception:
-                if attempt < 2:
-                    await asyncio.sleep(1)
-                else:
-                    raise
+                pass
+            await asyncio.sleep(0.5)
 
-        _active_device = device
-        logger.info(f"DLNA: casting '{artist} - {name}' to {device['name']}")
-        return True
-    except Exception as e:
-        import traceback
-        logger.error(f"DLNA cast error: {e}\n{traceback.format_exc()}")
-        return False
+            if my_gen != _cast_generation:
+                return False
+
+            await asyncio.wait_for(
+                _dmr.async_set_transport_uri(stream_url, metadata), timeout=15
+            )
+            await asyncio.sleep(0.5)
+
+            if my_gen != _cast_generation:
+                return False
+
+            # Retry Play up to 3 times
+            for attempt in range(3):
+                try:
+                    await asyncio.wait_for(_dmr.async_play(), timeout=5)
+                    break
+                except Exception:
+                    if attempt < 2:
+                        await asyncio.sleep(0.5)
+                    else:
+                        raise
+
+            _active_device = device
+            logger.info(f"DLNA: casting '{artist} - {name}' to {device['name']}")
+            return True
+        except Exception as e:
+            import traceback
+            logger.error(f"DLNA cast error: {e}\n{traceback.format_exc()}")
+            return False
 
 
 async def play() -> bool:
