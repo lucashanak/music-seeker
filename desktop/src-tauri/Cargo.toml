@@ -3,6 +3,10 @@ name = "music-seeker"
 version = "1.0.0"
 edition = "2021"
 
+[lib]
+name = "music_seeker_lib"
+crate-type = ["staticlib", "cdylib", "lib"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
