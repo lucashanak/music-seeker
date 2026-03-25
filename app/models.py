@@ -110,6 +110,11 @@ class AddTrackByNameRequest(BaseModel):
     album: str = ""
 
 
+class DeleteAlbumRequest(BaseModel):
+    artist: str
+    album: str
+
+
 class RecommendationRequest(BaseModel):
     tracks: list[dict]
     limit: int = 15

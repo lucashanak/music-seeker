@@ -47,12 +47,13 @@ export function openModal(item) {
     dlBtn.disabled = false;
     dlBtn.textContent = 'Download';
   }
-  // Show delete button for tracks already in library
+  // Show delete button for tracks/albums already in library
   const delBtn = $('#modalDeleteTrack');
   if (delBtn) {
-    delBtn.style.display = (item.inLibrary && (type === 'track')) ? '' : 'none';
+    const showDel = item.inLibrary && (type === 'track' || type === 'album');
+    delBtn.style.display = showDel ? '' : 'none';
     delBtn.disabled = false;
-    delBtn.textContent = 'Delete from Library';
+    delBtn.textContent = type === 'album' ? 'Delete Album from Library' : 'Delete from Library';
   }
   $('#downloadModal').classList.add('open');
 
@@ -286,36 +287,56 @@ export function init() {
     if (tracks.length) addToQueue(tracks);
   });
 
-  // Modal delete track
+  // Modal delete track/album
   $('#modalDeleteTrack').addEventListener('click', async () => {
     if (!store.modalItem) return;
     const item = store.modalItem;
+    const isAlbum = (item.type || 'track') === 'album';
     const btn = $('#modalDeleteTrack');
+    const resetLabel = isAlbum ? 'Delete Album from Library' : 'Delete from Library';
     btn.disabled = true;
-    btn.textContent = 'Checking...';
-    try {
-      // Check playlists first
-      const check = await apiJson('/api/library/track/check-playlists', {
-        method: 'POST',
-        body: { name: item.name || '', artist: item.artist || '' },
-      });
-      let msg = `Delete "${item.artist} - ${item.name}" from library?`;
-      if (check.in_playlists && check.in_playlists.length) {
-        msg += `\n\nThis track is in ${check.in_playlists.length} playlist(s):\n` +
-          check.in_playlists.map(p => `• ${p.name}`).join('\n');
-      }
-      if (!confirm(msg)) { btn.disabled = false; btn.textContent = 'Delete from Library'; return; }
+
+    if (isAlbum) {
+      const msg = `Delete album "${item.artist} - ${item.name}" and all its tracks from library?`;
+      if (!confirm(msg)) { btn.disabled = false; return; }
       btn.textContent = 'Deleting...';
-      await apiJson('/api/library/track/delete', {
-        method: 'POST',
-        body: { name: item.name || '', artist: item.artist || '' },
-      });
-      showToast('Track deleted');
-      closeModal();
-    } catch (e) {
-      showToast(e.message || 'Failed to delete');
-      btn.disabled = false;
-      btn.textContent = 'Delete from Library';
+      try {
+        await apiJson('/api/library/album/delete', {
+          method: 'POST',
+          body: { artist: item.artist || '', album: item.name || '' },
+        });
+        showToast('Album deleted');
+        closeModal();
+      } catch (e) {
+        showToast(e.message || 'Failed to delete');
+        btn.disabled = false;
+        btn.textContent = resetLabel;
+      }
+    } else {
+      btn.textContent = 'Checking...';
+      try {
+        const check = await apiJson('/api/library/track/check-playlists', {
+          method: 'POST',
+          body: { name: item.name || '', artist: item.artist || '' },
+        });
+        let msg = `Delete "${item.artist} - ${item.name}" from library?`;
+        if (check.in_playlists && check.in_playlists.length) {
+          msg += `\n\nThis track is in ${check.in_playlists.length} playlist(s):\n` +
+            check.in_playlists.map(p => `• ${p.name}`).join('\n');
+        }
+        if (!confirm(msg)) { btn.disabled = false; btn.textContent = resetLabel; return; }
+        btn.textContent = 'Deleting...';
+        await apiJson('/api/library/track/delete', {
+          method: 'POST',
+          body: { name: item.name || '', artist: item.artist || '' },
+        });
+        showToast('Track deleted');
+        closeModal();
+      } catch (e) {
+        showToast(e.message || 'Failed to delete');
+        btn.disabled = false;
+        btn.textContent = resetLabel;
+      }
     }
   });
 

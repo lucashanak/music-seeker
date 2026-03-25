@@ -89,6 +89,39 @@ def delete_track_file(name: str, artist: str) -> bool:
         return False
 
 
+def delete_album_files(artist: str, album: str) -> int:
+    """Delete all files for an album. Returns count of deleted files."""
+    if not MUSIC_DIR.is_dir() or not artist or not album:
+        return 0
+    safe_artist = _sanitize(artist)
+    deleted = 0
+    for user_dir in MUSIC_DIR.iterdir():
+        if not user_dir.is_dir() or user_dir.name.startswith('.'):
+            continue
+        artist_dir = user_dir / safe_artist
+        if not artist_dir.is_dir():
+            continue
+        album_dir = artist_dir / _sanitize(album)
+        if album_dir.is_dir():
+            import shutil
+            shutil.rmtree(album_dir)
+            deleted += 1
+        else:
+            # Check for files matching album in subdirs
+            for f in artist_dir.rglob("*"):
+                if f.is_file() and _sanitize(album).lower() in f.parent.name.lower():
+                    f.unlink()
+                    deleted += 1
+    # Clean up empty dirs
+    for user_dir in MUSIC_DIR.iterdir():
+        if not user_dir.is_dir() or user_dir.name.startswith('.'):
+            continue
+        artist_dir = user_dir / safe_artist
+        if artist_dir.is_dir() and not any(artist_dir.iterdir()):
+            artist_dir.rmdir()
+    return deleted
+
+
 async def resolve_stream(name: str, artist: str) -> dict | None:
     """Resolve a track to a streamable source. Local file > Navidrome > YouTube."""
     # Check cache first

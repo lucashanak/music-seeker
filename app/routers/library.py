@@ -3,7 +3,7 @@ from fastapi.responses import Response
 
 import asyncio
 
-from app.models import CreatePlaylistRequest, AddTracksByIdRequest, RemoveTracksRequest, AddTrackByNameRequest
+from app.models import CreatePlaylistRequest, AddTracksByIdRequest, RemoveTracksRequest, AddTrackByNameRequest, DeleteAlbumRequest
 from app.services import auth, library, downloader, player
 from app.services.jobs import create_job
 
@@ -124,6 +124,16 @@ async def delete_track(req: AddTrackByNameRequest, user: dict = Depends(auth.get
     await downloader._trigger_navidrome_scan()
 
     return {"status": "deleted", "in_playlists": in_playlists}
+
+
+@router.post("/album/delete")
+async def delete_album(req: DeleteAlbumRequest, user: dict = Depends(auth.get_current_user)):
+    """Delete all files for an album from disk."""
+    deleted = player.delete_album_files(req.artist, req.album)
+    if deleted == 0:
+        raise HTTPException(404, "Album files not found")
+    await downloader._trigger_navidrome_scan()
+    return {"status": "deleted", "files_removed": deleted}
 
 
 @router.post("/track/check-playlists")
