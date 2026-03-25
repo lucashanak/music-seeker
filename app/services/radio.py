@@ -7,6 +7,7 @@ import random
 from app.services import lastfm
 from app.services import search_providers
 from app.services import spotify
+from app.services import settings as app_settings
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,10 @@ async def _get_lastfm_radio(track_name: str, artist_name: str, limit: int) -> li
                 top = await lastfm.get_artist_top_tracks(sa["name"], 5)
                 similar.extend(top)
             similar = similar[:limit]
-        # Resolve through Deezer for cover art
-        resolved = await _resolve_lastfm_tracks(similar, "deezer", "")
+        # Resolve through configured search provider for cover art
+        provider = app_settings._settings.get("search_provider", "deezer")
+        fallback = app_settings._settings.get("search_fallback", "")
+        resolved = await _resolve_lastfm_tracks(similar, provider, fallback)
         return resolved[:limit]
     except Exception as e:
         logger.warning(f"Last.fm radio failed: {e}")
