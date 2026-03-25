@@ -138,31 +138,9 @@ jobs:
         working-directory: desktop
         run: npm install
 
-      - name: Generate keystore
-        run: |
-          keytool -genkey -v -keystore desktop/release.keystore \
-            -alias musicseeker -keyalg RSA -keysize 2048 -validity 36500 \
-            -storepass musicseeker -keypass musicseeker \
-            -dname "CN=MusicSeeker, O=HanakTech, L=Prague, C=CZ"
-
       - name: Init Android project
         working-directory: desktop
         run: npx tauri android init
-
-      - name: Configure signing
-        run: |
-          # Add signing config to build.gradle.kts
-          GRADLE="desktop/src-tauri/gen/android/app/build.gradle.kts"
-          sed -i '/android {/a \
-              signingConfigs {\
-                  create("release") {\
-                      storeFile = file("'"$(pwd)"'/desktop/release.keystore")\
-                      storePassword = "musicseeker"\
-                      keyAlias = "musicseeker"\
-                      keyPassword = "musicseeker"\
-                  }\
-              }' "$GRADLE"
-          sed -i 's/signingConfig = signingConfigs.getByName("debug")/signingConfig = signingConfigs.getByName("release")/' "$GRADLE"
 
       - name: Build Android APK
         working-directory: desktop
@@ -170,13 +148,27 @@ jobs:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: npx tauri android build --apk --target aarch64
 
-      - name: Find and rename APK
+      - name: Sign APK
         run: |
-          APK=$(find desktop/src-tauri/gen/android -name "*release*.apk" -o -name "*universal*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            APK=$(find desktop/src-tauri/gen/android -name "*.apk" | head -1)
-          fi
-          cp "$APK" desktop/MusicSeeker.apk
+          # Generate keystore
+          keytool -genkey -v -keystore /tmp/release.keystore \
+            -alias musicseeker -keyalg RSA -keysize 2048 -validity 36500 \
+            -storepass musicseeker -keypass musicseeker \
+            -dname "CN=MusicSeeker, O=HanakTech, L=Prague, C=CZ"
+          # Find the built APK
+          APK=$(find desktop/src-tauri/gen/android -name "*.apk" | head -1)
+          echo "Found APK: $APK"
+          # Align and sign
+          ${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/zipalign -v 4 "$APK" /tmp/aligned.apk
+          ${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner sign \
+            --ks /tmp/release.keystore \
+            --ks-key-alias musicseeker \
+            --ks-pass pass:musicseeker \
+            --key-pass pass:musicseeker \
+            --out desktop/MusicSeeker.apk \
+            /tmp/aligned.apk
+          # Verify
+          ${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner verify desktop/MusicSeeker.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
