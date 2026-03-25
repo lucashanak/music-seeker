@@ -138,9 +138,31 @@ jobs:
         working-directory: desktop
         run: npm install
 
+      - name: Generate keystore
+        run: |
+          keytool -genkey -v -keystore desktop/release.keystore \
+            -alias musicseeker -keyalg RSA -keysize 2048 -validity 36500 \
+            -storepass musicseeker -keypass musicseeker \
+            -dname "CN=MusicSeeker, O=HanakTech, L=Prague, C=CZ"
+
       - name: Init Android project
         working-directory: desktop
         run: npx tauri android init
+
+      - name: Configure signing
+        run: |
+          # Add signing config to build.gradle.kts
+          GRADLE="desktop/src-tauri/gen/android/app/build.gradle.kts"
+          sed -i '/android {/a \
+              signingConfigs {\
+                  create("release") {\
+                      storeFile = file("'"$(pwd)"'/desktop/release.keystore")\
+                      storePassword = "musicseeker"\
+                      keyAlias = "musicseeker"\
+                      keyPassword = "musicseeker"\
+                  }\
+              }' "$GRADLE"
+          sed -i 's/signingConfig = signingConfigs.getByName("debug")/signingConfig = signingConfigs.getByName("release")/' "$GRADLE"
 
       - name: Build Android APK
         working-directory: desktop
@@ -150,7 +172,10 @@ jobs:
 
       - name: Find and rename APK
         run: |
-          APK=$(find desktop/src-tauri/gen/android -name "*.apk" | head -1)
+          APK=$(find desktop/src-tauri/gen/android -name "*release*.apk" -o -name "*universal*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            APK=$(find desktop/src-tauri/gen/android -name "*.apk" | head -1)
+          fi
           cp "$APK" desktop/MusicSeeker.apk
 
       - name: Upload APK artifact
