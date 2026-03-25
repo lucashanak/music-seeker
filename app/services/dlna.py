@@ -62,7 +62,8 @@ async def start_discovery():
     from app.services import settings as app_settings
     manual_url = app_settings._settings.get("dlna_renderer_url", "")
     if manual_url:
-        await _add_manual_renderer(manual_url)
+        # Non-blocking: add renderer in background
+        asyncio.create_task(_add_manual_renderer(manual_url))
     else:
         _listener_task = asyncio.create_task(_run_discovery())
     logger.info("DLNA discovery started")

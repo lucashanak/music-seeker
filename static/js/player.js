@@ -69,10 +69,18 @@ export function loadAndPlay() {
   document.getElementById('playerBar').style.setProperty('--player-progress', '0%');
   const cleanName = _decodeEntities(item.name || '');
   const cleanArtist = _decodeEntities(item.artist || '');
-  const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
-  audio.src = `/api/player/stream?${params}`;
-  audio.load();
-  audio.play().catch(() => {});
+  // Cast mode: send to DLNA renderer instead of local audio
+  if (store.castDevice) {
+    apiJson('/api/dlna/cast', { method: 'POST', body: {
+      device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
+      album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
+    }}).catch(() => showToast('Cast failed'));
+  } else {
+    const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
+    audio.src = `/api/player/stream?${params}`;
+    audio.load();
+    audio.play().catch(() => {});
+  }
   showPlayerBar();
   updatePlayPauseIcon(true);
   syncFullPlayer();
@@ -419,14 +427,23 @@ export function init() {
 
   // Controls
   $('#playerPlayPause').addEventListener('click', () => {
-    if (audio.paused) audio.play().catch(() => {});
-    else audio.pause();
+    if (store.castDevice) {
+      if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
+      else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
+    } else {
+      if (audio.paused) audio.play().catch(() => {});
+      else audio.pause();
+    }
   });
   $('#playerNext').addEventListener('click', nextTrack);
   $('#playerPrev').addEventListener('click', prevTrack);
   $('#playerVolume').addEventListener('input', (e) => {
     store.playerVolume = e.target.value / 100;
-    audio.volume = store.playerVolume;
+    if (store.castDevice) {
+      apiJson('/api/dlna/volume', { method: 'POST', body: { volume: parseInt(e.target.value) } }).catch(() => {});
+    } else {
+      audio.volume = store.playerVolume;
+    }
   });
   function _seekFromEvent(bar, e) {
     const dur = _getDuration();
@@ -434,7 +451,11 @@ export function init() {
     const rect = bar.getBoundingClientRect();
     const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
     const pct = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-    try { audio.currentTime = pct * dur; } catch {}
+    if (store.castDevice) {
+      apiJson('/api/dlna/seek', { method: 'POST', body: { position_seconds: pct * dur } }).catch(() => {});
+    } else {
+      try { audio.currentTime = pct * dur; } catch {}
+    }
   }
   const miniBar = $('#playerProgressBar');
   miniBar.addEventListener('click', (e) => _seekFromEvent(miniBar, e));
@@ -506,8 +527,10 @@ export function init() {
     }
   }
 
+  let _castLastState = '';
   function _startCastPoll() {
     clearInterval(store.castPollTimer);
+    _castLastState = '';
     store.castPollTimer = setInterval(async () => {
       if (!store.castDevice) { clearInterval(store.castPollTimer); return; }
       try {
@@ -518,6 +541,7 @@ export function init() {
         if (dur > 0) {
           const pct = (pos / dur) * 100;
           $('#playerProgressFill').style.width = pct + '%';
+          document.getElementById('playerBar').style.setProperty('--player-progress', pct + '%');
           const fpFill = $('#fpProgressFill');
           if (fpFill) fpFill.style.width = pct + '%';
         }
@@ -527,6 +551,13 @@ export function init() {
         if (fpCur) fpCur.textContent = fmtTime(pos);
         const fpTot = $('#fpTimeTotal');
         if (fpTot) fpTot.textContent = fmtTime(dur);
+        // Detect track end: state changed from playing to stopped/no_media
+        const state = (status.state || '').toLowerCase();
+        if (_castLastState.includes('playing') && (state.includes('stopped') || state.includes('no_media'))) {
+          // Auto-advance to next track
+          nextTrack();
+        }
+        _castLastState = state;
       } catch {}
     }, 2000);
   }
@@ -564,7 +595,12 @@ export function init() {
     switch (e.code) {
       case 'Space':
         e.preventDefault();
-        if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+        if (store.castDevice) {
+          if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
+          else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
+        } else {
+          if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+        }
         break;
       case 'ArrowRight':
         e.preventDefault();
@@ -577,16 +613,18 @@ export function init() {
       case 'ArrowUp':
         e.preventDefault();
         store.playerVolume = Math.min(1, store.playerVolume + 0.05);
-        audio.volume = store.playerVolume;
         $('#playerVolume').value = Math.round(store.playerVolume * 100);
         if ($('#fpVolume')) $('#fpVolume').value = Math.round(store.playerVolume * 100);
+        if (store.castDevice) apiJson('/api/dlna/volume', { method: 'POST', body: { volume: Math.round(store.playerVolume * 100) } }).catch(() => {});
+        else audio.volume = store.playerVolume;
         break;
       case 'ArrowDown':
         e.preventDefault();
         store.playerVolume = Math.max(0, store.playerVolume - 0.05);
-        audio.volume = store.playerVolume;
         $('#playerVolume').value = Math.round(store.playerVolume * 100);
         if ($('#fpVolume')) $('#fpVolume').value = Math.round(store.playerVolume * 100);
+        if (store.castDevice) apiJson('/api/dlna/volume', { method: 'POST', body: { volume: Math.round(store.playerVolume * 100) } }).catch(() => {});
+        else audio.volume = store.playerVolume;
         break;
     }
   });

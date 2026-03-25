@@ -442,6 +442,26 @@
       </div>
     </details>
 
+    <details class="setting-section">
+      <summary class="setting-section-title">DLNA / UPnP Cast</summary>
+      <div class="setting-section-body">
+        <div class="setting-group">
+          <label class="setting-label">DLNA Renderer</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <select class="setting-select" id="settingDlnaDevice" style="flex:1;">
+              <option value="">Disabled</option>
+            </select>
+            <button class="btn-save" id="dlnaScanBtn" style="padding:8px 14px;font-size:12px;white-space:nowrap;">Scan</button>
+          </div>
+          <div id="dlnaScanStatus" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Manual Renderer URL (if auto-scan fails)</label>
+          <input class="setting-input" id="settingDlnaUrl" type="text" placeholder="http://192.168.1.95:8888/upnp_descriptor_0">
+        </div>
+      </div>
+    </details>
+
     <div style="margin-top: 8px;">
       <button class="btn-save" id="saveSettings">Save Settings</button>
       <span class="save-status" id="saveStatus"></span>

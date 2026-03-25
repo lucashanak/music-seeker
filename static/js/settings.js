@@ -35,6 +35,9 @@ export async function loadSettings() {
     $('#settingNavidromeUser').value = data.navidrome_user || '';
     $('#settingNavidromePass').value = '';
     $('#settingNavidromePass').placeholder = data.navidrome_password ? '(set) Enter new...' : 'Enter password...';
+    $('#settingDlnaUrl').value = data.dlna_renderer_url || '';
+    // Load DLNA devices into dropdown
+    _loadDlnaDevices();
   } catch {}
   // Load per-user Spotify status
   try {
@@ -75,6 +78,26 @@ export function updateFallbackNote() {
   const note = $('#searchFallbackNote');
   const defaults = { deezer: 'YouTube Music', ytmusic: 'Deezer', apple: 'Deezer', spotify: 'none' };
   note.textContent = fb ? '' : 'Auto: ' + (defaults[prov] || 'none');
+}
+
+// ── DLNA Device Picker ──
+async function _loadDlnaDevices() {
+  const sel = $('#settingDlnaDevice');
+  if (!sel) return;
+  try {
+    const data = await apiJson('/api/dlna/devices');
+    const devices = data.devices || [];
+    sel.innerHTML = '<option value="">Disabled</option>' +
+      devices.map(d => `<option value="${esc(d.location)}">${esc(d.name)} (${esc(d.ip)})</option>`).join('');
+    // Select current renderer if set
+    const currentUrl = $('#settingDlnaUrl').value;
+    if (currentUrl) {
+      const match = [...sel.options].find(o => o.value === currentUrl);
+      if (match) match.selected = true;
+    }
+  } catch {
+    sel.innerHTML = '<option value="">No devices found</option>';
+  }
 }
 
 // ── Disk Usage ──
@@ -342,6 +365,8 @@ export function init() {
     if (slskdKey) payload.slskd_api_key = slskdKey;
     const pass = $('#settingNavidromePass').value;
     if (pass) payload.navidrome_password = pass;
+    const dlnaUrl = $('#settingDlnaUrl').value.trim();
+    if (dlnaUrl || dlnaUrl === '') payload.dlna_renderer_url = dlnaUrl;
     try {
       store.appSettings = await apiJson('/api/settings', { method: 'PUT', body: payload });
       store.searchProvider = store.appSettings.search_provider || 'deezer';
@@ -421,6 +446,22 @@ export function init() {
         if (playlistsBnavBtn) playlistsBnavBtn.style.display = '';
       }
     } catch {}
+  });
+
+  // DLNA scan button
+  $('#dlnaScanBtn').addEventListener('click', async () => {
+    const status = $('#dlnaScanStatus');
+    status.textContent = 'Scanning...';
+    await _loadDlnaDevices();
+    const sel = $('#settingDlnaDevice');
+    const count = sel.options.length - 1; // minus "Disabled"
+    status.textContent = count > 0 ? `Found ${count} device(s)` : 'No devices found';
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  });
+  // DLNA dropdown selects URL into manual field
+  $('#settingDlnaDevice').addEventListener('change', () => {
+    const val = $('#settingDlnaDevice').value;
+    $('#settingDlnaUrl').value = val;
   });
 
   // Disk Usage
