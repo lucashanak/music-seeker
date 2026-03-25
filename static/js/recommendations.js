@@ -52,8 +52,6 @@ export function stopRecPlayback() {
 async function loadRecs() {
   if (recsLoading || !store.playerQueue.length) return;
   recsLoading = true;
-  const section = $('#fpRecsSection');
-  if (section) section.style.display = '';
   renderLoading();
   try {
     const data = await apiJson('/api/player/recommendations', {
@@ -71,13 +69,26 @@ async function loadRecs() {
   }
 }
 
+function _getOrCreateRecsContainer() {
+  let el = $('#fpRecsList');
+  if (el) return el;
+  // Create recs section inside fpQueueList
+  const queueList = $('#fpQueueList');
+  if (!queueList) return null;
+  const section = document.createElement('div');
+  section.className = 'recs-section';
+  section.innerHTML = `<div class="panel-header" style="font-size:13px;border-top:1px solid var(--border);padding-top:12px;">Recommended</div><div class="recs-list" id="fpRecsList"></div>`;
+  queueList.appendChild(section);
+  return $('#fpRecsList');
+}
+
 function renderLoading() {
-  const el = $('#fpRecsList');
+  const el = _getOrCreateRecsContainer();
   if (el) el.innerHTML = Array(3).fill('<div class="skeleton" style="height:48px;border-radius:8px;margin-bottom:6px;"></div>').join('');
 }
 
 function renderRecs() {
-  const el = $('#fpRecsList');
+  const el = _getOrCreateRecsContainer();
   if (!el) return;
   if (!recsCache.length) {
     el.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:12px;padding:12px;">No recommendations available</div>';
@@ -148,14 +159,16 @@ function renderRecs() {
   });
 }
 
+// ── Re-append recs to queue list after queue re-render ──
+export function hasRecs() { return recsCache.length > 0 || recsLoading; }
+export function appendRecsToQueue() { renderRecs(); }
+
 // ── Called when full player opens ──
 export function onPanelOpened() {
   if (!store.fullPlayerOpen || !store.playerQueue.length) return;
   if (recsDirty || !recsCache.length) {
     loadRecs();
   } else {
-    const section = $('#fpRecsSection');
-    if (section) section.style.display = '';
     renderRecs();
   }
 }

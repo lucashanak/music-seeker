@@ -73,7 +73,11 @@ export function updateSaveButton() {
 export function renderQueue() {
   renderQueueInto($('#queueList'));
   if (store.fpQueuePanelOpen) renderQueueInto($('#fpQueuePanelList'));
-  if (store.fullPlayerOpen && window.innerWidth > 640) renderQueueInto($('#fpQueueList'));
+  if (store.fullPlayerOpen && window.innerWidth > 640) {
+    renderQueueInto($('#fpQueueList'));
+    // Re-append recs section after queue re-render (they share one scroll container)
+    import('./recommendations.js').then(m => { if (m.hasRecs()) m.appendRecsToQueue(); });
+  }
   updateSaveButton();
 }
 
