@@ -106,7 +106,12 @@ export function init() {
 
   // Full player controls
   $('#fpPlayPause').addEventListener('click', () => {
-    if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+    if (store.castDevice) {
+      if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
+      else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
+    } else {
+      if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+    }
   });
   $('#fpPrev').addEventListener('click', () => prevTrack());
   $('#fpNext').addEventListener('click', () => nextTrack());
@@ -121,7 +126,11 @@ export function init() {
     const rect = bar.getBoundingClientRect();
     const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
     const pct = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-    try { audio.currentTime = pct * dur; } catch {}
+    if (store.castDevice) {
+      apiJson('/api/dlna/seek', { method: 'POST', body: { position_seconds: pct * dur } }).catch(() => {});
+    } else {
+      try { audio.currentTime = pct * dur; } catch {}
+    }
   }
   $('#fpProgressBar').addEventListener('click', _fpSeek);
   $('#fpProgressBar').addEventListener('touchstart', (e) => { e.preventDefault(); _fpSeek(e); }, { passive: false });
@@ -129,8 +138,12 @@ export function init() {
   // Full player volume
   $('#fpVolume').addEventListener('input', (e) => {
     store.playerVolume = e.target.value / 100;
-    audio.volume = store.playerVolume;
     $('#playerVolume').value = e.target.value;
+    if (store.castDevice) {
+      apiJson('/api/dlna/volume', { method: 'POST', body: { volume: parseInt(e.target.value) } }).catch(() => {});
+    } else {
+      audio.volume = store.playerVolume;
+    }
   });
 
   // Full player download

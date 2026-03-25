@@ -273,6 +273,14 @@ function updateMediaSessionWith(item) {
 }
 
 export function prevTrack() {
+  if (store.castDevice) {
+    // In cast mode, always go to previous track
+    if (store.playerIndex > 0) {
+      store.playerIndex--;
+      loadAndPlay();
+    }
+    return;
+  }
   if (audio.currentTime > 3) {
     audio.currentTime = 0;
   } else if (store.playerIndex > 0) {
@@ -478,36 +486,49 @@ export function init() {
     finally { setTimeout(() => { btn.style.color = ''; }, 1000); }
   });
 
-  // Cast button
-  $('#playerCastBtn').addEventListener('click', async () => {
+  // Cast button (mini + full player)
+  async function _handleCastClick() {
     if (store.castDevice) {
       // Already casting — stop and return to local
       await apiJson('/api/dlna/stop', { method: 'POST' }).catch(() => {});
       store.castDevice = null;
       clearInterval(store.castPollTimer);
       store.castPollTimer = null;
-      $('#playerCastBtn').style.color = '';
+      _syncCastButtons('');
       showToast('Cast stopped');
       return;
     }
     try {
       const data = await apiJson('/api/dlna/devices');
       const devices = data.devices || [];
-      if (!devices.length) { showToast('No DLNA devices found'); return; }
-      // Simple picker for single or few devices
+      if (!devices.length) { showToast('No DLNA devices found. Configure in Settings.'); return; }
+      // Auto-pick if only one device, or use the configured one from settings
       if (devices.length === 1) {
         _castToDevice(devices[0]);
       } else {
-        const names = devices.map((d, i) => `${i + 1}. ${d.name}`).join('\n');
-        const choice = prompt('Cast to:\n' + names + '\n\nEnter number:');
-        if (!choice) return;
-        const idx = parseInt(choice) - 1;
-        if (idx >= 0 && idx < devices.length) _castToDevice(devices[idx]);
+        // Try to match saved dlna_renderer_url from settings
+        const savedUrl = store.appSettings.dlna_renderer_url || '';
+        const savedDevice = savedUrl ? devices.find(d => d.location === savedUrl) : null;
+        if (savedDevice) {
+          _castToDevice(savedDevice);
+        } else {
+          // Fallback: use first device
+          _castToDevice(devices[0]);
+        }
       }
     } catch (e) {
       showToast('Cast failed: ' + (e.message || ''));
     }
-  });
+  }
+  $('#playerCastBtn').addEventListener('click', _handleCastClick);
+  if ($('#fpCastBtn')) $('#fpCastBtn').addEventListener('click', _handleCastClick);
+
+  function _syncCastButtons(color) {
+    ['#playerCastBtn', '#fpCastBtn'].forEach(sel => {
+      const btn = $(sel);
+      if (btn) btn.style.color = color;
+    });
+  }
 
   async function _castToDevice(device) {
     const item = store.playerQueue[store.playerIndex];
@@ -519,7 +540,7 @@ export function init() {
       }});
       store.castDevice = device;
       audio.pause();
-      $('#playerCastBtn').style.color = 'var(--accent)';
+      _syncCastButtons('var(--accent)');
       showToast(`Casting to ${device.name}`);
       _startCastPoll();
     } catch (e) {
@@ -535,7 +556,7 @@ export function init() {
       if (!store.castDevice) { clearInterval(store.castPollTimer); return; }
       try {
         const status = await apiJson('/api/dlna/status');
-        if (!status.active) { store.castDevice = null; $('#playerCastBtn').style.color = ''; clearInterval(store.castPollTimer); return; }
+        if (!status.active) { store.castDevice = null; _syncCastButtons(''); clearInterval(store.castPollTimer); return; }
         const dur = status.duration_seconds || 0;
         const pos = status.position_seconds || 0;
         if (dur > 0) {
