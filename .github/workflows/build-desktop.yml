@@ -23,13 +23,35 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Generate icons from SVG
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: macos-rust-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: macos-rust-
+
+      - name: Generate icons
         run: |
-          brew install librsvg
           cd desktop/src-tauri/icons
-          for size in 32 128 256 512 1024; do
-            rsvg-convert -w $size -h $size icon.svg > icon_${size}.png
-          done
+          # macOS has sips built-in, no brew install needed
+          # First convert SVG to base PNG via built-in python
+          python3 -c "
+          import subprocess, os
+          sizes = [32, 128, 256, 512, 1024]
+          # Use cairosvg if available, otherwise try rsvg
+          try:
+              import cairosvg
+              for s in sizes:
+                  cairosvg.svg2png(url='icon.svg', write_to=f'icon_{s}.png', output_width=s, output_height=s)
+          except ImportError:
+              # Fallback: install and use rsvg-convert via brew (cached)
+              os.system('brew install librsvg')
+              for s in sizes:
+                  os.system(f'rsvg-convert -w {s} -h {s} icon.svg > icon_{s}.png')
+          "
           cp icon_512.png icon.png
           mkdir -p icon.iconset
           cp icon_32.png icon.iconset/icon_16x16@2x.png
@@ -91,13 +113,23 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android
 
-      - name: Generate icons from SVG
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: android-rust-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: android-rust-
+
+      - name: Generate icons
         run: |
           sudo apt-get install -y librsvg2-bin
           cd desktop/src-tauri/icons
-          for size in 32 128 256 512 1024; do
+          for size in 32 128 256 512; do
             rsvg-convert -w $size -h $size icon.svg > icon_${size}.png
           done
           cp icon_512.png icon.png
@@ -114,15 +146,11 @@ jobs:
         working-directory: desktop
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
-        run: npx tauri android build --apk
+        run: npx tauri android build --apk --target aarch64
 
       - name: Find and rename APK
         run: |
-          find desktop/src-tauri/gen/android -name "*.apk" -type f | head -5
-          APK=$(find desktop/src-tauri/gen/android -name "*universal*.apk" -o -name "*release*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            APK=$(find desktop/src-tauri/gen/android -name "*.apk" | head -1)
-          fi
+          APK=$(find desktop/src-tauri/gen/android -name "*.apk" | head -1)
           cp "$APK" desktop/MusicSeeker.apk
 
       - name: Upload APK artifact
