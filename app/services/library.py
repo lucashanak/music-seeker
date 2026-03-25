@@ -276,6 +276,18 @@ async def update_playlist(playlist_id: str, song_ids_to_add: list[str] | None = 
         return sr.get("status") == "ok"
 
 
+async def remove_track_by_name(playlist_id: str, name: str, artist: str) -> bool:
+    """Remove a track from a playlist by matching name/artist. Finds the index in the playlist and removes it."""
+    pl = await get_playlist(playlist_id)
+    if not pl:
+        return False
+    # Find matching track index
+    for i, track in enumerate(pl["tracks"]):
+        if _matches(track.get("name", ""), name) and _artist_matches(track.get("artist", ""), artist):
+            return await update_playlist(playlist_id, song_indices_to_remove=[i])
+    return False
+
+
 async def delete_playlist(playlist_id: str) -> bool:
     """Delete a playlist from Navidrome."""
     if not NAVIDROME_PASSWORD:

@@ -103,6 +103,9 @@ export const store = {
   queuePanelOpen: false,
   playerSaveTimer: null,
 
+  // ── Playlist Mode ──
+  playlistMode: null, // { id, name } or null
+
   // ── Full Player ──
   fullPlayerOpen: false,
   shuffleEnabled: false,

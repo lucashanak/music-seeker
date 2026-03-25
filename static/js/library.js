@@ -7,6 +7,7 @@ import { renderResults } from './search.js';
 
 let libraryCache = null;
 let currentLibPlaylistId = null;
+let currentLibPlaylistName = '';
 let currentLibPlaylistTracks = [];
 
 // ── Load Playlists ──
@@ -58,6 +59,7 @@ async function loadLibraryDetail(id) {
   try {
     const data = await apiJson(`/api/library/playlist/${id}`);
     currentLibPlaylistTracks = data.tracks || [];
+    currentLibPlaylistName = data.name || '';
     $('#libDetailName').textContent = data.name || '';
     $('#libDetailImg').src = data.image || '';
     if (!data.image) {
@@ -95,6 +97,7 @@ export function init() {
   if (playBtn) playBtn.addEventListener('click', () => {
     const tracks = getLibTracksForPlayer();
     if (tracks.length) {
+      store.playlistMode = currentLibPlaylistId ? { id: currentLibPlaylistId, name: currentLibPlaylistName } : null;
       import('./player.js').then(m => {
         store.playerQueue = tracks;
         store.playerIndex = 0;
@@ -108,6 +111,7 @@ export function init() {
   if (queueBtn) queueBtn.addEventListener('click', () => {
     const tracks = getLibTracksForPlayer();
     if (tracks.length) {
+      store.playlistMode = currentLibPlaylistId ? { id: currentLibPlaylistId, name: currentLibPlaylistName } : null;
       import('./player.js').then(m => m.addToQueue(tracks));
     }
   });

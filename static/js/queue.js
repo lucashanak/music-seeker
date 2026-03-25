@@ -42,6 +42,7 @@ export function renderQueueInto(el) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const idx = parseInt(btn.dataset.qiRm);
+      const removed = store.playerQueue[idx];
       store.playerQueue.splice(idx, 1);
       if (idx < store.playerIndex) store.playerIndex--;
       else if (idx === store.playerIndex) {
@@ -51,6 +52,13 @@ export function renderQueueInto(el) {
       }
       renderQueue();
       saveQueueDebounced();
+      // Playlist mode: remove from Navidrome playlist too
+      if (store.playlistMode && removed) {
+        import('./api.js').then(m => m.apiJson(`/api/library/playlist/${store.playlistMode.id}/remove-by-name`, {
+          method: 'POST',
+          body: { name: removed.name || '', artist: removed.artist || '' },
+        })).catch(() => {});
+      }
     });
   });
 }
@@ -114,11 +122,19 @@ export function init() {
   $('#playerQueueBtn').addEventListener('click', () => {
     store.queuePanelOpen ? closeQueuePanel() : openQueuePanel();
   });
+  // Click playlist badge to deactivate playlist mode
+  const plBadge = $('#fpPlaylistBadge');
+  if (plBadge) plBadge.addEventListener('click', () => {
+    store.playlistMode = null;
+    plBadge.style.display = 'none';
+    import('./utils.js').then(m => m.showToast('Playlist mode deactivated'));
+  });
   $('#queuePanelClose').addEventListener('click', () => closeQueuePanel());
   $('#clearQueue').addEventListener('click', () => {
     audio.pause();
     store.playerQueue = [];
     store.playerIndex = -1;
+    store.playlistMode = null;
     hidePlayerBar();
     renderQueue();
     closeQueuePanel();
@@ -129,6 +145,7 @@ export function init() {
     audio.pause();
     store.playerQueue = [];
     store.playerIndex = -1;
+    store.playlistMode = null;
     hidePlayerBar();
     renderQueue();
     closeFpQueuePanel();

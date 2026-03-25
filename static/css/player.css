@@ -149,4 +149,5 @@ body.player-active .player-bar { display: flex; }
 .source-navidrome { background: #3b82f6; color: #fff; }
 .source-youtube { background: #ef4444; color: #fff; }
 .fp-artist-row { display: flex; align-items: center; gap: 8px; justify-content: center; }
+.playlist-mode-badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; background: var(--accent); color: #000; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
 .fp-artist-row .source-badge { font-size: 10px; padding: 2px 7px; }

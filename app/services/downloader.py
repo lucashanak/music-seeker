@@ -57,6 +57,9 @@ async def run_download(job: Job):
                 # Create playlist in Navidrome after downloading a Spotify playlist
                 if job.type == "playlist" and job.playlist_name and job.playlist_tracks:
                     await _create_navidrome_playlist(job, needs_scan=downloaded is True)
+                # Add single track to existing Navidrome playlist after download
+                if job.playlist_id and downloaded:
+                    await _add_track_to_existing_playlist(job)
         except asyncio.CancelledError:
             job.status = JobStatus.CANCELLED
         except Exception as e:
@@ -634,3 +637,29 @@ async def _create_navidrome_playlist(job: Job, needs_scan: bool = True):
         import traceback
         logging.getLogger("musicseeker").error(f"Playlist creation error: {traceback.format_exc()}")
         job.progress_text = f"Download complete (playlist creation failed: {e})"
+
+
+async def _add_track_to_existing_playlist(job: Job):
+    """After single track download, add it to an existing Navidrome playlist."""
+    if not NAVIDROME_PASSWORD or not job.playlist_id:
+        return
+    try:
+        import logging
+        log = logging.getLogger("musicseeker")
+        # Wait for Navidrome to index
+        await asyncio.sleep(10)
+        await _trigger_navidrome_scan()
+        await asyncio.sleep(10)
+        # Find the track
+        tracks = job.playlist_tracks or [{"name": job.title.split(" - ", 1)[-1] if " - " in job.title else job.title,
+                                           "artist": job.title.split(" - ", 1)[0] if " - " in job.title else ""}]
+        track = tracks[0]
+        sid = await library.find_song_id(track.get("name", ""), track.get("artist", ""))
+        if sid:
+            ok = await library.update_playlist(job.playlist_id, song_ids_to_add=[sid])
+            log.info(f"Added track to playlist {job.playlist_id}: {ok}")
+        else:
+            log.warning(f"Track not found in Navidrome after download: {track}")
+    except Exception as e:
+        import logging
+        logging.getLogger("musicseeker").error(f"Add to playlist error: {e}")

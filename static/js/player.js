@@ -28,6 +28,21 @@ export function addToQueue(items, playNow = false) {
   renderQueue();
   saveQueueDebounced();
   showToast(`Added ${items.length} track${items.length > 1 ? 's' : ''} to queue`);
+  // Playlist mode: add tracks to Navidrome playlist in background
+  if (store.playlistMode) {
+    for (const item of items) {
+      apiJson(`/api/library/playlist/${store.playlistMode.id}/add-and-download`, {
+        method: 'POST',
+        body: { name: item.name || '', artist: item.artist || '', album: item.album || '' },
+      }).then(data => {
+        if (data.status === 'downloading') {
+          showToast(`Downloading & adding to ${store.playlistMode.name}...`);
+        } else if (data.status === 'added') {
+          showToast(`Added to ${store.playlistMode.name}`);
+        }
+      }).catch(() => {});
+    }
+  }
 }
 
 // ── Load and Play Current Track ──
@@ -57,6 +72,7 @@ export function loadAndPlay() {
   saveQueueDebounced();
   updateMediaSession();
   resolveSource(item);
+  updatePlaylistBadge();
 }
 
 function _decodeEntities(s) {
@@ -94,6 +110,17 @@ function updateDownloadButtons(item) {
     fpBtn.disabled = inLib;
     fpBtn.style.opacity = inLib ? '0.3' : '';
     fpBtn.title = inLib ? 'Already in library' : 'Download';
+  }
+}
+
+export function updatePlaylistBadge() {
+  const badge = $('#fpPlaylistBadge');
+  if (!badge) return;
+  if (store.playlistMode) {
+    badge.textContent = store.playlistMode.name;
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
   }
 }
 

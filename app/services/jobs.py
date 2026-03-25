@@ -32,6 +32,7 @@ class Job:
     error: str | None = None
     playlist_name: str = ""
     playlist_tracks: list = field(default_factory=list)  # [{name, artist}]
+    playlist_id: str = ""  # existing Navidrome playlist to add track to after download
     username: str = ""
 
     def to_dict(self) -> dict:
@@ -90,11 +91,11 @@ _load_history()
 
 def create_job(type_: str, title: str, url: str, method: str, fmt: str,
                playlist_name: str = "", playlist_tracks: list | None = None,
-               username: str = "") -> Job:
+               playlist_id: str = "", username: str = "") -> Job:
     job_id = str(uuid.uuid4())[:8]
     job = Job(id=job_id, type=type_, title=title, url=url, method=method, format=fmt,
               playlist_name=playlist_name, playlist_tracks=playlist_tracks or [],
-              username=username)
+              playlist_id=playlist_id, username=username)
     _jobs[job_id] = job
     return job
 
