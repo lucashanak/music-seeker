@@ -8,6 +8,17 @@ import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 
 const audio = $('#audioElement');
+const _ab = typeof window.AndroidBridge !== 'undefined' ? window.AndroidBridge : null;
+
+// Android native media action callback (notification buttons → WebView)
+window._androidMediaAction = function(action) {
+  switch (action) {
+    case 'play': audio.play().catch(() => {}); break;
+    case 'pause': audio.pause(); break;
+    case 'next': nextTrack(); break;
+    case 'prev': prevTrack(); break;
+  }
+};
 
 // ── Helper: get duration with Safari fallback ──
 function _getDuration() {
@@ -436,8 +447,17 @@ export { audio };
 // ── Init ──
 export function init() {
   // Audio events
-  audio.addEventListener('play', () => updatePlayPauseIcon(true));
-  audio.addEventListener('pause', () => updatePlayPauseIcon(false));
+  audio.addEventListener('play', () => {
+    updatePlayPauseIcon(true);
+    if (_ab) {
+      const item = store.playerQueue[store.playerIndex];
+      if (item) _ab.onPlay(item.name || '', item.artist || '');
+    }
+  });
+  audio.addEventListener('pause', () => {
+    updatePlayPauseIcon(false);
+    if (_ab) _ab.onPause();
+  });
   audio.addEventListener('ended', () => {
     if (store.repeatMode === 'one') {
       audio.currentTime = 0;
