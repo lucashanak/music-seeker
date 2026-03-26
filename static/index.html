@@ -781,7 +781,7 @@ try {
         return;
       }
       if (el) el.textContent = 'v' + _inst + ' (latest: ' + latest + ')';
-      if (latest !== _inst && _appVer) {
+      if (latest !== _inst && _inst) {
         var banner = document.getElementById('appUpdateBanner');
         if (banner) {
           document.getElementById('appUpdateVersion').textContent = _inst + ' → ' + latest;
