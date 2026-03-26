@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 
 from app.config import APP_VERSION
 from app.services import settings as app_settings
@@ -43,29 +43,6 @@ def create_app() -> FastAPI:
             "spotify_available": bool(spotify.SPOTIFY_CLIENT_ID and spotify.SPOTIFY_CLIENT_SECRET),
             "spotify_user": bool(spotify._get_global_refresh_token()),
         }
-
-    # App download proxy — streams APK/DMG from GitHub releases
-    @app.get("/api/app/{filename}")
-    async def download_app(filename: str):
-        import httpx
-        if filename not in ("MusicSeeker.apk", "MusicSeeker.dmg"):
-            from fastapi.responses import JSONResponse
-            return JSONResponse({"error": "invalid file"}, status_code=400)
-        url = f"https://github.com/lucashanak/music-seeker/releases/latest/download/{filename}"
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                from fastapi.responses import JSONResponse
-                return JSONResponse({"error": "download failed"}, status_code=502)
-            content_type = "application/vnd.android.package-archive" if filename.endswith(".apk") else "application/octet-stream"
-            return StreamingResponse(
-                iter([resp.content]),
-                media_type=content_type,
-                headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
-                    "Content-Length": str(len(resp.content)),
-                },
-            )
 
     # Static files
     app.mount("/static", StaticFiles(directory="static"), name="static")

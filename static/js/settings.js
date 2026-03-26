@@ -487,25 +487,29 @@ export function init() {
     });
   });
 
-  // Refresh (cache only, keep login)
+  // Refresh (cache only, keep login) — preserve app_version param
   $('#refreshCacheBtn').addEventListener('click', async () => {
     try {
       const keys = await caches.keys();
       await Promise.all(keys.map(k => caches.delete(k)));
     } catch(e) {}
-    window.location.href = window.location.origin + '/?_=' + Date.now();
+    const av = new URLSearchParams(window.location.search).get('app_version') || localStorage.getItem('app_installed_version');
+    const params = '_=' + Date.now() + (av ? '&app_version=' + av : '');
+    window.location.href = window.location.origin + '/?' + params;
   });
 
-  // Clear All & Logout
+  // Clear All & Logout — preserve app installed version
   $('#clearCacheBtn').addEventListener('click', async () => {
+    const appVer = localStorage.getItem('app_installed_version');
     try {
       localStorage.clear();
       sessionStorage.clear();
       const keys = await caches.keys();
       await Promise.all(keys.map(k => caches.delete(k)));
     } catch(e) {}
-    // Force bypass cache by appending cache-busting param
-    window.location.href = window.location.origin + '/?_=' + Date.now();
+    if (appVer) localStorage.setItem('app_installed_version', appVer);
+    const params = '_=' + Date.now() + (appVer ? '&app_version=' + appVer : '');
+    window.location.href = window.location.origin + '/?' + params;
   });
 
   // Disk Usage

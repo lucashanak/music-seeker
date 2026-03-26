@@ -544,14 +544,12 @@
         The app connects to the server — no updates needed when the backend changes.
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <a href="/api/app/MusicSeeker.dmg"
-           class="btn-save" style="text-decoration:none;display:inline-block;text-align:center;">
+        <button class="btn-save" onclick="downloadApp('MusicSeeker.dmg', this)">
           macOS (.dmg)
-        </a>
-        <a href="/api/app/MusicSeeker.apk"
-           class="btn-save" style="text-decoration:none;display:inline-block;text-align:center;">
+        </button>
+        <button class="btn-save" onclick="downloadApp('MusicSeeker.apk', this)">
           Android (.apk)
-        </a>
+        </button>
       </div>
       <div id="appUpdateBanner" style="display:none;margin-top:12px;padding:12px;background:var(--accent-dim);border:1px solid var(--accent);border-radius:12px;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
@@ -559,9 +557,9 @@
             <div style="font-size:13px;font-weight:600;color:var(--accent);">Update available</div>
             <div id="appUpdateVersion" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
           </div>
-          <a id="appUpdateLink" href="#" class="btn-save" style="text-decoration:none;padding:8px 16px;font-size:12px;white-space:nowrap;">
+          <button id="appUpdateLink" class="btn-save" style="padding:8px 16px;font-size:12px;white-space:nowrap;">
             Download
-          </a>
+          </button>
         </div>
       </div>
       <div style="display:flex;gap:8px;margin-top:12px;">
@@ -763,12 +761,30 @@
 <script type="module" src="/static/js/app.js?v=__CACHE_BUST__"></script>
 <script>
 // App update checker — reads real app version from URL param set by Tauri
+// Download app — direct on desktop, copy link on Android WebView
+function downloadApp(filename, btn) {
+  var url = 'https://github.com/lucashanak/music-seeker/releases/latest/download/' + filename;
+  var isAndroid = /android/i.test(navigator.userAgent);
+  if (!isAndroid) {
+    window.location.href = url;
+    return;
+  }
+  navigator.clipboard.writeText(url).then(function() {
+    var orig = btn.textContent;
+    btn.textContent = 'Link copied! Open in browser';
+    setTimeout(function() { btn.textContent = orig; }, 4000);
+  }).catch(function() {
+    prompt('Copy this link and open in your browser:', url);
+  });
+}
+
+// Update checker
 try {
-  // Tauri loads: ?app_version=1.3.7 — use that as source of truth
   var _params = new URLSearchParams(window.location.search);
   var _appVer = _params.get('app_version');
-  if (_appVer) localStorage.setItem('app_version', _appVer);
-  var _inst = localStorage.getItem('app_version');
+  // app_version from URL param is the real installed version — store permanently
+  if (_appVer) localStorage.setItem('app_installed_version', _appVer);
+  var _inst = localStorage.getItem('app_installed_version') || localStorage.getItem('app_version');
   var _el = document.getElementById('appCurrentVersion');
   if (_el) _el.textContent = _inst ? 'v' + _inst + ' — checking...' : 'Checking...';
   fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest')
@@ -788,8 +804,11 @@ try {
           var isAndroid = /android/i.test(navigator.userAgent);
           var file = isAndroid ? 'MusicSeeker.apk' : 'MusicSeeker.dmg';
           var link = document.getElementById('appUpdateLink');
-          link.href = '/api/app/' + file;
-          link.onclick = function() { localStorage.setItem('app_version', latest); };
+          link.onclick = function() {
+            localStorage.setItem('app_installed_version', latest);
+            downloadApp(file, link);
+            return false;
+          };
           banner.style.display = 'block';
         }
       }
