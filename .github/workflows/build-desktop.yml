@@ -224,7 +224,7 @@ jobs:
                                   Toast.makeText(this, "Opening download...", Toast.LENGTH_SHORT).show()
                                   val request = DownloadManager.Request(Uri.parse(url))
                                   request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                                  request.setDestinationInEnvironment(Environment.DIRECTORY_DOWNLOADS, URLUtil.guessFileName(url, null, null))
+                                  request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, URLUtil.guessFileName(url, null, null))
                                   val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                                   dm.enqueue(request)
                               }
