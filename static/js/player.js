@@ -561,9 +561,12 @@ export function init() {
       const btn = $(sel);
       if (btn) btn.style.color = color;
     });
-    // Show/hide DLNA volume slider
+    // Toggle volume sliders: show DLNA volume in cast mode, local volume otherwise
+    const isCasting = color && color !== '';
     const castVol = $('#fpCastVol');
-    if (castVol) castVol.style.display = (color && color !== '') ? '' : 'none';
+    if (castVol) castVol.style.display = isCasting ? '' : 'none';
+    const localVol = document.querySelector('.fp-vol-wrap');
+    if (localVol) localVol.style.display = isCasting ? 'none' : '';
   }
 
   async function _castToDevice(device) {
