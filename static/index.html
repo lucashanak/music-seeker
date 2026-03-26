@@ -553,6 +553,17 @@
           Android (.apk)
         </a>
       </div>
+      <div id="appUpdateBanner" style="display:none;margin-top:12px;padding:12px;background:var(--accent-dim);border:1px solid var(--accent);border-radius:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <div>
+            <div style="font-size:13px;font-weight:600;color:var(--accent);">Update available</div>
+            <div id="appUpdateVersion" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
+          </div>
+          <a id="appUpdateLink" href="#" class="btn-save" style="text-decoration:none;padding:8px 16px;font-size:12px;white-space:nowrap;">
+            Download
+          </a>
+        </div>
+      </div>
       <div style="display:flex;gap:8px;margin-top:12px;">
         <button class="btn-save" id="refreshCacheBtn" style="flex:1;background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);">
           Refresh
@@ -562,6 +573,7 @@
         </button>
       </div>
       <p style="font-size:11px;color:var(--text-muted);margin-top:8px;">
+        <span id="appCurrentVersion"></span>
         macOS 10.15+ / Android 7.0+. Built with Tauri.
       </p>
     </div>

@@ -472,6 +472,67 @@ export function init() {
     $('#settingDlnaUrl').value = val;
   });
 
+  // App update checker
+  (async function checkAppUpdate() {
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+      || window.navigator.standalone === true;
+    const installedVersion = localStorage.getItem('app_version');
+    // Show current version if known
+    if (installedVersion) {
+      const el = $('#appCurrentVersion');
+      if (el) el.textContent = `Installed: ${installedVersion}.`;
+    }
+    // Only auto-check in standalone mode or if user previously installed
+    if (!isStandalone && !installedVersion) return;
+    try {
+      const res = await fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest', {
+        headers: { 'Accept': 'application/vnd.github.v3+json' }
+      });
+      if (!res.ok) return;
+      const release = await res.json();
+      const latest = release.tag_name.replace(/^v/, '');
+      if (!installedVersion) {
+        // First time — just store the version, don't nag
+        localStorage.setItem('app_version', latest);
+        const el = $('#appCurrentVersion');
+        if (el) el.textContent = `Installed: ${latest}.`;
+        return;
+      }
+      if (latest !== installedVersion) {
+        const banner = $('#appUpdateBanner');
+        const versionEl = $('#appUpdateVersion');
+        const linkEl = $('#appUpdateLink');
+        if (banner) {
+          versionEl.textContent = `${installedVersion} → ${latest}`;
+          // Detect platform for download link
+          const isAndroid = /android/i.test(navigator.userAgent);
+          const asset = release.assets.find(a => isAndroid ? a.name.endsWith('.apk') : a.name.endsWith('.dmg'));
+          if (asset) {
+            linkEl.href = asset.browser_download_url;
+            linkEl.addEventListener('click', () => {
+              localStorage.setItem('app_version', latest);
+            });
+          }
+          banner.style.display = 'block';
+        }
+      }
+    } catch(e) {}
+  })();
+
+  // Store version when downloading app from Settings links
+  document.querySelectorAll('#desktopAppSection a[href*="/releases/"]').forEach(a => {
+    a.addEventListener('click', async () => {
+      try {
+        const res = await fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest',
+          { headers: { 'Accept': 'application/vnd.github.v3+json' } });
+        if (res.ok) {
+          const r = await res.json();
+          localStorage.setItem('app_version', r.tag_name.replace(/^v/, ''));
+        }
+      } catch(e) {}
+    });
+  });
+
   // Refresh (cache only, keep login)
   $('#refreshCacheBtn').addEventListener('click', async () => {
     try {
