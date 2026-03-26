@@ -762,5 +762,45 @@
 </div>
 
 <script type="module" src="/static/js/app.js?v=__CACHE_BUST__"></script>
+<script>
+// App update checker — standalone, no module dependencies
+(function(){
+  var statusEl = document.getElementById('appCurrentVersion');
+  var installed = localStorage.getItem('app_version');
+  if (statusEl) statusEl.textContent = installed
+    ? 'v' + installed + ' — checking...'
+    : 'Checking for updates...';
+  fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest')
+    .then(function(r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
+    .then(function(rel) {
+      var latest = rel.tag_name.replace(/^v/, '');
+      if (!installed) {
+        localStorage.setItem('app_version', latest);
+        if (statusEl) statusEl.textContent = 'Latest: ' + latest;
+        return;
+      }
+      if (statusEl) statusEl.textContent = 'v' + installed + ' (latest: ' + latest + ')';
+      if (latest !== installed) {
+        var banner = document.getElementById('appUpdateBanner');
+        if (banner) {
+          document.getElementById('appUpdateVersion').textContent = installed + ' → ' + latest;
+          var isAndroid = /android/i.test(navigator.userAgent);
+          var asset = rel.assets.find(function(a) {
+            return isAndroid ? a.name.indexOf('.apk') > -1 : a.name.indexOf('.dmg') > -1;
+          });
+          if (asset) {
+            var link = document.getElementById('appUpdateLink');
+            link.href = asset.browser_download_url;
+            link.onclick = function() { localStorage.setItem('app_version', latest); };
+          }
+          banner.style.display = 'block';
+        }
+      }
+    })
+    .catch(function(e) {
+      if (statusEl) statusEl.textContent = 'Update check failed: ' + e;
+    });
+})();
+</script>
 </body>
 </html>

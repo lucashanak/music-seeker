@@ -472,56 +472,13 @@ export function init() {
     $('#settingDlnaUrl').value = val;
   });
 
-  // App update checker — always runs when Settings loads
-  (async function checkAppUpdate() {
-    const statusEl = document.getElementById('appCurrentVersion');
-    const installedVersion = localStorage.getItem('app_version');
-    if (statusEl) statusEl.textContent = installedVersion
-      ? `Installed: ${installedVersion}. Checking for updates...`
-      : 'Checking for updates...';
-    let release;
-    try {
-      const res = await fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest');
-      if (!res.ok) {
-        if (statusEl) statusEl.textContent = `Update check failed (${res.status})`;
-        return;
-      }
-      release = await res.json();
-    } catch(e) {
-      if (statusEl) statusEl.textContent = `Update check error: ${e.message}`;
-      return;
-    }
-    const latest = release.tag_name.replace(/^v/, '');
-    // First visit — store current version
-    if (!installedVersion) {
-      localStorage.setItem('app_version', latest);
-      if (statusEl) statusEl.textContent = `Latest: ${latest}.`;
-      return;
-    }
-    if (statusEl) statusEl.textContent = `Installed: ${installedVersion}. Latest: ${latest}.`;
-    if (latest !== installedVersion) {
-      const banner = document.getElementById('appUpdateBanner');
-      if (banner) {
-        document.getElementById('appUpdateVersion').textContent = `${installedVersion} → ${latest}`;
-        const isAndroid = /android/i.test(navigator.userAgent);
-        const isMac = /macintosh/i.test(navigator.userAgent);
-        const asset = release.assets.find(a => isAndroid ? a.name.endsWith('.apk') : a.name.endsWith('.dmg'));
-        if (asset) {
-          const linkEl = document.getElementById('appUpdateLink');
-          linkEl.href = asset.browser_download_url;
-          linkEl.addEventListener('click', () => localStorage.setItem('app_version', latest));
-        }
-        banner.style.display = 'block';
-      }
-    }
-  })();
+  // Update checker is now in inline script in index.html (no module dependency)
 
   // Store version when downloading app from Settings links
   document.querySelectorAll('#desktopAppSection a[href*="/releases/"]').forEach(a => {
     a.addEventListener('click', async () => {
       try {
-        const res = await fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest',
-          { headers: { 'Accept': 'application/vnd.github.v3+json' } });
+        const res = await fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest');
         if (res.ok) {
           const r = await res.json();
           localStorage.setItem('app_version', r.tag_name.replace(/^v/, ''));
