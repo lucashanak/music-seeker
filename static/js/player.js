@@ -443,6 +443,13 @@ export function init() {
       audio.currentTime = 0;
       audio.play().catch(() => {});
     } else {
+      // Guard: ignore premature ended events for streams without proper duration
+      // (YouTube/chunked streams may fire ended before track actually finishes)
+      const dur = _getDuration();
+      if (dur && audio.currentTime < dur * 0.5 && audio.currentTime < 60) {
+        // Likely a stream glitch, not real end — ignore
+        return;
+      }
       nextTrack();
     }
   });
