@@ -180,8 +180,12 @@ jobs:
           cat > "$MAIN_ACT" << KOTLIN
           package $PACKAGE
 
+          import android.content.Intent
+          import android.net.Uri
           import android.os.Bundle
           import android.view.View
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
           import androidx.activity.enableEdgeToEdge
           import androidx.core.view.ViewCompat
           import androidx.core.view.WindowInsetsCompat
@@ -190,6 +194,8 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   enableEdgeToEdge()
                   super.onCreate(savedInstanceState)
+
+                  // Status bar padding
                   val rootView: View = findViewById(android.R.id.content)
                   ViewCompat.setOnApplyWindowInsetsListener(rootView) { v, insets ->
                       val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -199,6 +205,31 @@ jobs:
                       v.setPadding(systemBars.left, systemBars.top, systemBars.right, bottomPadding)
                       insets
                   }
+
+                  // Open external links (github, etc) in system browser
+                  try {
+                      val webView = findWebView(window.decorView)
+                      webView?.webViewClient = object : WebViewClient() {
+                          override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                              if (url != null && !url.contains("musicseeker.hanaktech.org")) {
+                                  startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                  return true
+                              }
+                              return false
+                          }
+                      }
+                  } catch (e: Exception) {}
+              }
+
+              private fun findWebView(view: View): WebView? {
+                  if (view is WebView) return view
+                  if (view is android.view.ViewGroup) {
+                      for (i in 0 until view.childCount) {
+                          val found = findWebView(view.getChildAt(i))
+                          if (found != null) return found
+                      }
+                  }
+                  return null
               }
           }
           KOTLIN
