@@ -475,35 +475,34 @@ export function init() {
   // App update checker — always runs when Settings loads
   (async function checkAppUpdate() {
     const installedVersion = localStorage.getItem('app_version');
-    const versionEl = $('#appCurrentVersion');
+    const versionEl = document.getElementById('appCurrentVersion');
     if (installedVersion && versionEl) {
       versionEl.textContent = `Installed: ${installedVersion}.`;
     }
+    let release;
     try {
-      const res = await fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest', {
-        headers: { 'Accept': 'application/vnd.github.v3+json' }
-      });
-      if (!res.ok) return;
-      const release = await res.json();
-      const latest = release.tag_name.replace(/^v/, '');
-      if (versionEl) versionEl.textContent = installedVersion
-        ? `Installed: ${installedVersion}. Latest: ${latest}.`
-        : `Latest: ${latest}.`;
-      if (installedVersion && latest !== installedVersion) {
-        const banner = $('#appUpdateBanner');
-        if (banner) {
-          $('#appUpdateVersion').textContent = `${installedVersion} → ${latest}`;
-          const isAndroid = /android/i.test(navigator.userAgent);
-          const asset = release.assets.find(a => isAndroid ? a.name.endsWith('.apk') : a.name.endsWith('.dmg'));
-          if (asset) {
-            const linkEl = $('#appUpdateLink');
-            linkEl.href = asset.browser_download_url;
-            linkEl.addEventListener('click', () => localStorage.setItem('app_version', latest));
-          }
-          banner.style.display = 'block';
+      const res = await fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest');
+      if (!res.ok) { console.warn('Update check failed:', res.status); return; }
+      release = await res.json();
+    } catch(e) { console.warn('Update check error:', e); return; }
+    const latest = release.tag_name.replace(/^v/, '');
+    if (versionEl) versionEl.textContent = installedVersion
+      ? `Installed: ${installedVersion}. Latest: ${latest}.`
+      : `Latest: ${latest}.`;
+    if (installedVersion && latest !== installedVersion) {
+      const banner = document.getElementById('appUpdateBanner');
+      if (banner) {
+        document.getElementById('appUpdateVersion').textContent = `${installedVersion} → ${latest}`;
+        const isAndroid = /android/i.test(navigator.userAgent);
+        const asset = release.assets.find(a => isAndroid ? a.name.endsWith('.apk') : a.name.endsWith('.dmg'));
+        if (asset) {
+          const linkEl = document.getElementById('appUpdateLink');
+          linkEl.href = asset.browser_download_url;
+          linkEl.addEventListener('click', () => localStorage.setItem('app_version', latest));
         }
+        banner.style.display = 'block';
       }
-    } catch(e) {}
+    }
   })();
 
   // Store version when downloading app from Settings links
