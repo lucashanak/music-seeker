@@ -20,7 +20,8 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION:-1.0.0}"
           sed -i.bak "s/\"version\": \"1.0.0\"/\"version\": \"${VERSION}\"/" desktop/src-tauri/tauri.conf.json
-          sed -i "s/__APP_VERSION__/${VERSION}/" desktop/src-tauri/tauri.conf.json
+          sed -i.bak "s/__APP_VERSION__/${VERSION}/" desktop/src-tauri/tauri.conf.json
+          rm -f desktop/src-tauri/tauri.conf.json.bak
           echo "Building version: $VERSION"
 
       - name: Setup Node
