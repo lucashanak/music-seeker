@@ -762,21 +762,21 @@
 
 <script type="module" src="/static/js/app.js?v=__CACHE_BUST__"></script>
 <script>
-// App update checker — standalone, no module dependencies
+// App update checker — reads real app version from URL param set by Tauri
 try {
-  var _uc = document.getElementById('appCurrentVersion');
-  if (_uc) _uc.textContent = 'JS works. Checking updates...';
-  else document.title = 'ERR: no element';
-} catch(e) { document.title = 'ERR: ' + e; }
-try {
+  // Tauri loads: ?app_version=1.3.7 — use that as source of truth
+  var _params = new URLSearchParams(window.location.search);
+  var _appVer = _params.get('app_version');
+  if (_appVer) localStorage.setItem('app_version', _appVer);
   var _inst = localStorage.getItem('app_version');
+  var _el = document.getElementById('appCurrentVersion');
+  if (_el) _el.textContent = _inst ? 'v' + _inst + ' — checking...' : 'Checking...';
   fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest')
     .then(function(r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
     .then(function(rel) {
       var latest = rel.tag_name.replace(/^v/, '');
       var el = document.getElementById('appCurrentVersion');
       if (!_inst) {
-        localStorage.setItem('app_version', latest);
         if (el) el.textContent = 'Latest: ' + latest;
         return;
       }
@@ -800,12 +800,9 @@ try {
     })
     .catch(function(e) {
       var el = document.getElementById('appCurrentVersion');
-      if (el) el.textContent = 'Update check failed: ' + e;
+      if (el) el.textContent = _inst ? 'v' + _inst : 'Update check failed: ' + e;
     });
-} catch(e) {
-  var el = document.getElementById('appCurrentVersion');
-  if (el) el.textContent = 'Script error: ' + e;
-}
+} catch(e) {}
 </script>
 </body>
 </html>
