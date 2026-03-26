@@ -86,7 +86,7 @@ body.player-active .player-bar { display: flex; }
 .fp-vol-wrap { display: flex; align-items: center; gap: 6px; flex: 1; max-width: 200px; }
 .fp-vol-wrap svg { width: 18px; height: 18px; color: var(--text-muted); flex-shrink: 0; }
 .fp-vol { flex: 1; height: 4px; accent-color: var(--accent); cursor: pointer; }
-.fp-cast-vol { display: flex; align-items: center; gap: 8px; padding: 0 24px; margin-top: 4px; }
+.fp-cast-vol { display: flex; align-items: center; gap: 10px; padding: 0 24px; margin-top: 8px; width: 100%; box-sizing: border-box; }
 .fp-cast-vol svg { flex-shrink: 0; color: var(--accent); }
 .fp-cast-vol .fp-vol { flex: 1; }
 
