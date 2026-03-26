@@ -643,7 +643,10 @@ export function init() {
           _castSkipAutoAdvance = false;
           _castTransitioning = false;
         }
-        if (!_castSkipAutoAdvance && _castLastState.includes('playing') && (state.includes('stopped') || state.includes('no_media'))) {
+        // Only auto-advance if position is near end of track (not just a buffer glitch)
+        const nearEnd = dur > 0 && pos >= dur - 5;
+        if (!_castSkipAutoAdvance && _castLastState.includes('playing') &&
+            (state.includes('stopped') || state.includes('no_media')) && nearEnd) {
           nextTrack();
         }
         _castLastState = state;
