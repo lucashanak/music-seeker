@@ -221,6 +221,34 @@ async def stream_local_file(file_path: str):
             await proc.wait()
 
 
+async def cache_navidrome_stream(song_id: str) -> str | None:
+    """Download Navidrome stream to temp file and return path.
+    Cached files enable Content-Length, Range requests, and correct duration."""
+    import tempfile
+    cache_dir = os.path.join(tempfile.gettempdir(), "ms-nav-cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{song_id}.mp3")
+    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+        return cache_path
+    params = library._params(id=song_id, format="mp3", maxBitRate=192)
+    url = f"{library.NAVIDROME_URL}/rest/stream"
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            async with client.stream("GET", url, params=params) as resp:
+                resp.raise_for_status()
+                with open(cache_path + ".tmp", "wb") as f:
+                    async for chunk in resp.aiter_bytes(8192):
+                        f.write(chunk)
+        os.rename(cache_path + ".tmp", cache_path)
+        return cache_path
+    except Exception:
+        # Cleanup partial file
+        for p in (cache_path + ".tmp", cache_path):
+            if os.path.exists(p):
+                os.unlink(p)
+        return None
+
+
 async def stream_navidrome(song_id: str):
     """Yield audio chunks from Navidrome Subsonic stream endpoint."""
     params = library._params(id=song_id, format="mp3", maxBitRate=192)

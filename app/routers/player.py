@@ -20,6 +20,10 @@ async def player_stream_head(name: str, artist: str = "", user: dict = Depends(_
     if result["source"] == "local":
         size = os.path.getsize(result["path"])
         headers["Content-Length"] = str(size)
+    elif result["source"] == "navidrome":
+        cached = await player.cache_navidrome_stream(result["song_id"])
+        if cached:
+            headers["Content-Length"] = str(os.path.getsize(cached))
     from fastapi.responses import Response
     return Response(content=b"", headers=headers, media_type="audio/mpeg")
 
@@ -36,6 +40,10 @@ async def player_stream(name: str, artist: str = "", user: dict = Depends(_strea
         # FileResponse supports Range requests (required by Safari for duration/seek)
         return FileResponse(path, media_type="audio/mpeg", headers=headers)
     elif source == "navidrome":
+        # Try cached file first (supports Range requests, seeking, correct duration)
+        cached = await player.cache_navidrome_stream(result["song_id"])
+        if cached:
+            return FileResponse(cached, media_type="audio/mpeg", headers=headers)
         return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg", headers=headers)
     else:
         return StreamingResponse(player.stream_youtube(result["url"]), media_type="audio/mpeg", headers=headers)
