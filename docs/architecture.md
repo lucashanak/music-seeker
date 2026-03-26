@@ -65,6 +65,7 @@
 
 - **Multi-source streaming**: Player resolves streams in order: local file → Navidrome → YouTube proxy. Each source is tried and the first success is used. YouTube URLs are cached for 4 hours.
 - **Per-user isolation**: Each user has their own download folder (`/music/{username}/`), queue state, Spotify credentials, and favorites.
+- **Multi-device support**: Each device sends a UUID via `X-Device-ID` header. Queues are stored per-device (`player/{username}_{device_id}.json`), DLNA cast sessions are keyed by `{username}:{device_id}`, and device settings (name, output mode, renderer URL) are stored in `users.json`.
 - **Fuzzy library matching**: Navidrome library check uses normalized string comparison to handle variations (remasters, feat. tags, live versions).
 - **Metadata embedding**: yt-dlp downloads raw audio, then metaflac (FLAC) or ffmpeg (MP3) embeds artist/title/album/artwork from the search provider (Deezer/Spotify), not from YouTube.
 
@@ -113,12 +114,13 @@ All data is stored as JSON files in `/app/data/`:
 
 | File | Purpose |
 |------|---------|
-| `users.json` | User accounts, hashed passwords, permissions, Spotify tokens |
+| `users.json` | User accounts, hashed passwords, permissions, Spotify tokens, device settings |
 | `settings.json` | App configuration (search provider, Navidrome creds, etc.) |
 | `jobs.json` | Download job history |
 | `favorites.json` | Followed artists with auto-download settings |
 | `podcast_subs.json` | Podcast subscriptions |
-| `player/{username}.json` | Per-user queue state (tracks, position, volume, playlist mode) |
+| `player/{username}.json` | Default queue state (legacy fallback) |
+| `player/{username}_{device_id}.json` | Per-device queue state (tracks, position, volume, playlist mode) |
 | `jwt_secret` | Persistent JWT signing secret |
 
 ## Docker

@@ -26,6 +26,8 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 - **Full-screen player** — album art, seek bar, shuffle, repeat (off/all/one)
 - **Queue** — drag & drop reorder, per-user persistent, save as Navidrome playlist
 - **Playlist Mode** — queue linked to Navidrome playlist with auto-sync
+- **Multi-device** — separate queue and play progress per device, with device naming
+- **Output modes** — Default (local + cast), Local Only, DLNA Only (auto-connects on play)
 - **Source badge** — shows LOCAL / FLAC / YT on mini and full player
 - **Swipe gestures** — expand player, next/prev track, tap to play/pause
 - **Keyboard shortcuts** — Space (play/pause), arrows (skip, volume)
@@ -58,6 +60,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 ### DLNA/UPnP Cast
 - **Cast to network speakers** — auto-discovers renderers via SSDP
 - **Full control** — play, pause, stop, seek, volume from MusicSeeker UI
+- **Per-device sessions** — each device has its own independent cast session
 - **Metadata** — sends title, artist, album art to renderer display
 
 ### Native Apps
@@ -70,6 +73,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 - **JWT auth** — admin and user roles
 - **Per-user permissions** — restrict formats (MP3/FLAC), methods (yt-dlp/slskd/Lidarr), storage quotas
 - **Per-user folders** — downloads go to `/music/{username}/` with disk usage tracking
+- **Device management** — register, name, and configure devices per user
 
 ### UI
 - **Dark theme** — Spotify-inspired with lime green accent

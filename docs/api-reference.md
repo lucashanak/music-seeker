@@ -49,14 +49,16 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 
 ## Player
 
+Queue endpoints use `X-Device-ID` header for per-device isolation. Missing header defaults to `"default"`.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/player/stream?name=..&artist=..` | Stream audio (local > Navidrome > YouTube) |
 | `HEAD` | `/api/player/stream?name=..&artist=..` | Stream metadata (for DLNA) |
-| `GET` | `/api/player/queue` | Get user's player queue |
-| `PUT` | `/api/player/queue` | Save player queue state |
-| `POST` | `/api/player/queue/add` | Add tracks to queue |
-| `DELETE` | `/api/player/queue` | Clear player queue |
+| `GET` | `/api/player/queue` | Get player queue (per-device via `X-Device-ID`) |
+| `PUT` | `/api/player/queue` | Save player queue state (per-device) |
+| `POST` | `/api/player/queue/add` | Add tracks to queue (per-device) |
+| `DELETE` | `/api/player/queue` | Clear player queue (per-device) |
 | `GET` | `/api/player/recommendations` | Get recommendations from queue |
 | `POST` | `/api/player/recommendations` | Get recommendations from track list |
 | `GET` | `/api/player/resolve-source?name=..&artist=..` | Resolve stream source type |
@@ -125,17 +127,32 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 
 ## DLNA/UPnP Cast
 
+Cast control uses `X-Device-ID` header for per-device sessions. Each device has its own independent cast session keyed by `{username}:{device_id}`.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/dlna/devices` | List discovered DLNA renderers |
 | `POST` | `/api/dlna/scan` | Active SSDP scan |
-| `POST` | `/api/dlna/cast` | Cast track to a DLNA renderer |
-| `POST` | `/api/dlna/play` | Resume playback on renderer |
-| `POST` | `/api/dlna/pause` | Pause playback on renderer |
-| `POST` | `/api/dlna/stop` | Stop casting |
+| `POST` | `/api/dlna/cast` | Cast track to a DLNA renderer (per-device session) |
+| `POST` | `/api/dlna/play` | Resume playback on renderer (per-device session) |
+| `POST` | `/api/dlna/pause` | Pause playback on renderer (per-device session) |
+| `POST` | `/api/dlna/stop` | Stop casting (per-device session) |
 | `POST` | `/api/dlna/seek` | Seek to position (seconds) |
 | `POST` | `/api/dlna/volume` | Set renderer volume (0-100) |
-| `GET` | `/api/dlna/status` | Get cast status |
+| `GET` | `/api/dlna/status` | Get cast status (per-device session) |
+
+## Device Management
+
+Each client generates a UUID stored in `localStorage` and sends it as `X-Device-ID` header. Device IDs must match `^[a-zA-Z0-9_-]{1,64}$`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/user/devices` | List registered devices for current user |
+| `PUT` | `/api/user/devices/:device_id` | Register or update device (name, output_mode, dlna_renderer_url) |
+| `DELETE` | `/api/user/devices/:device_id` | Remove a device and its queue file |
+| `GET` | `/api/user/device-settings` | Get settings for current device (from `X-Device-ID` header) |
+
+**Output modes**: `default` (local playback + cast button), `local` (no casting), `dlna_only` (auto-connect to DLNA renderer on play).
 
 ## Settings & Admin
 

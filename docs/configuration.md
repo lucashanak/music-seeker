@@ -92,3 +92,20 @@ Each user can configure:
 | Allowed formats | MP3, FLAC (admin-configurable per user) |
 | Allowed methods | yt-dlp, slskd, Lidarr (admin-configurable per user) |
 | Storage quota | Max disk usage in GB, 0 = unlimited (admin-configurable) |
+
+## Per-Device Settings
+
+Each device (browser/app instance) is identified by a UUID stored in `localStorage` and sent as `X-Device-ID` header. Settings are configured in Settings > "This Device":
+
+| Setting | Values | Description |
+|---------|--------|-------------|
+| Device Name | free text | Friendly name (e.g. "Phone", "Work PC", "Tablet") |
+| Output Mode | `default` / `local` / `dlna_only` | Controls playback routing |
+| DLNA Renderer URL | URL | Renderer for DLNA Only mode |
+
+**Output modes:**
+- **Default** — local browser playback with optional cast button
+- **Local Only** — hides cast button, never sends to DLNA
+- **DLNA Only** — auto-connects to configured renderer on play, no local audio
+
+Each device has its own independent queue, play position, and DLNA cast session. View and manage all registered devices in Settings > "This Device" > "My Devices".
