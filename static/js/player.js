@@ -8,7 +8,8 @@ import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 
 const audio = $('#audioElement');
-const _ab = typeof window.AndroidBridge !== 'undefined' ? window.AndroidBridge : null;
+function _ab() { return window.AndroidBridge || null; }
+let _lastAbUpdate = 0;
 
 // Android native media action callback (notification buttons → WebView)
 window._androidMediaAction = function(action) {
@@ -449,14 +450,14 @@ export function init() {
   // Audio events
   audio.addEventListener('play', () => {
     updatePlayPauseIcon(true);
-    if (_ab) {
+    if (_ab()) {
       const item = store.playerQueue[store.playerIndex];
-      if (item) _ab.onPlay(item.name || '', item.artist || '');
+      if (item) _ab().onPlay(item.name || '', item.artist || '');
     }
   });
   audio.addEventListener('pause', () => {
     updatePlayPauseIcon(false);
-    if (_ab) _ab.onPause();
+    if (_ab()) _ab().onPause();
   });
   audio.addEventListener('ended', () => {
     if (store.repeatMode === 'one') {
@@ -482,6 +483,11 @@ export function init() {
     if (fpCur) fpCur.textContent = fmtTime(audio.currentTime);
     const fpTot = $('#fpTimeTotal');
     if (fpTot) fpTot.textContent = fmtTime(dur);
+    // Update Android notification progress (throttled to ~1/sec)
+    if (_ab() && Math.abs(audio.currentTime - (_lastAbUpdate || 0)) >= 1) {
+      _lastAbUpdate = audio.currentTime;
+      _ab().onProgress(Math.floor(audio.currentTime * 1000), Math.floor(dur * 1000));
+    }
   });
   audio.addEventListener('error', () => {
     showToast('Stream error, skipping...');

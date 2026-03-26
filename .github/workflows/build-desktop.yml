@@ -233,6 +233,15 @@ jobs:
                           action = "ACTION_STOP"
                       })
                   }
+
+                  @JavascriptInterface
+                  fun onProgress(positionMs: Long, durationMs: Long) {
+                      startService(Intent(this@MainActivity, AudioService::class.java).apply {
+                          action = "ACTION_PROGRESS"
+                          putExtra("position", positionMs)
+                          putExtra("duration", durationMs)
+                      })
+                  }
               }
 
               override fun onCreate(savedInstanceState: Bundle?) {
@@ -311,6 +320,8 @@ jobs:
               private var wakeLock: PowerManager.WakeLock? = null
               private var currentTitle = ""
               private var currentArtist = ""
+              private var currentPosition = 0L
+              private var currentDuration = 0L
               private val CHANNEL_ID = "audio_playback"
               private val NOTIFICATION_ID = 1
 
@@ -338,6 +349,11 @@ jobs:
                           updateNotification(true)
                       }
                       "ACTION_PAUSE" -> updateNotification(false)
+                      "ACTION_PROGRESS" -> {
+                          currentPosition = intent.getLongExtra("position", 0L)
+                          currentDuration = intent.getLongExtra("duration", 0L)
+                          updatePlaybackState(true)
+                      }
                       "ACTION_STOP" -> {
                           stopForeground(STOP_FOREGROUND_REMOVE)
                           stopSelf()
@@ -364,21 +380,30 @@ jobs:
                   }
               }
 
-              private fun updateNotification(isPlaying: Boolean) {
-                  mediaSession?.setMetadata(MediaMetadataCompat.Builder()
-                      .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
-                      .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
-                      .build())
+              private var isCurrentlyPlaying = false
+
+              private fun updatePlaybackState(isPlaying: Boolean) {
+                  isCurrentlyPlaying = isPlaying
                   mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
                       .setState(
                           if (isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED,
-                          0L, 1f
+                          currentPosition, 1f
                       )
                       .setActions(
                           PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE
                           or PlaybackStateCompat.ACTION_SKIP_TO_NEXT or PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+                          or PlaybackStateCompat.ACTION_SEEK_TO
                       )
                       .build())
+              }
+
+              private fun updateNotification(isPlaying: Boolean) {
+                  mediaSession?.setMetadata(MediaMetadataCompat.Builder()
+                      .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
+                      .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
+                      .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDuration)
+                      .build())
+                  updatePlaybackState(isPlaying)
 
                   val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                       .setSmallIcon(android.R.drawable.ic_media_play)
