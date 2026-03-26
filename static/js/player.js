@@ -260,10 +260,20 @@ export function playRecTrack(item) {
   if (fpTot) fpTot.textContent = '0:00';
   const cleanName = _decodeEntities(item.name || '');
   const cleanArtist = _decodeEntities(item.artist || '');
-  const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
-  audio.src = `/api/player/stream?${params}`;
-  audio.load();
-  audio.play().catch(() => {});
+  // Cast mode: send to DLNA renderer
+  if (store.castDevice) {
+    _castSkipAutoAdvance = true;
+    _castTransitioning = true;
+    apiJson('/api/dlna/cast', { method: 'POST', body: {
+      device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
+      album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
+    }}).catch(e => { showToast('Cast failed: ' + (e.message || '')); _castTransitioning = false; });
+  } else {
+    const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
+    audio.src = `/api/player/stream?${params}`;
+    audio.load();
+    audio.play().catch(() => {});
+  }
   showPlayerBar();
   updatePlayPauseIcon(true);
   // Sync full player directly
