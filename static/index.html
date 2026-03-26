@@ -544,14 +544,12 @@
         The app connects to the server — no updates needed when the backend changes.
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <a href="https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.dmg"
-           class="btn-save ext-link" style="text-decoration:none;display:inline-block;text-align:center;">
+        <button class="btn-save" onclick="window.location.href='https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.dmg'">
           macOS (.dmg)
-        </a>
-        <a href="https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.apk"
-           class="btn-save ext-link" style="text-decoration:none;display:inline-block;text-align:center;">
+        </button>
+        <button class="btn-save" onclick="window.location.href='https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.apk'">
           Android (.apk)
-        </a>
+        </button>
       </div>
       <div id="appUpdateBanner" style="display:none;margin-top:12px;padding:12px;background:var(--accent-dim);border:1px solid var(--accent);border-radius:12px;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
@@ -559,9 +557,9 @@
             <div style="font-size:13px;font-weight:600;color:var(--accent);">Update available</div>
             <div id="appUpdateVersion" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
           </div>
-          <a id="appUpdateLink" href="#" class="btn-save ext-link" style="text-decoration:none;padding:8px 16px;font-size:12px;white-space:nowrap;">
+          <button id="appUpdateLink" class="btn-save" style="padding:8px 16px;font-size:12px;white-space:nowrap;">
             Download
-          </a>
+          </button>
         </div>
       </div>
       <div style="display:flex;gap:8px;margin-top:12px;">
@@ -781,7 +779,7 @@ try {
         return;
       }
       if (el) el.textContent = 'v' + _inst + ' (latest: ' + latest + ')';
-      if (latest !== _inst) {
+      if (latest !== _inst && _appVer) {
         var banner = document.getElementById('appUpdateBanner');
         if (banner) {
           document.getElementById('appUpdateVersion').textContent = _inst + ' → ' + latest;
@@ -791,8 +789,11 @@ try {
           });
           if (asset) {
             var link = document.getElementById('appUpdateLink');
-            link.href = asset.browser_download_url;
-            link.onclick = function() { localStorage.setItem('app_version', latest); };
+            var dlUrl = asset.browser_download_url;
+            link.onclick = function() {
+              localStorage.setItem('app_version', latest);
+              window.location.href = dlUrl;
+            };
           }
           banner.style.display = 'block';
         }
