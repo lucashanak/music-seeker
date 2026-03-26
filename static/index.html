@@ -572,8 +572,7 @@
           Clear All &amp; Logout
         </button>
       </div>
-      <p style="font-size:11px;color:var(--text-muted);margin-top:8px;">
-        <span id="appCurrentVersion"></span>
+      <p id="appCurrentVersion" style="font-size:11px;color:var(--text-muted);margin-top:8px;">
         macOS 10.15+ / Android 7.0+. Built with Tauri.
       </p>
     </div>
@@ -764,26 +763,28 @@
 <script type="module" src="/static/js/app.js?v=__CACHE_BUST__"></script>
 <script>
 // App update checker — standalone, no module dependencies
-(function(){
-  var statusEl = document.getElementById('appCurrentVersion');
-  var installed = localStorage.getItem('app_version');
-  if (statusEl) statusEl.textContent = installed
-    ? 'v' + installed + ' — checking...'
-    : 'Checking for updates...';
+try {
+  var _uc = document.getElementById('appCurrentVersion');
+  if (_uc) _uc.textContent = 'JS works. Checking updates...';
+  else document.title = 'ERR: no element';
+} catch(e) { document.title = 'ERR: ' + e; }
+try {
+  var _inst = localStorage.getItem('app_version');
   fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest')
     .then(function(r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
     .then(function(rel) {
       var latest = rel.tag_name.replace(/^v/, '');
-      if (!installed) {
+      var el = document.getElementById('appCurrentVersion');
+      if (!_inst) {
         localStorage.setItem('app_version', latest);
-        if (statusEl) statusEl.textContent = 'Latest: ' + latest;
+        if (el) el.textContent = 'Latest: ' + latest;
         return;
       }
-      if (statusEl) statusEl.textContent = 'v' + installed + ' (latest: ' + latest + ')';
-      if (latest !== installed) {
+      if (el) el.textContent = 'v' + _inst + ' (latest: ' + latest + ')';
+      if (latest !== _inst) {
         var banner = document.getElementById('appUpdateBanner');
         if (banner) {
-          document.getElementById('appUpdateVersion').textContent = installed + ' → ' + latest;
+          document.getElementById('appUpdateVersion').textContent = _inst + ' → ' + latest;
           var isAndroid = /android/i.test(navigator.userAgent);
           var asset = rel.assets.find(function(a) {
             return isAndroid ? a.name.indexOf('.apk') > -1 : a.name.indexOf('.dmg') > -1;
@@ -798,9 +799,13 @@
       }
     })
     .catch(function(e) {
-      if (statusEl) statusEl.textContent = 'Update check failed: ' + e;
+      var el = document.getElementById('appCurrentVersion');
+      if (el) el.textContent = 'Update check failed: ' + e;
     });
-})();
+} catch(e) {
+  var el = document.getElementById('appCurrentVersion');
+  if (el) el.textContent = 'Script error: ' + e;
+}
 </script>
 </body>
 </html>
