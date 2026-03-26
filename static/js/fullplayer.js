@@ -59,6 +59,9 @@ export function openFullPlayer() {
     scrollToNowPlaying($('#fpQueueList'));
   }
   history.pushState({ layer: 'fullPlayer' }, '');
+  // Show/hide cast volume slider
+  const castVol = $('#fpCastVol');
+  if (castVol) castVol.style.display = store.castDevice ? '' : 'none';
   // Load recommendations if not loaded yet
   import('./recommendations.js').then(m => m.onPanelOpened());
 }

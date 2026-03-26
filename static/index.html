@@ -692,6 +692,11 @@
         <input type="range" class="fp-vol" id="fpVolume" min="0" max="100" value="100">
       </div>
     </div>
+    <div class="fp-cast-vol" id="fpCastVol" style="display:none;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 16.1A5 5 0 015.9 20M2 12.05A9 9 0 019.95 20M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>
+      <input type="range" class="fp-vol" id="fpCastVolume" min="0" max="100" value="10">
+      <span id="fpCastVolLabel" style="font-size:11px;color:var(--text-muted);min-width:28px;text-align:right;">10%</span>
+    </div>
   </div>
   <div class="fp-queue-side" id="fpQueueSide">
     <div class="panel-header">Queue <span class="playlist-mode-badge" id="fpPlaylistBadge" style="display:none;"></span><div style="display:flex;gap:8px;align-items:center;"><button class="btn-logout" id="fpSaveQueue" style="font-size:11px;display:none;">Save</button><button class="btn-logout" id="fpClearQueue" style="font-size:11px;">Clear</button></div></div>

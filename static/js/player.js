@@ -543,11 +543,27 @@ export function init() {
   $('#playerCastBtn').addEventListener('click', _handleCastClick);
   if ($('#fpCastBtn')) $('#fpCastBtn').addEventListener('click', _handleCastClick);
 
+  // DLNA cast volume slider
+  const castVolSlider = $('#fpCastVolume');
+  if (castVolSlider) {
+    castVolSlider.addEventListener('input', (e) => {
+      const vol = parseInt(e.target.value);
+      const label = $('#fpCastVolLabel');
+      if (label) label.textContent = vol + '%';
+      if (store.castDevice) {
+        apiJson('/api/dlna/volume', { method: 'POST', body: { volume: vol } }).catch(() => {});
+      }
+    });
+  }
+
   function _syncCastButtons(color) {
     ['#playerCastBtn', '#fpCastBtn'].forEach(sel => {
       const btn = $(sel);
       if (btn) btn.style.color = color;
     });
+    // Show/hide DLNA volume slider
+    const castVol = $('#fpCastVol');
+    if (castVol) castVol.style.display = (color && color !== '') ? '' : 'none';
   }
 
   async function _castToDevice(device) {
@@ -596,6 +612,13 @@ export function init() {
         if (fpCur) fpCur.textContent = fmtTime(pos);
         const fpTot = $('#fpTimeTotal');
         if (fpTot) fpTot.textContent = fmtTime(dur);
+        // Sync cast volume slider
+        if (status.volume !== undefined) {
+          const cvs = $('#fpCastVolume');
+          const cvl = $('#fpCastVolLabel');
+          if (cvs && !cvs.matches(':active')) { cvs.value = status.volume; }
+          if (cvl) cvl.textContent = status.volume + '%';
+        }
         // Detect track end: state changed from playing to stopped/no_media
         const state = (status.state || '').toLowerCase();
         if (state.includes('playing')) {
