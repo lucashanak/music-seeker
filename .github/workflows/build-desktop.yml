@@ -129,7 +129,7 @@ jobs:
         run: |
           sudo apt-get install -y librsvg2-bin
           cd desktop/src-tauri/icons
-          for size in 32 128 256 512; do
+          for size in 32 48 72 96 128 144 192 256 512; do
             rsvg-convert -w $size -h $size icon.svg > icon_${size}.png
           done
           cp icon_512.png icon.png
@@ -141,6 +141,26 @@ jobs:
       - name: Init Android project
         working-directory: desktop
         run: npx tauri android init
+
+      - name: Set Android app icon
+        run: |
+          GEN="desktop/src-tauri/gen/android"
+          ICONS="desktop/src-tauri/icons"
+          RES="$GEN/app/src/main/res"
+
+          # Replace default icons in mipmap directories
+          cp "$ICONS/icon_48.png"  "$RES/mipmap-mdpi/ic_launcher.png"
+          cp "$ICONS/icon_72.png"  "$RES/mipmap-hdpi/ic_launcher.png"
+          cp "$ICONS/icon_96.png"  "$RES/mipmap-xhdpi/ic_launcher.png"
+          cp "$ICONS/icon_144.png" "$RES/mipmap-xxhdpi/ic_launcher.png"
+          cp "$ICONS/icon_192.png" "$RES/mipmap-xxxhdpi/ic_launcher.png"
+
+          # Round icons (same as regular for our rounded-rect SVG)
+          cp "$ICONS/icon_48.png"  "$RES/mipmap-mdpi/ic_launcher_round.png"
+          cp "$ICONS/icon_72.png"  "$RES/mipmap-hdpi/ic_launcher_round.png"
+          cp "$ICONS/icon_96.png"  "$RES/mipmap-xhdpi/ic_launcher_round.png"
+          cp "$ICONS/icon_144.png" "$RES/mipmap-xxhdpi/ic_launcher_round.png"
+          cp "$ICONS/icon_192.png" "$RES/mipmap-xxxhdpi/ic_launcher_round.png"
 
       - name: Patch Android project
         run: |
