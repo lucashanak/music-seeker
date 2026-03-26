@@ -71,12 +71,15 @@ export function loadAndPlay() {
   const cleanArtist = _decodeEntities(item.artist || '');
   // Cast mode: send to DLNA renderer instead of local audio
   if (store.castDevice) {
-    _castSkipAutoAdvance = true; // Suppress auto-advance from Stop→SetURI transition
-    _castTransitioning = true; // Prevent status poll from clearing castDevice during track change
-    apiJson('/api/dlna/cast', { method: 'POST', body: {
+    _castSkipAutoAdvance = true;
+    _castTransitioning = true;
+    const castBody = {
       device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
       album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
-    }}).catch(() => showToast('Cast failed'));
+    };
+    apiJson('/api/dlna/cast', { method: 'POST', body: castBody })
+      .then(() => { /* cast started */ })
+      .catch(e => { showToast('Cast failed: ' + (e.message || '')); _castTransitioning = false; });
   } else {
     const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
     audio.src = `/api/player/stream?${params}`;
@@ -161,12 +164,14 @@ export function hidePlayerBar() {
 let _castLastState = '';
 let _castSkipAutoAdvance = false;
 let _castTransitioning = false;
+let _castTransitionTimer = null;
 
 // ── Next / Prev ──
 export function nextTrack() {
   if (store.castDevice) {
-    // In cast mode, skip rec check — go directly to next in queue
     _castTransitioning = true;
+    clearTimeout(_castTransitionTimer);
+    _castTransitionTimer = setTimeout(() => { _castTransitioning = false; }, 20000);
     _nextTrackInQueue();
     return;
   }
@@ -288,6 +293,8 @@ function updateMediaSessionWith(item) {
 export function prevTrack() {
   if (store.castDevice) {
     _castTransitioning = true;
+    clearTimeout(_castTransitionTimer);
+    _castTransitionTimer = setTimeout(() => { _castTransitioning = false; }, 20000);
     if (store.playerIndex > 0) {
       store.playerIndex--;
       loadAndPlay();
