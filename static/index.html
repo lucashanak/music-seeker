@@ -544,16 +544,12 @@
         The app connects to the server — no updates needed when the backend changes.
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <a href="https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.dmg"
-           target="_blank" rel="noopener"
-           class="btn-save" style="text-decoration:none;display:inline-block;text-align:center;">
+        <button class="btn-save" onclick="window.open('https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.dmg')">
           macOS (.dmg)
-        </a>
-        <a href="https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.apk"
-           target="_blank" rel="noopener"
-           class="btn-save" style="text-decoration:none;display:inline-block;text-align:center;">
+        </button>
+        <button class="btn-save" onclick="var u='https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.apk';try{location.href='intent://'+u.replace('https://','')+'#Intent;scheme=https;action=android.intent.action.VIEW;end;'}catch(e){window.open(u)}">
           Android (.apk)
-        </a>
+        </button>
       </div>
       <div id="appUpdateBanner" style="display:none;margin-top:12px;padding:12px;background:var(--accent-dim);border:1px solid var(--accent);border-radius:12px;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
@@ -561,9 +557,9 @@
             <div style="font-size:13px;font-weight:600;color:var(--accent);">Update available</div>
             <div id="appUpdateVersion" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div>
           </div>
-          <a id="appUpdateLink" href="#" target="_blank" rel="noopener" class="btn-save" style="text-decoration:none;padding:8px 16px;font-size:12px;white-space:nowrap;">
+          <button id="appUpdateLink" class="btn-save" style="padding:8px 16px;font-size:12px;white-space:nowrap;">
             Download
-          </a>
+          </button>
         </div>
       </div>
       <div style="display:flex;gap:8px;margin-top:12px;">
@@ -793,8 +789,14 @@ try {
           });
           if (asset) {
             var link = document.getElementById('appUpdateLink');
-            link.href = asset.browser_download_url;
-            link.onclick = function() { localStorage.setItem('app_version', latest); };
+            var url = asset.browser_download_url;
+            link.onclick = function() {
+              localStorage.setItem('app_version', latest);
+              if (isAndroid) {
+                try { location.href = 'intent://' + url.replace('https://','') + '#Intent;scheme=https;action=android.intent.action.VIEW;end;'; }
+                catch(e) { window.open(url); }
+              } else { window.open(url); }
+            };
           }
           banner.style.display = 'block';
         }
