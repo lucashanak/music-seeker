@@ -157,9 +157,19 @@ export function hidePlayerBar() {
   if (npBtn) npBtn.style.display = 'none';
 }
 
+// ── Cast state ──
+let _castLastState = '';
+let _castSkipAutoAdvance = false;
+let _castTransitioning = false;
+
 // ── Next / Prev ──
 export function nextTrack() {
-  if (store.castDevice) _castTransitioning = true;
+  if (store.castDevice) {
+    // In cast mode, skip rec check — go directly to next in queue
+    _castTransitioning = true;
+    _nextTrackInQueue();
+    return;
+  }
   // If playing a virtual rec track, advance to next rec
   import('./recommendations.js').then(m => {
     if (m.isPlayingRec()) {
@@ -551,9 +561,7 @@ export function init() {
     }
   }
 
-  let _castLastState = '';
-  let _castSkipAutoAdvance = false;
-  let _castTransitioning = false;
+  // Cast state vars are module-level (see above init)
   function _startCastPoll() {
     clearInterval(store.castPollTimer);
     _castLastState = '';
@@ -561,7 +569,11 @@ export function init() {
       if (!store.castDevice) { clearInterval(store.castPollTimer); return; }
       try {
         const status = await apiJson('/api/dlna/status');
-        if (!status.active && !_castTransitioning) { store.castDevice = null; _syncCastButtons(''); clearInterval(store.castPollTimer); return; }
+        if (!status.active && !_castTransitioning) {
+          // Check if backend is transitioning (track change in progress)
+          if (status.state === 'TRANSITIONING') return;
+          store.castDevice = null; _syncCastButtons(''); clearInterval(store.castPollTimer); return;
+        }
         const dur = status.duration_seconds || 0;
         const pos = status.position_seconds || 0;
         if (dur > 0) {

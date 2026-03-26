@@ -17,6 +17,7 @@ _requester = None
 _factory = None
 _cast_lock = asyncio.Lock()
 _cast_generation = 0  # incremented on each cast call to cancel stale ones
+_transitioning = False  # True during track change (prevents status returning None)
 
 # Server URL for DLNA renderer to fetch audio from
 DLNA_SERVER_URL = os.environ.get("DLNA_SERVER_URL", "")
@@ -221,7 +222,7 @@ async def scan_devices() -> list[dict]:
 
 async def cast_to_device(device_id: str, name: str, artist: str, token: str,
                           album: str = "", image: str = "", duration_ms: int = 0) -> bool:
-    global _active_device, _dmr, _cast_generation
+    global _active_device, _dmr, _cast_generation, _transitioning
 
     # Find device
     device = None
@@ -235,9 +236,9 @@ async def cast_to_device(device_id: str, name: str, artist: str, token: str,
     # Increment generation — any older cast in progress will abort
     _cast_generation += 1
     my_gen = _cast_generation
+    _transitioning = True
 
     async with _cast_lock:
-        # Check if we've been superseded by a newer cast call
         if my_gen != _cast_generation:
             logger.info(f"DLNA: cast '{name}' superseded, skipping")
             return False
@@ -247,55 +248,52 @@ async def cast_to_device(device_id: str, name: str, artist: str, token: str,
             from async_upnp_client.client_factory import UpnpFactory
             from async_upnp_client.profiles.dlna import DmrDevice
 
-            # Always create fresh requester+device for reliability
-            requester = AiohttpRequester()
-            factory = UpnpFactory(requester)
-            upnp_device = await asyncio.wait_for(
-                factory.async_create_device(device["location"]), timeout=10
-            )
-            _dmr = DmrDevice(upnp_device, None)
+            # Reuse DMR for same device, create fresh only if device changed
+            if not _dmr or _active_device != device:
+                requester = AiohttpRequester()
+                factory = UpnpFactory(requester)
+                upnp_device = await asyncio.wait_for(
+                    factory.async_create_device(device["location"]), timeout=10
+                )
+                _dmr = DmrDevice(upnp_device, None)
 
             if my_gen != _cast_generation:
+                _transitioning = False
                 return False
 
             base = _get_server_url()
             stream_url = f"{base}/api/player/stream?name={quote(name)}&artist={quote(artist)}&token={quote(token)}"
             metadata = _build_didl_metadata(name, artist, album, image, duration_ms, stream_url)
 
-            # Stop current playback first
-            try:
-                await asyncio.wait_for(_dmr.async_stop(), timeout=3)
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
-
-            if my_gen != _cast_generation:
-                return False
-
+            # Per UPnP spec: SetAVTransportURI works in any state (including PLAYING)
+            # No need to Stop first — the renderer handles the transition internally
             await asyncio.wait_for(
                 _dmr.async_set_transport_uri(stream_url, metadata), timeout=15
             )
-            await asyncio.sleep(0.5)
 
             if my_gen != _cast_generation:
+                _transitioning = False
                 return False
 
-            # Retry Play up to 3 times
-            for attempt in range(3):
-                try:
-                    await asyncio.wait_for(_dmr.async_play(), timeout=5)
-                    break
-                except Exception:
-                    if attempt < 2:
-                        await asyncio.sleep(0.5)
-                    else:
-                        raise
+            # Wait for device to be ready for Play (polls CurrentTransportActions)
+            try:
+                await _dmr.async_wait_for_can_play(max_wait_time=5)
+            except Exception:
+                await asyncio.sleep(1)  # fallback if wait_for_can_play not supported
+
+            if my_gen != _cast_generation:
+                _transitioning = False
+                return False
+
+            await asyncio.wait_for(_dmr.async_play(), timeout=5)
 
             _active_device = device
+            _transitioning = False
             logger.info(f"DLNA: casting '{artist} - {name}' to {device['name']}")
             return True
         except Exception as e:
             import traceback
+            _transitioning = False
             logger.error(f"DLNA cast error: {e}\n{traceback.format_exc()}")
             return False
 
@@ -321,10 +319,11 @@ async def pause() -> bool:
 
 
 async def stop() -> bool:
-    global _active_device, _dmr
+    global _active_device, _dmr, _transitioning
     if not _dmr:
         return False
     try:
+        _transitioning = False
         await _dmr.async_stop()
         _active_device = None
         _dmr = None
@@ -389,6 +388,9 @@ def _parse_time(t: str) -> float:
 
 async def get_status() -> dict | None:
     if not _dmr or not _active_device:
+        if _transitioning:
+            return {"device": "transitioning", "state": "TRANSITIONING",
+                    "position_seconds": 0, "duration_seconds": 0, "volume": 0}
         return None
     try:
         info = {
