@@ -222,26 +222,26 @@ jobs:
         run: npx tauri android build --apk --target aarch64
 
       - name: Sign APK
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          # Generate keystore
-          keytool -genkey -v -keystore /tmp/release.keystore \
-            -alias musicseeker -keyalg RSA -keysize 2048 -validity 36500 \
-            -storepass musicseeker -keypass musicseeker \
-            -dname "CN=MusicSeeker, O=HanakTech, L=Prague, C=CZ"
+          # Decode persistent keystore from secret
+          echo "$ANDROID_KEYSTORE" | base64 -d > /tmp/release.keystore
           # Find the built APK
           APK=$(find desktop/src-tauri/gen/android -name "*.apk" | head -1)
           echo "Found APK: $APK"
-          # Align and sign
-          ${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/zipalign -v 4 "$APK" /tmp/aligned.apk
-          ${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner sign \
+          # Align and sign with persistent key
+          BT=${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)
+          ${BT}/zipalign -v 4 "$APK" /tmp/aligned.apk
+          ${BT}/apksigner sign \
             --ks /tmp/release.keystore \
             --ks-key-alias musicseeker \
-            --ks-pass pass:musicseeker \
-            --key-pass pass:musicseeker \
+            --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
+            --key-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
             --out desktop/MusicSeeker.apk \
             /tmp/aligned.apk
-          # Verify
-          ${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)/apksigner verify desktop/MusicSeeker.apk
+          ${BT}/apksigner verify desktop/MusicSeeker.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
