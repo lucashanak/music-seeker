@@ -474,26 +474,37 @@ export function init() {
 
   // App update checker — always runs when Settings loads
   (async function checkAppUpdate() {
+    const statusEl = document.getElementById('appCurrentVersion');
     const installedVersion = localStorage.getItem('app_version');
-    const versionEl = document.getElementById('appCurrentVersion');
-    if (installedVersion && versionEl) {
-      versionEl.textContent = `Installed: ${installedVersion}.`;
-    }
+    if (statusEl) statusEl.textContent = installedVersion
+      ? `Installed: ${installedVersion}. Checking for updates...`
+      : 'Checking for updates...';
     let release;
     try {
       const res = await fetch('https://api.github.com/repos/lucashanak/music-seeker/releases/latest');
-      if (!res.ok) { console.warn('Update check failed:', res.status); return; }
+      if (!res.ok) {
+        if (statusEl) statusEl.textContent = `Update check failed (${res.status})`;
+        return;
+      }
       release = await res.json();
-    } catch(e) { console.warn('Update check error:', e); return; }
+    } catch(e) {
+      if (statusEl) statusEl.textContent = `Update check error: ${e.message}`;
+      return;
+    }
     const latest = release.tag_name.replace(/^v/, '');
-    if (versionEl) versionEl.textContent = installedVersion
-      ? `Installed: ${installedVersion}. Latest: ${latest}.`
-      : `Latest: ${latest}.`;
-    if (installedVersion && latest !== installedVersion) {
+    // First visit — store current version
+    if (!installedVersion) {
+      localStorage.setItem('app_version', latest);
+      if (statusEl) statusEl.textContent = `Latest: ${latest}.`;
+      return;
+    }
+    if (statusEl) statusEl.textContent = `Installed: ${installedVersion}. Latest: ${latest}.`;
+    if (latest !== installedVersion) {
       const banner = document.getElementById('appUpdateBanner');
       if (banner) {
         document.getElementById('appUpdateVersion').textContent = `${installedVersion} → ${latest}`;
         const isAndroid = /android/i.test(navigator.userAgent);
+        const isMac = /macintosh/i.test(navigator.userAgent);
         const asset = release.assets.find(a => isAndroid ? a.name.endsWith('.apk') : a.name.endsWith('.dmg'));
         if (asset) {
           const linkEl = document.getElementById('appUpdateLink');
