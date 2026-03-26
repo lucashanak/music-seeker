@@ -42,6 +42,22 @@ export async function playNextRec() {
   return true;
 }
 
+// ── Play previous rec ──
+export function playPrevRec() {
+  if (recsPlayingIdx <= 0) {
+    // Go back to last track in queue
+    recsPlayingIdx = -1;
+    renderRecs();
+    return false;
+  }
+  recsPlayingIdx--;
+  const track = recsCache[recsPlayingIdx];
+  if (!track) { recsPlayingIdx = -1; renderRecs(); return false; }
+  import('./player.js').then(m => m.playRecTrack(track));
+  renderRecs();
+  return true;
+}
+
 // ── Stop virtual rec playback (when user interacts with queue) ──
 export function stopRecPlayback() {
   recsPlayingIdx = -1;

@@ -172,10 +172,8 @@ export function nextTrack() {
     _castTransitioning = true;
     clearTimeout(_castTransitionTimer);
     _castTransitionTimer = setTimeout(() => { _castTransitioning = false; }, 20000);
-    _nextTrackInQueue();
-    return;
   }
-  // If playing a virtual rec track, advance to next rec
+  // If playing a virtual rec track, advance to next rec (both local and cast)
   import('./recommendations.js').then(m => {
     if (m.isPlayingRec()) {
       m.playNextRec().then(filled => {
@@ -305,18 +303,25 @@ export function prevTrack() {
     _castTransitioning = true;
     clearTimeout(_castTransitionTimer);
     _castTransitionTimer = setTimeout(() => { _castTransitioning = false; }, 20000);
-    if (store.playerIndex > 0) {
+  }
+  // If playing a virtual rec track, go to previous rec or back to queue
+  import('./recommendations.js').then(m => {
+    if (m.isPlayingRec()) {
+      const went = m.playPrevRec();
+      if (!went) {
+        // Back to last track in queue
+        if (store.playerIndex >= 0) loadAndPlay();
+      }
+      return;
+    }
+    // Normal queue navigation
+    if (!store.castDevice && audio.currentTime > 3) {
+      audio.currentTime = 0;
+    } else if (store.playerIndex > 0) {
       store.playerIndex--;
       loadAndPlay();
     }
-    return;
-  }
-  if (audio.currentTime > 3) {
-    audio.currentTime = 0;
-  } else if (store.playerIndex > 0) {
-    store.playerIndex--;
-    loadAndPlay();
-  }
+  });
 }
 
 // ── Play/Pause Icon ──
