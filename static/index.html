@@ -544,11 +544,11 @@
         The app connects to the server — no updates needed when the backend changes.
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <a href="https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.dmg"
+        <a href="/api/app/MusicSeeker.dmg"
            class="btn-save" style="text-decoration:none;display:inline-block;text-align:center;">
           macOS (.dmg)
         </a>
-        <a href="https://github.com/lucashanak/music-seeker/releases/latest/download/MusicSeeker.apk"
+        <a href="/api/app/MusicSeeker.apk"
            class="btn-save" style="text-decoration:none;display:inline-block;text-align:center;">
           Android (.apk)
         </a>
@@ -786,14 +786,10 @@ try {
         if (banner) {
           document.getElementById('appUpdateVersion').textContent = _inst + ' → ' + latest;
           var isAndroid = /android/i.test(navigator.userAgent);
-          var asset = rel.assets.find(function(a) {
-            return isAndroid ? a.name.indexOf('.apk') > -1 : a.name.indexOf('.dmg') > -1;
-          });
-          if (asset) {
-            var link = document.getElementById('appUpdateLink');
-            link.href = asset.browser_download_url;
-            link.onclick = function() { localStorage.setItem('app_version', latest); };
-          }
+          var file = isAndroid ? 'MusicSeeker.apk' : 'MusicSeeker.dmg';
+          var link = document.getElementById('appUpdateLink');
+          link.href = '/api/app/' + file;
+          link.onclick = function() { localStorage.setItem('app_version', latest); };
           banner.style.display = 'block';
         }
       }
