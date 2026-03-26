@@ -282,6 +282,39 @@ async def stream_youtube(youtube_url: str):
         await proc.wait()
 
 
+async def cache_youtube_stream(youtube_url: str, name: str, artist: str) -> str | None:
+    """Download YouTube audio to temp file via ffmpeg. Returns file path."""
+    import tempfile, hashlib
+    cache_dir = os.path.join(tempfile.gettempdir(), "ms-yt-cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    key = hashlib.md5(f"{artist}:{name}".lower().encode()).hexdigest()[:12]
+    cache_path = os.path.join(cache_dir, f"{key}.mp3")
+    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+        return cache_path
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-reconnect", "1", "-reconnect_streamed", "1",
+            "-i", youtube_url,
+            "-f", "mp3", "-ab", "128k", "-vn",
+            "-y", cache_path + ".tmp",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=120)
+        if proc.returncode == 0 and os.path.exists(cache_path + ".tmp"):
+            os.rename(cache_path + ".tmp", cache_path)
+            return cache_path
+    except Exception:
+        pass
+    for p in (cache_path + ".tmp", cache_path):
+        if os.path.exists(p):
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+    return None
+
+
 def invalidate_cache(name: str, artist: str):
     """Remove a cached URL (e.g. on stream error for re-resolution)."""
     key = _cache_key(name, artist)

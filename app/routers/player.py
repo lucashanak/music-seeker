@@ -46,6 +46,10 @@ async def player_stream(name: str, artist: str = "", user: dict = Depends(_strea
             return FileResponse(cached, media_type="audio/mpeg", headers=headers)
         return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg", headers=headers)
     else:
+        # Try cached file first for proper duration/seeking
+        cached = await player.cache_youtube_stream(result["url"], name, artist)
+        if cached:
+            return FileResponse(cached, media_type="audio/mpeg", headers=headers)
         return StreamingResponse(player.stream_youtube(result["url"]), media_type="audio/mpeg", headers=headers)
 
 
