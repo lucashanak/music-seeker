@@ -138,6 +138,21 @@
 }
 .user-perm-edit:hover { border-color: var(--accent); color: var(--accent); }
 
+/* ── Device List ── */
+.device-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-size: 13px;
+}
+.device-row.current { border-color: var(--accent); }
+.device-row .device-name { flex: 1; font-weight: 500; }
+.device-row .device-mode { color: var(--text-muted); font-size: 11px; }
+.device-row .btn-delete-device {
+  background: none; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: 16px; padding: 2px 6px; border-radius: 50%; transition: all var(--transition);
+}
+.device-row .btn-delete-device:hover { color: var(--red); background: rgba(239,68,68,.1); }
+
 /* ── Disk Usage ── */
 .disk-usage-row {
   display: flex; align-items: center; gap: 12px;

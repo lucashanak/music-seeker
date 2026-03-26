@@ -4,7 +4,9 @@ import { store } from './store.js';
 
 // ── Auth Headers ──
 export function authHeaders() {
-  return store.authToken ? { 'Authorization': `Bearer ${store.authToken}` } : {};
+  const h = store.authToken ? { 'Authorization': `Bearer ${store.authToken}` } : {};
+  if (store.deviceId) h['X-Device-ID'] = store.deviceId;
+  return h;
 }
 
 // ── Fetch with Auth + 401 Handling ──

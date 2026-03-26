@@ -132,3 +132,9 @@ class PodcastSubRequest(BaseModel):
 
 class PodcastSubUpdate(BaseModel):
     max_episodes: int | None = None
+
+
+class DeviceSettingRequest(BaseModel):
+    name: str = ""
+    output_mode: str = "default"  # "default" | "local" | "dlna_only"
+    dlna_renderer_url: str = ""

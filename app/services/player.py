@@ -327,24 +327,40 @@ def _ensure_player_dir():
     PLAYER_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_queue(username: str) -> dict:
+def _queue_path(username: str, device_id: str = "default") -> Path:
+    """Get queue file path. Falls back to legacy path for migration."""
+    if device_id and device_id != "default":
+        return PLAYER_DIR / f"{username}_{device_id}.json"
+    return PLAYER_DIR / f"{username}.json"
+
+
+def load_queue(username: str, device_id: str = "default") -> dict:
     _ensure_player_dir()
-    path = PLAYER_DIR / f"{username}.json"
+    # Try device-specific file first
+    path = _queue_path(username, device_id)
     if path.exists():
         try:
             return json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
             pass
+    # Fallback to legacy file (migration)
+    if device_id and device_id != "default":
+        legacy = PLAYER_DIR / f"{username}.json"
+        if legacy.exists():
+            try:
+                return json.loads(legacy.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
     return {"queue": [], "current_index": -1, "position_seconds": 0.0, "volume": 1.0}
 
 
-def save_queue(username: str, data: dict):
+def save_queue(username: str, data: dict, device_id: str = "default"):
     _ensure_player_dir()
-    path = PLAYER_DIR / f"{username}.json"
+    path = _queue_path(username, device_id)
     path.write_text(json.dumps(data, indent=2))
 
 
-def clear_queue(username: str):
-    path = PLAYER_DIR / f"{username}.json"
+def clear_queue(username: str, device_id: str = "default"):
+    path = _queue_path(username, device_id)
     if path.exists():
         path.unlink()

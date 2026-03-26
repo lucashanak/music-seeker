@@ -81,8 +81,12 @@ export function loadAndPlay() {
   document.getElementById('playerBar').style.setProperty('--player-progress', '0%');
   const cleanName = _decodeEntities(item.name || '');
   const cleanArtist = _decodeEntities(item.artist || '');
-  // Cast mode: send to DLNA renderer instead of local audio
-  if (store.castDevice) {
+  const mode = store.deviceOutputMode || 'default';
+  // DLNA Only mode: auto-connect to renderer on play
+  if (mode === 'dlna_only' && !store.castDevice) {
+    _autoCastAndPlay(item, cleanName, cleanArtist);
+  // Cast mode: send to DLNA renderer (unless local-only)
+  } else if (store.castDevice && mode !== 'local') {
     _castSkipAutoAdvance = true;
     _castTransitioning = true;
     const castBody = {
@@ -163,6 +167,17 @@ export function showPlayerBar() {
   document.body.classList.add('player-active');
   const npBtn = $('#bnavNowPlaying');
   if (npBtn) npBtn.style.display = '';
+  // Hide cast button in local-only mode
+  const mode = store.deviceOutputMode || 'default';
+  const castBtn = $('#playerCastBtn');
+  const fpCastBtn = $('#fpCastBtn');
+  if (mode === 'local') {
+    if (castBtn) castBtn.style.display = 'none';
+    if (fpCastBtn) fpCastBtn.style.display = 'none';
+  } else {
+    if (castBtn) castBtn.style.display = '';
+    if (fpCastBtn) fpCastBtn.style.display = '';
+  }
 }
 
 export function hidePlayerBar() {
@@ -177,6 +192,32 @@ let _castLastState = '';
 let _castSkipAutoAdvance = false;
 let _castTransitioning = false;
 let _castTransitionTimer = null;
+// Assigned in init() — needed by loadAndPlay for dlna_only mode
+let _syncCastButtonsFn = () => {};
+let _startCastPollFn = () => {};
+
+async function _autoCastAndPlay(item, cleanName, cleanArtist) {
+  try {
+    const data = await apiJson('/api/dlna/devices');
+    const devices = data.devices || [];
+    if (!devices.length) { showToast('No DLNA devices found. Configure in Settings.'); return; }
+    const savedUrl = store.deviceDlnaRendererUrl || store.appSettings.dlna_renderer_url || '';
+    const device = (savedUrl && devices.find(d => d.location === savedUrl)) || devices[0];
+    store.castDevice = device;
+    _castSkipAutoAdvance = true;
+    _castTransitioning = true;
+    await apiJson('/api/dlna/cast', { method: 'POST', body: {
+      device_id: device.id, name: cleanName, artist: cleanArtist,
+      album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
+    }});
+    audio.pause();
+    _syncCastButtonsFn('var(--accent)');
+    _startCastPollFn();
+  } catch (e) {
+    _castTransitioning = false;
+    showToast('DLNA auto-cast failed: ' + (e.message || ''));
+  }
+}
 
 // ── Next / Prev ──
 export function nextTrack() {
@@ -549,6 +590,7 @@ export function init() {
 
   // Cast button (mini + full player)
   async function _handleCastClick() {
+    if (store.deviceOutputMode === 'local') return;
     if (store.castDevice) {
       // Already casting — stop and return to local
       await apiJson('/api/dlna/stop', { method: 'POST' }).catch(() => {});
@@ -679,6 +721,10 @@ export function init() {
       } catch {}
     }, 2000);
   }
+
+  // Expose for module-level _autoCastAndPlay
+  _syncCastButtonsFn = _syncCastButtons;
+  _startCastPollFn = _startCastPoll;
 
   // Play button on cards (event delegation)
   document.addEventListener('click', async (e) => {

@@ -106,6 +106,12 @@ export const store = {
   // ── Playlist Mode ──
   playlistMode: null, // { id, name } or null
 
+  // ── Device Identity ──
+  deviceId: localStorage.getItem('ms_device_id') || (() => { const id = crypto.randomUUID(); localStorage.setItem('ms_device_id', id); return id; })(),
+  deviceName: '',
+  deviceOutputMode: 'default', // 'default' | 'local' | 'dlna_only'
+  deviceDlnaRendererUrl: '',
+
   // ── DLNA Cast ──
   castDevice: null, // { id, name } or null
   castPollTimer: null,

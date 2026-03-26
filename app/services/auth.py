@@ -285,3 +285,61 @@ def update_user_setting(username: str, key: str, value) -> bool:
     users[username][key] = value
     _save_users(users)
     return True
+
+
+def get_user_devices(username: str) -> dict:
+    """Get all registered devices for a user."""
+    users = _load_users()
+    return users.get(username, {}).get("devices", {})
+
+
+def register_device(username: str, device_id: str, name: str = "",
+                     output_mode: str = "default", dlna_renderer_url: str = "") -> bool:
+    """Register or update a device for a user."""
+    users = _load_users()
+    if username not in users:
+        return False
+    if "devices" not in users[username]:
+        users[username]["devices"] = {}
+    existing = users[username]["devices"].get(device_id, {})
+    users[username]["devices"][device_id] = {
+        "name": name or existing.get("name", ""),
+        "output_mode": output_mode or existing.get("output_mode", "default"),
+        "dlna_renderer_url": dlna_renderer_url if dlna_renderer_url is not None else existing.get("dlna_renderer_url", ""),
+    }
+    _save_users(users)
+    return True
+
+
+def update_device_setting(username: str, device_id: str, key: str, value) -> bool:
+    """Update a single device setting."""
+    allowed = {"name", "output_mode", "dlna_renderer_url"}
+    if key not in allowed:
+        return False
+    users = _load_users()
+    if username not in users:
+        return False
+    devices = users[username].get("devices", {})
+    if device_id not in devices:
+        return False
+    devices[device_id][key] = value
+    _save_users(users)
+    return True
+
+
+def remove_device(username: str, device_id: str) -> bool:
+    """Remove a device and its queue file."""
+    users = _load_users()
+    if username not in users:
+        return False
+    devices = users[username].get("devices", {})
+    if device_id not in devices:
+        return False
+    del devices[device_id]
+    _save_users(users)
+    # Remove queue file
+    import os
+    queue_path = os.path.join(os.environ.get("DATA_DIR", "/app/data"), "player", f"{username}_{device_id}.json")
+    if os.path.exists(queue_path):
+        os.unlink(queue_path)
+    return True

@@ -10,14 +10,12 @@ logger = logging.getLogger("musicseeker.dlna")
 
 # ── State ──
 _devices: dict[str, dict] = {}  # location_url -> {name, ip, location, udn, upnp_device}
-_active_device: dict | None = None  # currently casting to
-_dmr = None  # DmrDevice instance
 _listener_task = None
 _requester = None
 _factory = None
-_cast_lock = asyncio.Lock()
-_cast_generation = 0  # incremented on each cast call to cancel stale ones
-_transitioning = False  # True during track change (prevents status returning None)
+
+# Per-session cast state (keyed by "{username}:{device_id}")
+_sessions: dict[str, dict] = {}  # Each: {dmr, device, lock, generation, transitioning}
 
 # Server URL for DLNA renderer to fetch audio from
 DLNA_SERVER_URL = os.environ.get("DLNA_SERVER_URL", "")
@@ -220,9 +218,22 @@ async def scan_devices() -> list[dict]:
     return found
 
 
-async def cast_to_device(device_id: str, name: str, artist: str, token: str,
+def _get_session(session_key: str) -> dict:
+    """Get or create a per-device cast session."""
+    if session_key not in _sessions:
+        _sessions[session_key] = {
+            "dmr": None,
+            "device": None,
+            "lock": asyncio.Lock(),
+            "generation": 0,
+            "transitioning": False,
+        }
+    return _sessions[session_key]
+
+
+async def cast_to_device(session_key: str, device_id: str, name: str, artist: str, token: str,
                           album: str = "", image: str = "", duration_ms: int = 0) -> bool:
-    global _active_device, _dmr, _cast_generation, _transitioning
+    session = _get_session(session_key)
 
     # Find device
     device = None
@@ -234,12 +245,12 @@ async def cast_to_device(device_id: str, name: str, artist: str, token: str,
         return False
 
     # Increment generation — any older cast in progress will abort
-    _cast_generation += 1
-    my_gen = _cast_generation
-    _transitioning = True
+    session["generation"] += 1
+    my_gen = session["generation"]
+    session["transitioning"] = True
 
-    async with _cast_lock:
-        if my_gen != _cast_generation:
+    async with session["lock"]:
+        if my_gen != session["generation"]:
             logger.info(f"DLNA: cast '{name}' superseded, skipping")
             return False
 
@@ -249,16 +260,16 @@ async def cast_to_device(device_id: str, name: str, artist: str, token: str,
             from async_upnp_client.profiles.dlna import DmrDevice
 
             # Reuse DMR for same device, create fresh only if device changed
-            if not _dmr or _active_device != device:
+            if not session["dmr"] or session["device"] != device:
                 requester = AiohttpRequester()
                 factory = UpnpFactory(requester)
                 upnp_device = await asyncio.wait_for(
                     factory.async_create_device(device["location"]), timeout=10
                 )
-                _dmr = DmrDevice(upnp_device, None)
+                session["dmr"] = DmrDevice(upnp_device, None)
 
-            if my_gen != _cast_generation:
-                _transitioning = False
+            if my_gen != session["generation"]:
+                session["transitioning"] = False
                 return False
 
             base = _get_server_url()
@@ -268,22 +279,22 @@ async def cast_to_device(device_id: str, name: str, artist: str, token: str,
             # Per UPnP spec: SetAVTransportURI works in any state (including PLAYING)
             # No need to Stop first — the renderer handles the transition internally
             await asyncio.wait_for(
-                _dmr.async_set_transport_uri(stream_url, metadata), timeout=15
+                session["dmr"].async_set_transport_uri(stream_url, metadata), timeout=15
             )
 
-            if my_gen != _cast_generation:
-                _transitioning = False
+            if my_gen != session["generation"]:
+                session["transitioning"] = False
                 return False
 
             # Retry Play with increasing delays — Onkyo needs time after SetAVTransportURI
             played = False
             for attempt in range(5):
-                if my_gen != _cast_generation:
-                    _transitioning = False
+                if my_gen != session["generation"]:
+                    session["transitioning"] = False
                     return False
                 await asyncio.sleep(1 + attempt * 0.5)  # 1s, 1.5s, 2s, 2.5s, 3s
                 try:
-                    await asyncio.wait_for(_dmr.async_play(), timeout=5)
+                    await asyncio.wait_for(session["dmr"].async_play(), timeout=5)
                     played = True
                     break
                 except Exception as e:
@@ -294,54 +305,58 @@ async def cast_to_device(device_id: str, name: str, artist: str, token: str,
             if not played:
                 raise RuntimeError("Play failed after retries")
 
-            _active_device = device
-            _transitioning = False
-            logger.info(f"DLNA: casting '{artist} - {name}' to {device['name']}")
+            session["device"] = device
+            session["transitioning"] = False
+            logger.info(f"DLNA: [{session_key}] casting '{artist} - {name}' to {device['name']}")
             return True
         except Exception as e:
             import traceback
-            _transitioning = False
+            session["transitioning"] = False
             logger.error(f"DLNA cast error: {e}\n{traceback.format_exc()}")
             return False
 
 
-async def play() -> bool:
-    if not _dmr:
+async def play(session_key: str) -> bool:
+    session = _sessions.get(session_key)
+    if not session or not session["dmr"]:
         return False
     try:
-        await _dmr.async_play()
+        await session["dmr"].async_play()
         return True
     except Exception:
         return False
 
 
-async def pause() -> bool:
-    if not _dmr:
+async def pause(session_key: str) -> bool:
+    session = _sessions.get(session_key)
+    if not session or not session["dmr"]:
         return False
     try:
-        await _dmr.async_pause()
+        await session["dmr"].async_pause()
         return True
     except Exception:
         return False
 
 
-async def stop() -> bool:
-    global _active_device, _dmr, _transitioning
-    if not _dmr:
+async def stop(session_key: str) -> bool:
+    session = _sessions.get(session_key)
+    if not session or not session["dmr"]:
         return False
     try:
-        _transitioning = False
-        await _dmr.async_stop()
-        _active_device = None
-        _dmr = None
+        session["transitioning"] = False
+        await session["dmr"].async_stop()
+        session["device"] = None
+        session["dmr"] = None
         return True
     except Exception:
         return False
 
 
-async def seek(position_seconds: float) -> bool:
-    if not _dmr:
+async def seek(session_key: str, position_seconds: float) -> bool:
+    session = _sessions.get(session_key)
+    if not session or not session["dmr"]:
         return False
+    dmr = session["dmr"]
     try:
         h = int(position_seconds // 3600)
         m = int((position_seconds % 3600) // 60)
@@ -349,14 +364,14 @@ async def seek(position_seconds: float) -> bool:
         target = f"{h:02d}:{m:02d}:{s:02d}"
         # Try absolute seek first, then relative
         try:
-            await _dmr.async_seek_abs_time(target)
+            await dmr.async_seek_abs_time(target)
         except Exception:
             try:
-                await _dmr.async_seek_rel_time(target)
+                await dmr.async_seek_rel_time(target)
             except Exception:
                 # Direct action call as fallback
-                srv = _dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:2") or \
-                      _dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:1")
+                srv = dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:2") or \
+                      dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:1")
                 if srv:
                     action = srv.action("Seek")
                     await action.async_call(InstanceID=0, Unit="ABS_TIME", Target=target)
@@ -368,11 +383,12 @@ async def seek(position_seconds: float) -> bool:
         return False
 
 
-async def set_volume(volume: int) -> bool:
-    if not _dmr:
+async def set_volume(session_key: str, volume: int) -> bool:
+    session = _sessions.get(session_key)
+    if not session or not session["dmr"]:
         return False
     try:
-        await _dmr.async_set_volume_level(volume / 100.0)
+        await session["dmr"].async_set_volume_level(volume / 100.0)
         return True
     except Exception:
         return False
@@ -393,25 +409,27 @@ def _parse_time(t: str) -> float:
     return 0
 
 
-async def get_status() -> dict | None:
-    if not _dmr or not _active_device:
-        if _transitioning:
+async def get_status(session_key: str) -> dict | None:
+    session = _sessions.get(session_key)
+    if not session or not session["dmr"] or not session["device"]:
+        if session and session["transitioning"]:
             return {"device": "transitioning", "state": "TRANSITIONING",
                     "position_seconds": 0, "duration_seconds": 0, "volume": 0}
         return None
+    dmr = session["dmr"]
     try:
         info = {
-            "device": _active_device["name"],
+            "device": session["device"]["name"],
             "state": "unknown",
             "position_seconds": 0,
             "duration_seconds": 0,
             "volume": 0,
         }
         # Query transport info directly via UPnP actions
-        av_srv = _dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:2") or \
-                 _dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:1")
-        rc_srv = _dmr.device.services.get("urn:schemas-upnp-org:service:RenderingControl:2") or \
-                 _dmr.device.services.get("urn:schemas-upnp-org:service:RenderingControl:1")
+        av_srv = dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:2") or \
+                 dmr.device.services.get("urn:schemas-upnp-org:service:AVTransport:1")
+        rc_srv = dmr.device.services.get("urn:schemas-upnp-org:service:RenderingControl:2") or \
+                 dmr.device.services.get("urn:schemas-upnp-org:service:RenderingControl:1")
 
         if av_srv:
             try:

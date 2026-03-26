@@ -1,11 +1,11 @@
 import os
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import StreamingResponse, FileResponse
 
 from app.models import QueueState, AddToQueueRequest, RecommendationRequest
 from app.services import auth, player, radio, settings as app_settings
-from app.dependencies import _stream_auth
+from app.dependencies import _stream_auth, _get_device_id
 
 router = APIRouter(prefix="/api/player", tags=["player"])
 
@@ -54,30 +54,34 @@ async def player_stream(name: str, artist: str = "", user: dict = Depends(_strea
 
 
 @router.get("/queue")
-async def get_player_queue(user: dict = Depends(auth.get_current_user)):
-    return player.load_queue(user["username"])
+async def get_player_queue(request: Request, user: dict = Depends(auth.get_current_user)):
+    device_id = _get_device_id(request)
+    return player.load_queue(user["username"], device_id)
 
 
 @router.put("/queue")
-async def save_player_queue(state: QueueState, user: dict = Depends(auth.get_current_user)):
-    player.save_queue(user["username"], state.model_dump())
+async def save_player_queue(state: QueueState, request: Request, user: dict = Depends(auth.get_current_user)):
+    device_id = _get_device_id(request)
+    player.save_queue(user["username"], state.model_dump(), device_id)
     return {"status": "saved"}
 
 
 @router.post("/queue/add")
-async def add_to_queue(req: AddToQueueRequest, user: dict = Depends(auth.get_current_user)):
-    state = player.load_queue(user["username"])
+async def add_to_queue(req: AddToQueueRequest, request: Request, user: dict = Depends(auth.get_current_user)):
+    device_id = _get_device_id(request)
+    state = player.load_queue(user["username"], device_id)
     state["queue"].extend(req.tracks)
     if req.play_now or state["current_index"] < 0:
         state["current_index"] = len(state["queue"]) - len(req.tracks)
         state["position_seconds"] = 0.0
-    player.save_queue(user["username"], state)
+    player.save_queue(user["username"], state, device_id)
     return state
 
 
 @router.delete("/queue")
-async def clear_player_queue(user: dict = Depends(auth.get_current_user)):
-    player.clear_queue(user["username"])
+async def clear_player_queue(request: Request, user: dict = Depends(auth.get_current_user)):
+    device_id = _get_device_id(request)
+    player.clear_queue(user["username"], device_id)
     return {"status": "cleared"}
 
 
@@ -92,11 +96,13 @@ async def resolve_source(name: str, artist: str = "", user: dict = Depends(auth.
 
 @router.get("/recommendations")
 async def get_queue_recommendations(
+    request: Request,
     limit: int = Query(15, ge=1, le=50),
     user: dict = Depends(auth.get_current_user),
 ):
     """Get recommendations based on the user's current queue."""
-    queue_data = player.load_queue(user["username"])
+    device_id = _get_device_id(request)
+    queue_data = player.load_queue(user["username"], device_id)
     tracks = queue_data.get("queue", [])
     if not tracks:
         raise HTTPException(400, "Queue is empty")

@@ -443,6 +443,33 @@
     </details>
 
     <details class="setting-section">
+      <summary class="setting-section-title">This Device</summary>
+      <div class="setting-section-body">
+        <div class="setting-group">
+          <label class="setting-label">Device Name</label>
+          <input class="setting-input" id="settingDeviceName" type="text" placeholder="e.g. Phone, Work PC, Tablet">
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Output Mode</label>
+          <select class="setting-select" id="settingOutputMode">
+            <option value="default">Default (local + cast button)</option>
+            <option value="local">Local Only (no casting)</option>
+            <option value="dlna_only">DLNA Only (cast to receiver)</option>
+          </select>
+        </div>
+        <div class="setting-group" id="deviceDlnaRow" style="display:none;">
+          <label class="setting-label">DLNA Renderer URL</label>
+          <input class="setting-input" id="settingDeviceDlnaUrl" type="text" placeholder="http://192.168.1.95:8888/upnp_descriptor_0">
+        </div>
+        <button class="btn-save" id="saveDeviceSettings" style="margin-top:4px;">Save Device Settings</button>
+        <details style="margin-top:12px;">
+          <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;">My Devices</summary>
+          <div id="myDevicesList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;"></div>
+        </details>
+      </div>
+    </details>
+
+    <details class="setting-section">
       <summary class="setting-section-title">DLNA / UPnP Cast</summary>
       <div class="setting-section-body">
         <div class="setting-group">

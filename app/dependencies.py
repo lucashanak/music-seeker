@@ -1,8 +1,11 @@
 import os
+import re
 
 from fastapi import HTTPException, Request
 
 from app.services import auth as auth_service, spotify as spotify_service
+
+_DEVICE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 
 
 def _user_spotify_creds(user: dict) -> dict | None:
@@ -14,6 +17,15 @@ def _user_spotify_creds(user: dict) -> dict | None:
     if spotify_service.SPOTIFY_REFRESH_TOKEN:
         return None  # None = use global defaults in spotify.py
     return None
+
+
+def _get_device_id(request: Request) -> str:
+    """Extract device ID from X-Device-ID header. Falls back to 'default'.
+    Validates format to prevent path traversal."""
+    device_id = request.headers.get("X-Device-ID", "default")
+    if not _DEVICE_ID_RE.match(device_id):
+        return "default"
+    return device_id
 
 
 def _stream_auth(request: Request, token: str = ""):

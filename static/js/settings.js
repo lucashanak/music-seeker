@@ -39,6 +39,8 @@ export async function loadSettings() {
     // Load DLNA devices into dropdown
     _loadDlnaDevices();
   } catch {}
+  // Load device settings for this device
+  _loadDeviceSettings();
   // Load per-user Spotify status
   try {
     const sp = await apiJson('/api/user/spotify');
@@ -98,6 +100,78 @@ async function _loadDlnaDevices() {
   } catch {
     sel.innerHTML = '<option value="">No devices found</option>';
   }
+}
+
+// ── Device Settings ──
+async function _loadDeviceSettings() {
+  try {
+    const data = await apiJson('/api/user/device-settings');
+    store.deviceName = data.name || '';
+    store.deviceOutputMode = data.output_mode || 'default';
+    store.deviceDlnaRendererUrl = data.dlna_renderer_url || '';
+    const nameEl = $('#settingDeviceName');
+    const modeEl = $('#settingOutputMode');
+    const dlnaUrlEl = $('#settingDeviceDlnaUrl');
+    if (nameEl) nameEl.value = store.deviceName;
+    if (modeEl) modeEl.value = store.deviceOutputMode;
+    if (dlnaUrlEl) dlnaUrlEl.value = store.deviceDlnaRendererUrl;
+    _toggleDeviceDlnaRow();
+  } catch {}
+  _loadMyDevices();
+}
+
+function _toggleDeviceDlnaRow() {
+  const row = $('#deviceDlnaRow');
+  if (row) row.style.display = store.deviceOutputMode === 'dlna_only' ? '' : 'none';
+}
+
+async function _loadMyDevices() {
+  const list = $('#myDevicesList');
+  if (!list) return;
+  try {
+    const data = await apiJson('/api/user/devices');
+    const devices = data.devices || {};
+    const entries = Object.entries(devices);
+    if (!entries.length) {
+      list.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">No registered devices</div>';
+      return;
+    }
+    const modeLabels = { 'default': 'Default', 'local': 'Local Only', 'dlna_only': 'DLNA Only' };
+    list.innerHTML = entries.map(([id, d]) => {
+      const isCurrent = id === store.deviceId;
+      return `<div class="device-row${isCurrent ? ' current' : ''}" data-device-id="${esc(id)}">
+        <span class="device-name">${esc(d.name || 'Unnamed')}${isCurrent ? ' (this device)' : ''}</span>
+        <span class="device-mode">${modeLabels[d.output_mode] || d.output_mode}</span>
+        ${!isCurrent ? `<button class="btn-delete-device" title="Remove device">&times;</button>` : ''}
+      </div>`;
+    }).join('');
+    $$('.btn-delete-device', list).forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.closest('.device-row').dataset.deviceId;
+        try {
+          await apiJson(`/api/user/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          _loadMyDevices();
+        } catch {}
+      });
+    });
+  } catch {}
+}
+
+async function _saveDeviceSettings() {
+  const name = ($('#settingDeviceName')?.value || '').trim();
+  const mode = $('#settingOutputMode')?.value || 'default';
+  const dlnaUrl = ($('#settingDeviceDlnaUrl')?.value || '').trim();
+  try {
+    await apiJson(`/api/user/devices/${encodeURIComponent(store.deviceId)}`, {
+      method: 'PUT',
+      body: { name, output_mode: mode, dlna_renderer_url: dlnaUrl },
+    });
+    store.deviceName = name;
+    store.deviceOutputMode = mode;
+    store.deviceDlnaRendererUrl = dlnaUrl;
+    showToast('Device settings saved');
+    _loadMyDevices();
+  } catch { showToast('Failed to save device settings', true); }
 }
 
 // ── Disk Usage ──
@@ -448,6 +522,13 @@ export function init() {
     } catch {}
   });
 
+  // Device settings
+  $('#saveDeviceSettings')?.addEventListener('click', _saveDeviceSettings);
+  $('#settingOutputMode')?.addEventListener('change', () => {
+    store.deviceOutputMode = $('#settingOutputMode').value;
+    _toggleDeviceDlnaRow();
+  });
+
   // DLNA scan button — active SSDP scan
   $('#dlnaScanBtn').addEventListener('click', async () => {
     const status = $('#dlnaScanStatus');
@@ -501,6 +582,7 @@ export function init() {
   // Clear All & Logout — preserve app installed version
   $('#clearCacheBtn').addEventListener('click', async () => {
     const appVer = localStorage.getItem('app_installed_version');
+    const deviceId = localStorage.getItem('ms_device_id');
     try {
       localStorage.clear();
       sessionStorage.clear();
@@ -508,6 +590,7 @@ export function init() {
       await Promise.all(keys.map(k => caches.delete(k)));
     } catch(e) {}
     if (appVer) localStorage.setItem('app_installed_version', appVer);
+    if (deviceId) localStorage.setItem('ms_device_id', deviceId);
     const params = '_=' + Date.now() + (appVer ? '&app_version=' + appVer : '');
     window.location.href = window.location.origin + '/?' + params;
   });

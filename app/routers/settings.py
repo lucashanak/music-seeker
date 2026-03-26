@@ -1,7 +1,13 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+import re
 
-from app.models import SettingsUpdate, LibraryCheckRequest
+from fastapi import APIRouter, HTTPException, Depends, Request, UploadFile, File
+
+from app.models import SettingsUpdate, LibraryCheckRequest, DeviceSettingRequest
 from app.services import auth, settings as app_settings, recognize, search_providers, library
+from app.dependencies import _get_device_id
+
+_DEVICE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+_VALID_OUTPUT_MODES = {"default", "local", "dlna_only"}
 
 router = APIRouter(prefix="/api", tags=["settings"])
 
@@ -48,3 +54,46 @@ async def recognize_song(audio: UploadFile = File(...), user: dict = Depends(aut
 async def check_library(req: LibraryCheckRequest, user: dict = Depends(auth.get_current_user)):
     results = await library.check_items(req.items)
     return {"results": results}
+
+
+# ── Device management ──
+
+@router.get("/user/devices")
+async def get_user_devices(user: dict = Depends(auth.get_current_user)):
+    devices = auth.get_user_devices(user["username"])
+    return {"devices": devices}
+
+
+@router.put("/user/devices/{device_id}")
+async def register_or_update_device(
+    device_id: str, req: DeviceSettingRequest, user: dict = Depends(auth.get_current_user)
+):
+    if not _DEVICE_ID_RE.match(device_id):
+        raise HTTPException(400, "Invalid device ID format")
+    if req.output_mode not in _VALID_OUTPUT_MODES:
+        raise HTTPException(400, f"Invalid output_mode. Must be one of: {', '.join(_VALID_OUTPUT_MODES)}")
+    auth.register_device(
+        user["username"], device_id,
+        name=req.name, output_mode=req.output_mode,
+        dlna_renderer_url=req.dlna_renderer_url,
+    )
+    return {"status": "ok"}
+
+
+@router.delete("/user/devices/{device_id}")
+async def remove_device(device_id: str, user: dict = Depends(auth.get_current_user)):
+    if not _DEVICE_ID_RE.match(device_id):
+        raise HTTPException(400, "Invalid device ID format")
+    ok = auth.remove_device(user["username"], device_id)
+    if not ok:
+        raise HTTPException(404, "Device not found")
+    return {"status": "deleted"}
+
+
+@router.get("/user/device-settings")
+async def get_my_device_settings(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Get settings for the current device (from X-Device-ID header)."""
+    device_id = _get_device_id(request)
+    devices = auth.get_user_devices(user["username"])
+    device = devices.get(device_id, {"name": "", "output_mode": "default", "dlna_renderer_url": ""})
+    return {"device_id": device_id, **device}
