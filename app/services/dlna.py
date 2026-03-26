@@ -275,17 +275,24 @@ async def cast_to_device(device_id: str, name: str, artist: str, token: str,
                 _transitioning = False
                 return False
 
-            # Wait for device to be ready for Play (polls CurrentTransportActions)
-            try:
-                await _dmr.async_wait_for_can_play(max_wait_time=5)
-            except Exception:
-                await asyncio.sleep(1)  # fallback if wait_for_can_play not supported
-
-            if my_gen != _cast_generation:
-                _transitioning = False
-                return False
-
-            await asyncio.wait_for(_dmr.async_play(), timeout=5)
+            # Retry Play with increasing delays — Onkyo needs time after SetAVTransportURI
+            played = False
+            for attempt in range(5):
+                if my_gen != _cast_generation:
+                    _transitioning = False
+                    return False
+                await asyncio.sleep(1 + attempt * 0.5)  # 1s, 1.5s, 2s, 2.5s, 3s
+                try:
+                    await asyncio.wait_for(_dmr.async_play(), timeout=5)
+                    played = True
+                    break
+                except Exception as e:
+                    if "701" in str(e) and attempt < 4:
+                        logger.debug(f"DLNA: Play attempt {attempt+1} failed (701), retrying...")
+                        continue
+                    raise
+            if not played:
+                raise RuntimeError("Play failed after retries")
 
             _active_device = device
             _transitioning = False
