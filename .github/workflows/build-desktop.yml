@@ -36,22 +36,14 @@ jobs:
       - name: Generate icons
         run: |
           cd desktop/src-tauri/icons
-          # macOS has sips built-in, no brew install needed
-          # First convert SVG to base PNG via built-in python
-          python3 -c "
-          import subprocess, os
-          sizes = [32, 128, 256, 512, 1024]
-          # Use cairosvg if available, otherwise try rsvg
-          try:
-              import cairosvg
-              for s in sizes:
-                  cairosvg.svg2png(url='icon.svg', write_to=f'icon_{s}.png', output_width=s, output_height=s)
-          except ImportError:
-              # Fallback: install and use rsvg-convert via brew (cached)
-              os.system('brew install librsvg')
-              for s in sizes:
-                  os.system(f'rsvg-convert -w {s} -h {s} icon.svg > icon_{s}.png')
-          "
+          # macOS has sips for PNG conversion, but it can't read SVG directly
+          # Use rsvg-convert (brew install is cached by GitHub runners)
+          if ! command -v rsvg-convert &>/dev/null; then
+            brew install librsvg
+          fi
+          for size in 32 128 256 512 1024; do
+            rsvg-convert -w $size -h $size icon.svg > icon_${size}.png
+          done
           cp icon_512.png icon.png
           mkdir -p icon.iconset
           cp icon_32.png icon.iconset/icon_16x16@2x.png
@@ -93,19 +85,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Setup Java
+      - name: Setup toolchain
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: android-actions/setup-android@v3
 
       - name: Install Android NDK
         run: sdkmanager --install "ndk;27.0.12077973"
@@ -125,48 +115,41 @@ jobs:
           key: android-rust-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
           restore-keys: android-rust-
 
-      - name: Generate icons
+      - name: Setup project
         run: |
-          sudo apt-get install -y librsvg2-bin
+          # Generate icons
+          sudo apt-get install -y -qq librsvg2-bin
           cd desktop/src-tauri/icons
-          for size in 32 48 72 96 128 144 192 256 512; do
+          for size in 48 72 96 144 192 512; do
             rsvg-convert -w $size -h $size icon.svg > icon_${size}.png
           done
           cp icon_512.png icon.png
 
-      - name: Install dependencies
+      - name: Install dependencies & init
         working-directory: desktop
-        run: npm install
+        run: |
+          npm install
+          npx tauri android init
 
-      - name: Init Android project
-        working-directory: desktop
-        run: npx tauri android init
-
-      - name: Set Android app icon
+      - name: Patch Android project
         run: |
           GEN="desktop/src-tauri/gen/android"
           ICONS="desktop/src-tauri/icons"
           RES="$GEN/app/src/main/res"
 
-          # Replace default icons in mipmap directories
+          # Icons
           cp "$ICONS/icon_48.png"  "$RES/mipmap-mdpi/ic_launcher.png"
           cp "$ICONS/icon_72.png"  "$RES/mipmap-hdpi/ic_launcher.png"
           cp "$ICONS/icon_96.png"  "$RES/mipmap-xhdpi/ic_launcher.png"
           cp "$ICONS/icon_144.png" "$RES/mipmap-xxhdpi/ic_launcher.png"
           cp "$ICONS/icon_192.png" "$RES/mipmap-xxxhdpi/ic_launcher.png"
-
-          # Round icons (same as regular for our rounded-rect SVG)
           cp "$ICONS/icon_48.png"  "$RES/mipmap-mdpi/ic_launcher_round.png"
           cp "$ICONS/icon_72.png"  "$RES/mipmap-hdpi/ic_launcher_round.png"
           cp "$ICONS/icon_96.png"  "$RES/mipmap-xhdpi/ic_launcher_round.png"
           cp "$ICONS/icon_144.png" "$RES/mipmap-xxhdpi/ic_launcher_round.png"
           cp "$ICONS/icon_192.png" "$RES/mipmap-xxxhdpi/ic_launcher_round.png"
 
-      - name: Patch Android project
-        run: |
-          GEN="desktop/src-tauri/gen/android"
-
-          # 1. Add permissions to AndroidManifest.xml
+          # Permissions
           MANIFEST="$GEN/app/src/main/AndroidManifest.xml"
           sed -i '/<application/i \
               <uses-permission android:name="android.permission.INTERNET" />\
@@ -175,9 +158,8 @@ jobs:
               <uses-permission android:name="android.permission.WAKE_LOCK" />\
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />' "$MANIFEST"
 
-          # 2. Patch MainActivity for status bar insets
+          # MainActivity — edge-to-edge status bar
           MAIN_ACT=$(find "$GEN" -name "MainActivity.kt" | head -1)
-          echo "Found MainActivity: $MAIN_ACT"
           PACKAGE=$(head -1 "$MAIN_ACT" | sed 's/package //')
           cat > "$MAIN_ACT" << KOTLIN
           package $PACKAGE
@@ -192,8 +174,6 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   enableEdgeToEdge()
                   super.onCreate(savedInstanceState)
-
-                  // Apply native padding for system bars (status bar + nav bar)
                   val rootView: View = findViewById(android.R.id.content)
                   ViewCompat.setOnApplyWindowInsetsListener(rootView) { v, insets ->
                       val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -206,14 +186,10 @@ jobs:
               }
           }
           KOTLIN
-          # Remove leading whitespace from heredoc
           sed -i 's/^          //' "$MAIN_ACT"
-          echo "=== Patched MainActivity.kt ==="
-          cat "$MAIN_ACT"
 
-          # 3. Add edge-to-edge dependency to build.gradle.kts
-          GRADLE="$GEN/app/build.gradle.kts"
-          sed -i '/dependencies {/a \    implementation("androidx.activity:activity-ktx:1.9.0")' "$GRADLE"
+          # Edge-to-edge dependency
+          sed -i '/dependencies {/a \    implementation("androidx.activity:activity-ktx:1.9.0")' "$GEN/app/build.gradle.kts"
 
       - name: Build Android APK
         working-directory: desktop
@@ -226,21 +202,15 @@ jobs:
           ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          # Decode persistent keystore from secret
           echo "$ANDROID_KEYSTORE" | base64 -d > /tmp/release.keystore
-          # Find the built APK
           APK=$(find desktop/src-tauri/gen/android -name "*.apk" | head -1)
-          echo "Found APK: $APK"
-          # Align and sign with persistent key
           BT=${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools/ | tail -1)
           ${BT}/zipalign -v 4 "$APK" /tmp/aligned.apk
           ${BT}/apksigner sign \
-            --ks /tmp/release.keystore \
-            --ks-key-alias musicseeker \
+            --ks /tmp/release.keystore --ks-key-alias musicseeker \
             --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
             --key-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
-            --out desktop/MusicSeeker.apk \
-            /tmp/aligned.apk
+            --out desktop/MusicSeeker.apk /tmp/aligned.apk
           ${BT}/apksigner verify desktop/MusicSeeker.apk
 
       - name: Upload APK artifact
