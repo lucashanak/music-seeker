@@ -88,6 +88,21 @@ export async function initApp() {
       store.appSettings = s;
     } catch {}
 
+    // Load per-device settings (output mode, device name)
+    try {
+      const ds = await apiJson('/api/user/device-settings');
+      store.deviceName = ds.name || '';
+      store.deviceOutputMode = ds.output_mode || 'default';
+      store.deviceDlnaRendererUrl = ds.dlna_renderer_url || '';
+      // Hide cast buttons immediately if local-only mode
+      if (store.deviceOutputMode === 'local') {
+        const cb = $('#playerCastBtn');
+        const fb = document.getElementById('fpCastBtn');
+        if (cb) cb.style.display = 'none';
+        if (fb) fb.style.display = 'none';
+      }
+    } catch {}
+
     // Show/hide Spotify nav based on per-user settings
     const userHasSpotify = me.has_spotify || store.spotifyUser;
     const playlistsBtn = $('.nav-btn[data-page="playlists"]');
