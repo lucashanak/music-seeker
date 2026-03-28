@@ -10,26 +10,40 @@ from app.dependencies import _stream_auth, _get_device_id
 router = APIRouter(prefix="/api/player", tags=["player"])
 
 
+def _mime_for_path(path: str) -> str:
+    """Return correct MIME type based on file extension."""
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return {"flac": "audio/flac", "opus": "audio/ogg", "m4a": "audio/mp4"}.get(ext, "audio/mpeg")
+
+
 @router.head("/stream")
-async def player_stream_head(name: str, artist: str = "", user: dict = Depends(_stream_auth)):
+async def player_stream_head(name: str, artist: str = "", quality: str = "standard",
+                              user: dict = Depends(_stream_auth)):
     """HEAD request for DLNA renderers to check MIME type before fetching."""
+    lossless = quality == "lossless"
     result = await player.resolve_stream(name, artist)
     if not result:
         raise HTTPException(404, "Could not resolve stream for this track")
-    headers = {"Content-Type": "audio/mpeg", "X-Stream-Source": result["source"], "Accept-Ranges": "bytes"}
+    mime = "audio/mpeg"
+    headers = {"X-Stream-Source": result["source"], "Accept-Ranges": "bytes"}
     if result["source"] == "local":
+        mime = _mime_for_path(result["path"])
         size = os.path.getsize(result["path"])
         headers["Content-Length"] = str(size)
     elif result["source"] == "navidrome":
-        cached = await player.cache_navidrome_stream(result["song_id"])
+        cached = await player.cache_navidrome_stream(result["song_id"], lossless=lossless)
         if cached:
+            mime = _mime_for_path(cached) if lossless else "audio/mpeg"
             headers["Content-Length"] = str(os.path.getsize(cached))
+    headers["Content-Type"] = mime
     from fastapi.responses import Response
-    return Response(content=b"", headers=headers, media_type="audio/mpeg")
+    return Response(content=b"", headers=headers, media_type=mime)
 
 
 @router.get("/stream")
-async def player_stream(name: str, artist: str = "", user: dict = Depends(_stream_auth)):
+async def player_stream(name: str, artist: str = "", quality: str = "standard",
+                         user: dict = Depends(_stream_auth)):
+    lossless = quality == "lossless"
     result = await player.resolve_stream(name, artist)
     if not result:
         raise HTTPException(404, "Could not resolve stream for this track")
@@ -37,20 +51,26 @@ async def player_stream(name: str, artist: str = "", user: dict = Depends(_strea
     headers = {"X-Stream-Source": source}
     if source == "local":
         path = result["path"]
+        mime = _mime_for_path(path)
         # FileResponse supports Range requests (required by Safari for duration/seek)
-        return FileResponse(path, media_type="audio/mpeg", headers=headers)
+        return FileResponse(path, media_type=mime, headers=headers)
     elif source == "navidrome":
         # Try cached file first (supports Range requests, seeking, correct duration)
-        cached = await player.cache_navidrome_stream(result["song_id"])
+        cached = await player.cache_navidrome_stream(result["song_id"], lossless=lossless)
         if cached:
-            return FileResponse(cached, media_type="audio/mpeg", headers=headers)
-        return StreamingResponse(player.stream_navidrome(result["song_id"]), media_type="audio/mpeg", headers=headers)
+            mime = _mime_for_path(cached) if lossless else "audio/mpeg"
+            return FileResponse(cached, media_type=mime, headers=headers)
+        mime = "audio/flac" if lossless else "audio/mpeg"
+        return StreamingResponse(player.stream_navidrome(result["song_id"], lossless=lossless),
+                                  media_type=mime, headers=headers)
     else:
+        bitrate = "320k" if lossless else "192k"
         # Try cached file first for proper duration/seeking
-        cached = await player.cache_youtube_stream(result["url"], name, artist)
+        cached = await player.cache_youtube_stream(result["url"], name, artist, bitrate=bitrate)
         if cached:
             return FileResponse(cached, media_type="audio/mpeg", headers=headers)
-        return StreamingResponse(player.stream_youtube(result["url"]), media_type="audio/mpeg", headers=headers)
+        return StreamingResponse(player.stream_youtube(result["url"], bitrate=bitrate),
+                                  media_type="audio/mpeg", headers=headers)
 
 
 @router.get("/queue")

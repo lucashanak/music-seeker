@@ -273,7 +273,7 @@ async def cast_to_device(session_key: str, device_id: str, name: str, artist: st
                 return False
 
             base = _get_server_url()
-            stream_url = f"{base}/api/player/stream?name={quote(name)}&artist={quote(artist)}&token={quote(token)}"
+            stream_url = f"{base}/api/player/stream?name={quote(name)}&artist={quote(artist)}&token={quote(token)}&quality=lossless"
             metadata = _build_didl_metadata(name, artist, album, image, duration_ms, stream_url)
 
             # Per UPnP spec: SetAVTransportURI works in any state (including PLAYING)
@@ -477,7 +477,7 @@ def _build_didl_metadata(title: str, artist: str, album: str, image: str,
     <upnp:artist>{escape(artist)}</upnp:artist>
     <upnp:album>{escape(album)}</upnp:album>
     {f'<upnp:albumArtURI>{escape(image)}</upnp:albumArtURI>' if image else ''}
-    <res protocolInfo="http-get:*:audio/mpeg:*"{f' duration="{dur_str}"' if dur_str else ''}>{escape(stream_url)}</res>
+    <res protocolInfo="http-get:*:audio/flac:*"{f' duration="{dur_str}"' if dur_str else ''}>{escape(stream_url)}</res>
   </item>
 </DIDL-Lite>'''
     return meta

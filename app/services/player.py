@@ -221,16 +221,20 @@ async def stream_local_file(file_path: str):
             await proc.wait()
 
 
-async def cache_navidrome_stream(song_id: str) -> str | None:
+async def cache_navidrome_stream(song_id: str, lossless: bool = False) -> str | None:
     """Download Navidrome stream to temp file and return path.
     Cached files enable Content-Length, Range requests, and correct duration."""
     import tempfile
     cache_dir = os.path.join(tempfile.gettempdir(), "ms-nav-cache")
     os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, f"{song_id}.mp3")
+    if lossless:
+        cache_path = os.path.join(cache_dir, f"{song_id}.flac")
+        params = library._params(id=song_id)  # No format/bitrate = original
+    else:
+        cache_path = os.path.join(cache_dir, f"{song_id}.mp3")
+        params = library._params(id=song_id, format="mp3", maxBitRate=320)
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
         return cache_path
-    params = library._params(id=song_id, format="mp3", maxBitRate=192)
     url = f"{library.NAVIDROME_URL}/rest/stream"
     try:
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
@@ -249,9 +253,12 @@ async def cache_navidrome_stream(song_id: str) -> str | None:
         return None
 
 
-async def stream_navidrome(song_id: str):
+async def stream_navidrome(song_id: str, lossless: bool = False):
     """Yield audio chunks from Navidrome Subsonic stream endpoint."""
-    params = library._params(id=song_id, format="mp3", maxBitRate=192)
+    if lossless:
+        params = library._params(id=song_id)  # No format/bitrate = original
+    else:
+        params = library._params(id=song_id, format="mp3", maxBitRate=320)
     url = f"{library.NAVIDROME_URL}/rest/stream"
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         async with client.stream("GET", url, params=params) as resp:
@@ -260,12 +267,12 @@ async def stream_navidrome(song_id: str):
                 yield chunk
 
 
-async def stream_youtube(youtube_url: str):
+async def stream_youtube(youtube_url: str, bitrate: str = "192k"):
     """Transcode YouTube audio to MP3 via ffmpeg and yield chunks."""
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-reconnect", "1", "-reconnect_streamed", "1",
         "-i", youtube_url,
-        "-f", "mp3", "-ab", "128k", "-vn",
+        "-f", "mp3", "-ab", bitrate, "-vn",
         "-y", "pipe:1",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -282,20 +289,21 @@ async def stream_youtube(youtube_url: str):
         await proc.wait()
 
 
-async def cache_youtube_stream(youtube_url: str, name: str, artist: str) -> str | None:
+async def cache_youtube_stream(youtube_url: str, name: str, artist: str, bitrate: str = "192k") -> str | None:
     """Download YouTube audio to temp file via ffmpeg. Returns file path."""
     import tempfile, hashlib
     cache_dir = os.path.join(tempfile.gettempdir(), "ms-yt-cache")
     os.makedirs(cache_dir, exist_ok=True)
     key = hashlib.md5(f"{artist}:{name}".lower().encode()).hexdigest()[:12]
-    cache_path = os.path.join(cache_dir, f"{key}.mp3")
+    suffix = "hq" if bitrate != "192k" else ""
+    cache_path = os.path.join(cache_dir, f"{key}{suffix}.mp3")
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
         return cache_path
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-reconnect", "1", "-reconnect_streamed", "1",
             "-i", youtube_url,
-            "-f", "mp3", "-ab", "128k", "-vn",
+            "-f", "mp3", "-ab", bitrate, "-vn",
             "-y", cache_path + ".tmp",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
