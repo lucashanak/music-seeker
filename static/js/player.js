@@ -185,6 +185,8 @@ export function hidePlayerBar() {
   document.body.classList.remove('player-active');
   const npBtn = $('#bnavNowPlaying');
   if (npBtn) npBtn.style.display = 'none';
+  // Stop Android foreground service when player is hidden
+  if (_ab()) _ab().onStop();
 }
 
 // ── Cast state ──
