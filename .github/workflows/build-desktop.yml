@@ -208,6 +208,8 @@ jobs:
                   }
               }
 
+              private val bridge = AndroidBridge()
+
               inner class AndroidBridge {
                   @JavascriptInterface
                   fun onPlay(title: String, artist: String) {
@@ -264,32 +266,40 @@ jobs:
                       requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
                   }
 
-                  // Inject bridge — retry until WebView is found
+                  injectBridge()
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  // Re-inject bridge every time activity resumes — WebView binding
+                  // can become stale after Android suspends the process during inactivity
+                  injectBridge()
+              }
+
+              override fun onDestroy() {
+                  startService(Intent(this, AudioService::class.java).apply { action = "ACTION_STOP" })
+                  super.onDestroy()
+              }
+
+              private fun injectBridge() {
                   val handler = Handler(Looper.getMainLooper())
-                  val bridge = AndroidBridge()
-                  fun tryInjectBridge(attempt: Int) {
+                  fun tryInject(attempt: Int) {
                       handler.postDelayed({
                           try {
                               val webView = findWebView(window.decorView)
                               if (webView != null) {
                                   webViewRef = WeakReference(webView)
                                   webView.addJavascriptInterface(bridge, "AndroidBridge")
-                                  // Notify JS that bridge is ready
                                   webView.post { webView.evaluateJavascript("window._androidBridgeReady && window._androidBridgeReady()", null) }
                               } else if (attempt < 10) {
-                                  tryInjectBridge(attempt + 1)
+                                  tryInject(attempt + 1)
                               }
                           } catch (e: Exception) {
-                              if (attempt < 10) tryInjectBridge(attempt + 1)
+                              if (attempt < 10) tryInject(attempt + 1)
                           }
-                      }, if (attempt == 0) 500L else 1000L)
+                      }, if (attempt == 0) 300L else 500L)
                   }
-                  tryInjectBridge(0)
-              }
-
-              override fun onDestroy() {
-                  startService(Intent(this, AudioService::class.java).apply { action = "ACTION_STOP" })
-                  super.onDestroy()
+                  tryInject(0)
               }
 
               private fun findWebView(view: View): WebView? {
