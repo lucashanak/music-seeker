@@ -21,6 +21,14 @@ window._androidMediaAction = function(action) {
   }
 };
 
+// Called by native side when bridge is injected (may be after playback started)
+window._androidBridgeReady = function() {
+  if (!audio.paused && _ab()) {
+    const item = store.playerQueue[store.playerIndex];
+    if (item) _ab().onPlay(item.name || '', item.artist || '');
+  }
+};
+
 // ── Helper: get duration with Safari fallback ──
 function _getDuration() {
   let dur = audio.duration;

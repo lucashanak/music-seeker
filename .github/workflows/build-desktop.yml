@@ -264,16 +264,27 @@ jobs:
                       requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
                   }
 
-                  // Wait for WebView, inject bridge
-                  Handler(Looper.getMainLooper()).postDelayed({
-                      try {
-                          val webView = findWebView(window.decorView)
-                          if (webView != null) {
-                              webViewRef = WeakReference(webView)
-                              webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
+                  // Inject bridge — retry until WebView is found
+                  val handler = Handler(Looper.getMainLooper())
+                  val bridge = AndroidBridge()
+                  fun tryInjectBridge(attempt: Int) {
+                      handler.postDelayed({
+                          try {
+                              val webView = findWebView(window.decorView)
+                              if (webView != null) {
+                                  webViewRef = WeakReference(webView)
+                                  webView.addJavascriptInterface(bridge, "AndroidBridge")
+                                  // Notify JS that bridge is ready
+                                  webView.post { webView.evaluateJavascript("window._androidBridgeReady && window._androidBridgeReady()", null) }
+                              } else if (attempt < 10) {
+                                  tryInjectBridge(attempt + 1)
+                              }
+                          } catch (e: Exception) {
+                              if (attempt < 10) tryInjectBridge(attempt + 1)
                           }
-                      } catch (e: Exception) {}
-                  }, 2000)
+                      }, if (attempt == 0) 500L else 1000L)
+                  }
+                  tryInjectBridge(0)
               }
 
               override fun onDestroy() {
