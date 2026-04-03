@@ -6,6 +6,7 @@ import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
+import { getCachedUrl, prefetchUpcoming, cleanup as prefetchCleanup } from './prefetch.js';
 
 const audio = $('#audioElement');
 function _ab() { return window.AndroidBridge || null; }
@@ -105,10 +106,18 @@ export function loadAndPlay() {
       .then(() => { /* cast started */ })
       .catch(e => { showToast('Cast failed: ' + (e.message || '')); _castTransitioning = false; });
   } else {
-    const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
-    audio.src = `/api/player/stream?${params}`;
+    const cached = getCachedUrl(cleanName, cleanArtist);
+    if (cached) {
+      audio.src = cached;
+    } else {
+      const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
+      audio.src = `/api/player/stream?${params}`;
+    }
     audio.load();
     audio.play().catch(() => {});
+    // Prefetch next tracks for offline resilience
+    prefetchUpcoming(store.playerQueue, store.playerIndex);
+    prefetchCleanup(store.playerQueue, store.playerIndex);
   }
   showPlayerBar();
   updatePlayPauseIcon(true);
@@ -330,8 +339,13 @@ export function playRecTrack(item) {
       album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
     }}).catch(e => { showToast('Cast failed: ' + (e.message || '')); _castTransitioning = false; });
   } else {
-    const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
-    audio.src = `/api/player/stream?${params}`;
+    const cached = getCachedUrl(cleanName, cleanArtist);
+    if (cached) {
+      audio.src = cached;
+    } else {
+      const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
+      audio.src = `/api/player/stream?${params}`;
+    }
     audio.load();
     audio.play().catch(() => {});
   }
