@@ -164,7 +164,7 @@ export function addScanButton(heroActions, playlistId, tracksContainerId) {
     };
 
     // 12 concurrent requests (server has 6-thread pool, 12 keeps it saturated)
-    const CONCURRENT = 12;
+    const CONCURRENT = 4;
     for (let i = 0; i < total; i += CONCURRENT) {
       const batch = toAnalyze.slice(i, i + CONCURRENT);
       await Promise.all(batch.map(analyzeOne));

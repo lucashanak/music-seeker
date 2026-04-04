@@ -36,7 +36,7 @@ _bpm_cache: dict = {}
 # 4 threads — C extensions (librosa/numpy FFT, essentia C++, madmom Cython)
 # release the GIL, so threads give real parallelism with shared memory.
 # 4 threads ≈ 1.5 GB total vs 16 subprocesses ≈ 10 GB.
-_executor = ThreadPoolExecutor(max_workers=6)
+_executor = ThreadPoolExecutor(max_workers=2)
 
 
 def _load_cache() -> dict:
@@ -175,16 +175,23 @@ def analyze_bpm(file_path: str) -> dict:
     # Track duration for beat grid (before freeing buffers)
     track_duration = len(mono_44k) / 44100
 
-    # ── Full-track beat detection for intro/outro (lightweight, forced BPM) ──
-    # Downsample full track to 22050 for librosa
-    mono_22k_full = librosa.resample(mono_44k, orig_sr=44100, target_sr=22050)
-    _, full_beat_frames = librosa.beat.beat_track(
-        y=mono_22k_full, sr=22050, hop_length=HOP,
-        bpm=raw.get("librosa_tempo", 85),  # forced BPM = skip tempo estimation, fast
-        tightness=120,
-    )
-    full_beats = librosa.frames_to_time(full_beat_frames, sr=22050, hop_length=HOP).tolist()
-    del mono_22k_full
+    # ── Intro/outro beat detection (first 30s + last 60s only, memory efficient) ──
+    forced_bpm = raw.get("librosa_tempo", 85)
+    sr22 = 22050
+    # Intro: first 30s
+    intro_len = min(30 * 44100, len(mono_44k))
+    intro_22k = librosa.resample(mono_44k[:intro_len], orig_sr=44100, target_sr=sr22)
+    _, intro_frames = librosa.beat.beat_track(y=intro_22k, sr=sr22, hop_length=HOP, bpm=forced_bpm, tightness=120)
+    intro_beats = librosa.frames_to_time(intro_frames, sr=sr22, hop_length=HOP).tolist()
+    del intro_22k
+    # Outro: last 60s
+    outro_offset = max(0, len(mono_44k) - 60 * 44100)
+    outro_22k = librosa.resample(mono_44k[outro_offset:], orig_sr=44100, target_sr=sr22)
+    _, outro_frames = librosa.beat.beat_track(y=outro_22k, sr=sr22, hop_length=HOP, bpm=forced_bpm, tightness=120)
+    outro_beats = [round(t + outro_offset / 44100, 3) for t in librosa.frames_to_time(outro_frames, sr=sr22, hop_length=HOP).tolist()]
+    del outro_22k
+    # Combine for full_beats (intro + outro, deduplicated)
+    full_beats = sorted(set(intro_beats + outro_beats))
 
     # Free audio buffers
     del data_44k, mono_44k, mono_44k_seg, data_44k_seg, mono_22k
