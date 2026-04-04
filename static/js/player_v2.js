@@ -7,7 +7,7 @@ import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
-import { getCachedUrl, prefetchUpcoming, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
+import { getCachedUrl, getStatus as getPrefetchStatus, prefetchUpcoming, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
 import { fetchDjData, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, pickSmartNext, CrossfadeBeatSync } from './djmix.js';
 
 // ── Dual-deck Web Audio API crossfade engine with DJ mixing ──
@@ -788,10 +788,13 @@ export function init() {
         if (item) _ab().onPlay(item.name || '', item.artist || '');
       }
     });
-    // 'playing' fires after buffering — safe to start prefetch
-    deck.addEventListener('playing', () => {
+    // Wait for enough buffer before starting prefetch (avoid starving current track)
+    deck.addEventListener('canplaythrough', () => {
       if (deck !== _activeDeckEl()) return;
       resumePrefetch();
+    }, { once: false });
+    deck.addEventListener('playing', () => {
+      if (deck !== _activeDeckEl()) return;
       // Pre-fetch DJ data for current track (beat grid for auto-crossfade timing)
       if (!_outDjData) {
         const item = store.playerQueue[store.playerIndex];
@@ -847,6 +850,19 @@ export function init() {
       if (fpCur) fpCur.textContent = fmtTime(deck.currentTime);
       const fpTot = $('#fpTimeTotal');
       if (fpTot) fpTot.textContent = fmtTime(dur);
+      // Update prefetch status indicator (throttled ~1/sec)
+      if (Math.floor(deck.currentTime) !== Math.floor(deck.currentTime - 0.3)) {
+        const el = $('#prefetchStatus');
+        if (el) {
+          const nowReady = deck.readyState >= 4;
+          const nextItem = store.playerQueue[store.playerIndex + 1];
+          let nextSt = null;
+          if (nextItem) nextSt = getPrefetchStatus(_decodeEntities(nextItem.name || ''), _decodeEntities(nextItem.artist || ''));
+          const nowDot = `<span class="prefetch-dot ${nowReady ? 'ready' : 'loading'}"></span>`;
+          const nextDot = nextSt ? `<span class="prefetch-dot ${nextSt === 'ready' ? 'ready' : 'loading'}"></span>` : '';
+          el.innerHTML = nextItem ? `${nowDot}${nextDot}` : nowDot;
+        }
+      }
       if (_ab() && Math.abs(deck.currentTime - (_lastAbUpdate || 0)) >= 1) {
         _lastAbUpdate = deck.currentTime;
         _ab().onProgress(Math.floor(deck.currentTime * 1000), Math.floor(dur * 1000));

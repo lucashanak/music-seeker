@@ -153,6 +153,12 @@ body.player-active .player-bar { display: flex; }
 /* ── Source Badge ── */
 .source-badge { font-size: 9px; font-weight: 700; letter-spacing: .5px; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; text-transform: uppercase; line-height: 1.4; }
 .source-badge:empty { display: none; }
+.prefetch-status { font-size: 9px; color: var(--text-dim); margin-left: 6px; white-space: nowrap; }
+.prefetch-status:empty { display: none; }
+.prefetch-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 2px; vertical-align: middle; }
+.prefetch-dot.loading { background: var(--text-dim); animation: prefetchPulse 1s ease-in-out infinite; }
+.prefetch-dot.ready { background: var(--accent); }
+@keyframes prefetchPulse { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
 .source-local { background: #22c55e; color: #000; }
 .source-navidrome { background: #3b82f6; color: #fff; }
 .source-youtube { background: #ef4444; color: #fff; }

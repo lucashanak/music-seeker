@@ -30,6 +30,14 @@ export function getCachedUrl(name, artist) {
   return entry ? entry.blobUrl : null;
 }
 
+/** Get prefetch status: 'ready' | 'loading' | null */
+export function getStatus(name, artist) {
+  const key = _key(name, artist);
+  if (_cache.has(key)) return 'ready';
+  if (_activeFetches.has(key) || _queue.some(q => q.key === key)) return 'loading';
+  return null;
+}
+
 /** Stop starting new fetches. Current download finishes. */
 export function pausePrefetch() { _paused = true; }
 
