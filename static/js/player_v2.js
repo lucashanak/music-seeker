@@ -317,8 +317,8 @@ export function loadAndPlay() {
     const src = cached || `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken })}`;
 
     const currentDeck = _activeDeckEl();
-    if (!currentDeck.paused && currentDeck.src) {
-      // DJ crossfade — works with cached blob URL or direct stream
+    if (!currentDeck.paused && currentDeck.src && cached) {
+      // DJ crossfade — only with cached blob (seekable, no stream errors)
       pausePrefetch();
       if (!_inDjData) {
         fetchDjData(cleanName, cleanArtist).then(d => { _inDjData = d; }).catch(() => {});
@@ -825,7 +825,19 @@ export function init() {
       }
     });
     deck.addEventListener('error', () => {
-      if (deck !== _activeDeckEl() || _crossfading) return; // ignore during crossfade
+      if (deck !== _activeDeckEl()) return;
+      if (_crossfading) {
+        // Error on incoming deck during crossfade — abort crossfade, skip track
+        if (_fadingOutDeck) {
+          _fadingOutDeck.pause(); _fadingOutDeck.src = '';
+          resetDeckAfterTransition(_deckDesc(_fadingOutDeck));
+          _fadingOutDeck = null;
+        }
+        clearTimeout(_crossfadeTimer);
+        clearInterval(_rateReturnTimer);
+        if (_beatSync) { _beatSync.stop(); _beatSync = null; }
+        _crossfading = false;
+      }
       showToast('Stream error, skipping...');
       setTimeout(() => nextTrack(), 1000);
     });
@@ -893,9 +905,9 @@ export function init() {
           triggerAt = effectiveEnd - startBeat;
           if (triggerAt > dur * 0.5) triggerAt = _crossfadeDur();
         }
-        if (remaining <= triggerAt && !_crossfadeTriggered
+        if (remaining <= triggerAt && remaining > -5 && !_crossfadeTriggered
             && store.repeatMode !== 'one' && !store.castDevice
-            && deck.currentTime > 1) {
+            && deck.currentTime > 10) { // don't trigger in first 10s
           const hasNext = store.playerIndex < store.playerQueue.length - 1 || store.repeatMode === 'all';
           if (hasNext) {
             _crossfadeTriggered = true;
