@@ -193,6 +193,27 @@ export function init() {
     $('#fpShuffle').classList.toggle('active', store.shuffleEnabled);
   });
 
+  // DJ Mode toggle (only visible when crossfade engine is active)
+  const djBtn = $('#fpDjMode');
+  if (djBtn) {
+    const isCrossfade = localStorage.getItem('ms_player_engine') === 'crossfade';
+    djBtn.style.display = isCrossfade ? '' : 'none';
+    // Sync initial state
+    const curMode = localStorage.getItem('ms_dj_smart_queue') || 'off';
+    djBtn.classList.toggle('active', curMode !== 'off');
+    djBtn.title = curMode === 'off' ? 'DJ Mode off' : `DJ Mode: ${curMode === 'bpm' ? 'BPM' : 'BPM+Key'}`;
+    djBtn.addEventListener('click', () => {
+      const modes = ['off', 'bpm', 'bpm_key'];
+      const cur = localStorage.getItem('ms_dj_smart_queue') || 'off';
+      const next = modes[(modes.indexOf(cur) + 1) % modes.length];
+      localStorage.setItem('ms_dj_smart_queue', next);
+      djBtn.classList.toggle('active', next !== 'off');
+      const labels = { off: 'DJ Mode off', bpm: 'DJ Mode: BPM', bpm_key: 'DJ Mode: BPM+Key' };
+      djBtn.title = labels[next];
+      import('./utils.js').then(m => m.showToast(labels[next]));
+    });
+  }
+
   // Repeat toggle: off -> all -> one -> off
   $('#fpRepeat').addEventListener('click', () => {
     const modes = ['off', 'all', 'one'];

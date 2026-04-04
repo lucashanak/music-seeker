@@ -117,6 +117,7 @@ body.player-active .player-bar { display: flex; }
 .queue-item .qi-info { min-width: 0; flex: 1; }
 .queue-item .qi-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .queue-item .qi-artist { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-item .qi-bpm { font-size: 10px; color: var(--accent); background: var(--bg-elevated); border: 1px solid var(--border); padding: 1px 6px; border-radius: 8px; flex-shrink: 0; white-space: nowrap; }
 .queue-item .qi-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; width: 24px; height: 24px; font-size: 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%; opacity: 0; transition: all .15s; flex-shrink: 0; }
 .queue-item:hover .qi-remove { opacity: 1; }
 .queue-item .qi-remove:hover { color: var(--red); background: rgba(255,255,255,.05); }

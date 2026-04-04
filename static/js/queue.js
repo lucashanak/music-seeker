@@ -2,6 +2,7 @@
 
 import { store } from './store.js';
 import { $, $$, esc, historyBack, showToast } from './utils.js';
+import { getCachedBpm } from './bpm.js';
 
 // Forward references set during init to avoid circular imports
 let loadAndPlay, hidePlayerBar, saveQueueDebounced;
@@ -33,6 +34,7 @@ export function renderQueueInto(el) {
         <div class="qi-title">${esc(item.name || '')}</div>
         <div class="qi-artist">${esc(item.artist || '')}</div>
       </div>
+      ${(() => { const b = getCachedBpm(item.name, item.artist); return b ? `<span class="qi-bpm">${Math.round(b)}</span>` : ''; })()}
       <button class="qi-remove" data-qi-rm="${i}" title="Remove">&times;</button>
     </div>
   `).join('');
