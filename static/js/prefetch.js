@@ -1,20 +1,16 @@
-// prefetch.js — Prefetch upcoming tracks for offline resilience
-// Priority: current track (if not loaded) > next track > next 4
+// prefetch.js — Sequential track prefetch for offline resilience + crossfade
+// Strict FIFO queue: one download at a time, priority-ordered.
 
 import { store } from './store.js';
 import { apiFetch } from './api.js';
 
-// Cache: "artist:name" → { blobUrl, key }
+// Cache: "artist:name" → { blobUrl }
 const _cache = new Map();
-const _fetching = new Map(); // key → { priority, controller }
-const MAX_CONCURRENT = 1;
-function _prefetchCount() { return parseInt(localStorage.getItem('ms_dj_prefetch_count')) || 3; }
-
+let _currentFetch = null; // { key, controller, promise }
 let _paused = false;
-/** Stop starting new prefetches (running ones finish). */
-export function pausePrefetch() { _paused = true; }
-/** Resume prefetching from current queue position. */
-export function resumePrefetch() { _paused = false; prefetchUpcoming(store.playerQueue, store.playerIndex); }
+const _queue = [];         // priority queue: [{ item, key, priority }]
+
+function _prefetchCount() { return parseInt(localStorage.getItem('ms_dj_prefetch_count')) || 3; }
 
 function _key(name, artist) {
   return `${(artist || '').toLowerCase().trim()}:${(name || '').toLowerCase().trim()}`;
@@ -33,79 +29,80 @@ export function getCachedUrl(name, artist) {
   return entry ? entry.blobUrl : null;
 }
 
-/** Prefetch current + next N tracks, prioritized. */
+/** Stop starting new fetches. Current download finishes. */
+export function pausePrefetch() { _paused = true; }
+
+/** Resume and refill queue from current position. */
+export function resumePrefetch() {
+  _paused = false;
+  _fillQueue();
+  _processNext();
+}
+
+/** Add a specific track to front of queue (highest priority). */
+export function prefetchTrack(name, artist) {
+  if (store.castDevice) return;
+  const key = _key(name, artist);
+  if (_cache.has(key)) return; // already cached
+  // Remove if already in queue, then add at front
+  const idx = _queue.findIndex(q => q.key === key);
+  if (idx >= 0) _queue.splice(idx, 1);
+  // Don't add if currently fetching this track
+  if (_currentFetch && _currentFetch.key === key) return;
+  _queue.unshift({ item: { name, artist }, key, priority: 0 });
+  _processNext();
+}
+
+/** Build sequential prefetch queue from current queue position. */
 export function prefetchUpcoming(queue, currentIndex, count) {
   if (count == null) count = _prefetchCount();
   if (store.castDevice || !queue || !queue.length || _paused) return;
+  _fillQueueFrom(queue, currentIndex, count);
+  _processNext();
+}
 
-  // Build priority list: next track (1) > rest (2+)
-  // Current track is NOT prefetched — loadAndPlay loads it directly via audio.src
-  const toFetch = [];
+function _fillQueue() {
+  _fillQueueFrom(store.playerQueue, store.playerIndex, _prefetchCount());
+}
 
-  // Next tracks (starting from currentIndex + 1)
-  for (let i = currentIndex + 1; i < queue.length && toFetch.length < count; i++) {
+function _fillQueueFrom(queue, currentIndex, count) {
+  for (let i = currentIndex + 1; i < queue.length && i <= currentIndex + count; i++) {
     const item = queue[i];
     const key = _key(item.name, item.artist);
-    if (!_cache.has(key) && !_fetching.has(key)) {
-      toFetch.push({ item, key, priority: i - currentIndex });
-    }
-  }
-
-  // Cancel lower-priority fetches if higher-priority ones need slots
-  if (toFetch.length > 0 && _fetching.size >= MAX_CONCURRENT) {
-    const highestNeed = toFetch[0].priority;
-    for (const [key, info] of _fetching) {
-      if (info.priority > highestNeed + _prefetchCount()) {
-        // Cancel far-away fetch to make room
-        info.controller.abort();
-        _fetching.delete(key);
-      }
-    }
-  }
-
-  // Start fetches up to concurrency limit
-  let active = _fetching.size;
-  for (const { item, key, priority } of toFetch) {
-    if (active >= MAX_CONCURRENT) break;
-    active++;
-    _fetchTrack(item, key, priority);
+    if (_cache.has(key)) continue;
+    if (_currentFetch && _currentFetch.key === key) continue;
+    if (_queue.some(q => q.key === key)) continue;
+    _queue.push({ item, key, priority: i - currentIndex });
   }
 }
 
-async function _fetchTrack(item, key, priority) {
+/** Process next item in queue (strictly one at a time). */
+async function _processNext() {
+  if (_paused || _currentFetch || _queue.length === 0) return;
+
+  const entry = _queue.shift();
   const controller = new AbortController();
-  _fetching.set(key, { priority, controller });
+  _currentFetch = { key: entry.key, controller };
+
   try {
-    const cleanName = _decodeEntities(item.name || '');
-    const cleanArtist = _decodeEntities(item.artist || '');
+    const cleanName = _decodeEntities(entry.item.name || '');
+    const cleanArtist = _decodeEntities(entry.item.artist || '');
     const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
     const res = await apiFetch(`/api/player/stream?${params}`, { signal: controller.signal });
-    if (!res.ok) return;
+    if (!res.ok) { _currentFetch = null; _processNext(); return; }
     const blob = await res.blob();
     const blobUrl = URL.createObjectURL(blob);
-    _cache.set(key, { blobUrl, key });
-    _fetching.delete(key);
-    // After one finishes, try to start more
-    prefetchUpcoming(store.playerQueue, store.playerIndex);
+    _cache.set(entry.key, { blobUrl });
   } catch (e) {
-    if (e.name !== 'AbortError') {
-      // Network error — silently skip
-    }
-  } finally {
-    _fetching.delete(key);
+    if (e.name !== 'AbortError') { /* network error, skip */ }
   }
+
+  _currentFetch = null;
+  // Continue with next in queue
+  if (!_paused) _processNext();
 }
 
-/** Prefetch a specific track with highest priority (for Smart Queue picks). */
-export function prefetchTrack(name, artist) {
-  if (store.castDevice || _paused) return;
-  const key = _key(name, artist);
-  if (_cache.has(key) || _fetching.has(key)) return; // already cached or fetching
-  _fetchTrack({ name, artist }, key, 0); // priority 0 = highest
-}
-
-/** Revoke blob URLs for tracks outside the keep window.
- *  Keeps: current-1 to current+prefetchCount, plus any actively fetching tracks. */
+/** Revoke blob URLs for tracks outside the keep window. */
 export function cleanup(queue, currentIndex) {
   if (!queue || !queue.length) return;
   const keepKeys = new Set();
@@ -114,8 +111,10 @@ export function cleanup(queue, currentIndex) {
   for (let i = lo; i <= hi; i++) {
     keepKeys.add(_key(queue[i].name, queue[i].artist));
   }
-  // Also keep any track currently being fetched (e.g., Smart Queue priority pick)
-  for (const [k] of _fetching) keepKeys.add(k);
+  // Keep currently fetching track
+  if (_currentFetch) keepKeys.add(_currentFetch.key);
+  // Keep everything in queue (Smart Queue picks etc.)
+  for (const q of _queue) keepKeys.add(q.key);
   for (const [k, entry] of _cache) {
     if (!keepKeys.has(k)) {
       URL.revokeObjectURL(entry.blobUrl);
