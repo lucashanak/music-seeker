@@ -253,6 +253,7 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   const numBeats = opts.numBeats || 16;
   const tempoRange = (opts.tempoRange || 8) / 100;
   const forceStyle = opts.transitionStyle || 'auto';
+  const introSkip = opts.introSkip || '0';
 
   const now = ctx.currentTime;
   const outBpm = outData?.bpm || 85;
@@ -277,10 +278,22 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
     crossfadeStart = findCrossfadeStartBeat(outData.beat_grid, outDuration, numBeats);
   }
 
-  /* ---- 4. Phase-align incoming track ---- */
+  /* ---- 4. Intro skip + phase alignment ---- */
+  // Bug #1 fix: apply intro skip and phase alignment together, not separately
+  let inStartTime = 0;
+  if (introSkip === 'auto' && inData?.beat_grid?.length) {
+    inStartTime = inData.beat_grid[0]; // skip to first detected beat
+  } else if (introSkip !== '0' && introSkip !== 'auto') {
+    inStartTime = parseInt(introSkip) || 0;
+  }
+  // Phase alignment: adjust start so beats align with outgoing track
   if (outData?.beat_grid && inData?.beat_grid) {
     const offset = calculatePhaseOffset(outData.beat_grid, inData.beat_grid, crossfadeStart);
-    inDeck.element.currentTime = offset;
+    // Use whichever is later: intro skip or phase alignment
+    inStartTime = Math.max(inStartTime, offset);
+  }
+  if (inStartTime > 0) {
+    inDeck.element.currentTime = inStartTime;
   }
 
   /* ---- 5. Determine transition style ---- */
@@ -349,6 +362,49 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
  *
  * @param {object} deck - { element, gain, lowFilter, midFilter, highFilter }
  */
+/**
+ * Pick the best next track index from the queue based on BPM/key similarity.
+ * Only considers tracks that have cached DJ data.
+ *
+ * @param {object[]} queue - Player queue array
+ * @param {number} currentIndex - Current track index
+ * @param {object} currentDjData - DJ data for current track { bpm, camelot }
+ * @param {string} mode - 'bpm' or 'bpm_key'
+ * @returns {number|null} - Best index, or null if no analyzed candidates
+ */
+export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm') {
+  if (!currentDjData || !currentDjData.bpm) return null;
+
+  const curBpm = currentDjData.bpm;
+  const curCamelot = currentDjData.camelot;
+  let bestIdx = null;
+  let bestScore = Infinity;
+
+  for (let i = currentIndex + 1; i < queue.length; i++) {
+    const item = queue[i];
+    const key = `${(item.artist || '').toLowerCase()}::${(item.name || '').toLowerCase()}`;
+    const data = _djCache[key];
+    if (!data || !data.bpm) continue; // not analyzed yet, skip
+
+    // BPM distance (lower is better)
+    let score = Math.abs(data.bpm - curBpm);
+
+    // Key compatibility bonus (only in bpm_key mode)
+    if (mode === 'bpm_key' && curCamelot && data.camelot) {
+      const style = getTransitionStyle(curCamelot, data.camelot);
+      if (style === 'blend') score -= 3;      // harmonically perfect
+      else if (style === 'bass_swap') score -= 1; // close enough
+      // 'cut' = no bonus (clashing keys)
+    }
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
 export function resetDeckAfterTransition(deck) {
   deck.element.playbackRate = 1.0;
 

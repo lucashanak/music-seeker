@@ -196,7 +196,7 @@ function _toggleDjSection() {
 
 const DJ_DEFAULTS = {
   crossfade_beats: '16', crossfade_sec: '5', intro_skip: 'auto',
-  tempo_range: '8', transition_style: 'auto', outro_fade: '1',
+  tempo_range: '8', transition_style: 'auto', smart_queue: 'off', outro_fade: '1',
 };
 
 function _loadDjSettings() {
@@ -215,6 +215,7 @@ function _saveDjSettings() {
     intro_skip: '#settingDjIntroSkip',
     tempo_range: '#settingDjTempoRange',
     transition_style: '#settingDjTransitionStyle',
+    smart_queue: '#settingDjSmartQueue',
     outro_fade: '#settingDjOutroFade',
   };
   for (const [key, sel] of Object.entries(map)) {

@@ -528,6 +528,15 @@
           <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Auto analyzes the Camelot wheel position of both tracks: Blend for harmonically matching keys (same key or relative major/minor), Bass Swap for nearby keys (±1-2 on the wheel), Quick Cut for clashing keys to avoid dissonance.</p>
         </div>
         <div class="setting-group">
+          <label class="setting-label">Smart Queue</label>
+          <select class="setting-select" id="settingDjSmartQueue">
+            <option value="off" selected>Off — play queue in order</option>
+            <option value="bpm">BPM Match — pick next track with closest BPM</option>
+            <option value="bpm_key">BPM + Key — closest BPM with harmonic compatibility</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Instead of playing tracks sequentially, picks the best next track from the remaining queue based on BPM similarity (and optionally harmonic key). Only considers tracks that have been analyzed — unanalyzed tracks play in order. Does not reorder the queue.</p>
+        </div>
+        <div class="setting-group">
           <label class="setting-label">Outro Fade</label>
           <select class="setting-select" id="settingDjOutroFade">
             <option value="0">Off — outgoing track stops abruptly after crossfade</option>

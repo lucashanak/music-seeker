@@ -8,7 +8,7 @@ import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, prefetchUpcoming, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
-import { fetchDjData, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat } from './djmix.js';
+import { fetchDjData, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, pickSmartNext } from './djmix.js';
 
 // ── Dual-deck Web Audio API crossfade engine with DJ mixing ──
 
@@ -26,6 +26,7 @@ let _activeDeck = 'A';
 let _crossfading = false;
 let _crossfadeTimer = null;
 let _fadingOutDeck = null;
+let _rateReturnTimer = null; // Bug #4: stored so we can clear on rapid next
 
 // DJ data for current and next track (fetched asynchronously)
 let _outDjData = null;
@@ -84,6 +85,7 @@ function _startCrossfade() {
     _fadingOutDeck.pause();
     _fadingOutDeck.src = '';
     clearTimeout(_crossfadeTimer);
+    clearInterval(_rateReturnTimer); // Bug #4: clear any pending rate return
     _crossfading = false;
   }
 
@@ -99,10 +101,11 @@ function _startCrossfade() {
   const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
   const tempoRange = parseInt(_djSetting('tempo_range', '8')) || 8;
   const transStyle = _djSetting('transition_style', 'auto');
+  const introSkip = _djSetting('intro_skip', 'auto');
 
   // Use DJ mix engine for beat-synced, key-aware transition
   const result = scheduleDjTransition(_ctx, outDesc, inDesc, _outDjData, _inDjData, {
-    numBeats, tempoRange, transitionStyle: transStyle,
+    numBeats, tempoRange, transitionStyle: transStyle, introSkip,
   });
   const dur = result.duration || crossfadeDuration;
 
@@ -119,23 +122,37 @@ function _startCrossfade() {
     _inDjData = null;
     resumePrefetch();
     // Gradually return new deck playbackRate to 1.0 over ~10 seconds
+    clearInterval(_rateReturnTimer); // Bug #4: clear previous
     const newDeck = _activeDeckEl();
     if (newDeck.playbackRate !== 1.0) {
       const startRate = newDeck.playbackRate;
       const steps = 20;
-      const stepMs = 500; // 20 steps × 500ms = 10s
       let step = 0;
-      const rateTimer = setInterval(() => {
+      _rateReturnTimer = setInterval(() => {
         step++;
         if (step >= steps || newDeck !== _activeDeckEl()) {
           newDeck.playbackRate = 1.0;
-          clearInterval(rateTimer);
+          clearInterval(_rateReturnTimer);
         } else {
           newDeck.playbackRate = startRate + (1.0 - startRate) * (step / steps);
         }
-      }, stepMs);
+      }, 500);
     }
   }, dur * 1000 + 200);
+}
+
+/** Pre-analyze upcoming tracks for DJ data (BPM, key, beat grid).
+ *  Bug #3 fix: analyzes from actual next index, sets _inDjData for immediate next. */
+async function _preAnalyzeUpcoming() {
+  const PRE_ANALYZE = 5;
+  for (let i = 1; i <= PRE_ANALYZE; i++) {
+    const idx = store.playerIndex + i;
+    const item = store.playerQueue[idx];
+    if (!item) break;
+    const d = await fetchDjData(_decodeEntities(item.name || ''), _decodeEntities(item.artist || '')).catch(() => null);
+    // Set _inDjData only for the immediate next track
+    if (i === 1 && d) _inDjData = d;
+  }
 }
 
 // Expose active deck as `audio` for backward compatibility
@@ -248,19 +265,14 @@ export function loadAndPlay() {
     if (!currentDeck.paused && currentDeck.src && cached) {
       // DJ crossfade — ONLY if next track is pre-cached
       pausePrefetch();
-      // Fetch DJ data for incoming track (non-blocking, best-effort)
-      _inDjData = null;
-      fetchDjData(cleanName, cleanArtist).then(d => { _inDjData = d; }).catch(() => {});
+      // Bug #2 fix: only fetch if not already pre-analyzed
+      if (!_inDjData) {
+        fetchDjData(cleanName, cleanArtist).then(d => { _inDjData = d; }).catch(() => {});
+      }
       const nextDeck = _inactiveDeckEl();
       nextDeck.src = src;
       nextDeck.load();
-      // Apply intro skip setting
-      const introSkip = _djSetting('intro_skip', 'auto');
-      if (introSkip === 'auto' && _inDjData && _inDjData.beat_grid && _inDjData.beat_grid.length) {
-        nextDeck.currentTime = _inDjData.beat_grid[0]; // skip to first beat
-      } else if (introSkip !== '0' && introSkip !== 'auto') {
-        nextDeck.currentTime = parseInt(introSkip) || 0;
-      }
+      // Bug #1 fix: intro skip + phase alignment handled together in djmix.js
       nextDeck.play().catch(() => {});
       _startCrossfade();
     } else {
@@ -430,6 +442,16 @@ function _nextTrackInQueue() {
     store.playerIndex = next;
     loadAndPlay();
   } else if (store.playerIndex < store.playerQueue.length - 1) {
+    // Smart Queue: pick best next track by BPM/key instead of sequential
+    const smartMode = _djSetting('smart_queue', 'off');
+    if (smartMode !== 'off' && _outDjData) {
+      const smartIdx = pickSmartNext(store.playerQueue, store.playerIndex, _outDjData, smartMode);
+      if (smartIdx != null) {
+        store.playerIndex = smartIdx;
+        loadAndPlay();
+        return;
+      }
+    }
     store.playerIndex++;
     loadAndPlay();
   } else if (store.repeatMode === 'all') {
@@ -721,13 +743,8 @@ export function init() {
             .then(d => { if (d) _outDjData = d; }).catch(() => {});
         }
       }
-      // Pre-analyze next track in background (triggers server-side analysis if needed)
-      const nextIdx = store.playerIndex + 1;
-      const nextItem = store.playerQueue[nextIdx];
-      if (nextItem) {
-        fetchDjData(_decodeEntities(nextItem.name || ''), _decodeEntities(nextItem.artist || ''))
-          .then(d => { if (d) _inDjData = d; }).catch(() => {});
-      }
+      // Pre-analyze next few tracks in background for Smart Queue
+      _preAnalyzeUpcoming();
     });
     deck.addEventListener('pause', () => {
       if (deck !== _activeDeckEl()) return;
@@ -786,6 +803,8 @@ export function init() {
         const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
         const startBeat = findCrossfadeStartBeat(_outDjData.beat_grid, dur, numBeats);
         triggerAt = dur - startBeat;
+        // Bug #8 fix: don't trigger crossfade in first half of track
+        if (triggerAt > dur * 0.5) triggerAt = crossfadeDuration;
       }
       if (remaining <= triggerAt && remaining > 0 && !_crossfadeTriggered
           && store.repeatMode !== 'one' && !store.castDevice) {
