@@ -6,7 +6,7 @@ import { apiFetch } from './api.js';
 
 // Cache: "artist:name" → { blobUrl }
 const _cache = new Map();
-const _activeFetches = new Map(); // key → controller (max 2 concurrent)
+const _activeFetches = new Map(); // key → { controller, progress: 0-100 }
 const MAX_CONCURRENT = 2;
 let _paused = false;
 const _queue = [];         // priority queue: [{ item, key, priority }]
@@ -30,11 +30,13 @@ export function getCachedUrl(name, artist) {
   return entry ? entry.blobUrl : null;
 }
 
-/** Get prefetch status: 'ready' | 'loading' | null */
+/** Get prefetch status: { state: 'ready'|'loading'|'queued', progress: 0-100 } or null */
 export function getStatus(name, artist) {
   const key = _key(name, artist);
-  if (_cache.has(key)) return 'ready';
-  if (_activeFetches.has(key) || _queue.some(q => q.key === key)) return 'loading';
+  if (_cache.has(key)) return { state: 'ready', progress: 100 };
+  const active = _activeFetches.get(key);
+  if (active) return { state: 'loading', progress: active.progress || 0 };
+  if (_queue.some(q => q.key === key)) return { state: 'queued', progress: 0 };
   return null;
 }
 
@@ -95,7 +97,8 @@ async function _processNext() {
 
 async function _startFetch(entry) {
   const controller = new AbortController();
-  _activeFetches.set(entry.key, controller);
+  const state = { controller, progress: 0 };
+  _activeFetches.set(entry.key, state);
 
   try {
     const cleanName = _decodeEntities(entry.item.name || '');
@@ -103,8 +106,27 @@ async function _startFetch(entry) {
     const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
     const res = await apiFetch(`/api/player/stream?${params}`, { signal: controller.signal });
     if (res.ok) {
-      const blob = await res.blob();
-      _cache.set(entry.key, { blobUrl: URL.createObjectURL(blob) });
+      const total = parseInt(res.headers.get('content-length')) || 0;
+      if (total && res.body) {
+        // Stream with progress tracking
+        const reader = res.body.getReader();
+        const chunks = [];
+        let received = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          state.progress = Math.round((received / total) * 100);
+        }
+        const blob = new Blob(chunks);
+        _cache.set(entry.key, { blobUrl: URL.createObjectURL(blob) });
+      } else {
+        // No content-length — fall back to blob() without progress
+        const blob = await res.blob();
+        _cache.set(entry.key, { blobUrl: URL.createObjectURL(blob) });
+      }
+      state.progress = 100;
     }
   } catch (e) {
     if (e.name !== 'AbortError') { /* network error, skip */ }
