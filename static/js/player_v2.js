@@ -1,4 +1,5 @@
-// player.js — Audio playback, controls, media session, queue persistence
+// player_v2.js — Crossfade player with Web Audio API dual-deck system
+// Drop-in replacement for player.js — same exports, same API.
 
 import { store } from './store.js';
 import { $, $$, fmtTime, showToast } from './utils.js';
@@ -8,15 +9,107 @@ import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, prefetchUpcoming, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
 
-const audio = $('#audioElement');
+// ── Dual-deck Web Audio API crossfade engine ──
+// Two audio elements routed through GainNodes for smooth transitions.
+
+const _deckA = $('#audioElement');
+const _deckB = document.createElement('audio');
+_deckB.preload = 'none';
+document.body.appendChild(_deckB);
+
+let _ctx = null;       // AudioContext (lazy init on first user gesture)
+let _gainA = null;      // GainNode for deck A
+let _gainB = null;      // GainNode for deck B
+let _sourceA = null;    // MediaElementSourceNode A
+let _sourceB = null;    // MediaElementSourceNode B
+let _activeDeck = 'A';  // Which deck is currently the "main" one
+let _crossfading = false;
+let _crossfadeTimer = null;
+let _fadingOutDeck = null; // reference to deck being faded out
+
+// Crossfade duration in seconds (configurable via settings)
+let crossfadeDuration = parseInt(localStorage.getItem('ms_crossfade_duration')) || 5;
+
+function _ensureAudioContext() {
+  if (_ctx) return;
+  _ctx = new (window.AudioContext || window.webkitAudioContext)();
+  _gainA = _ctx.createGain();
+  _gainB = _ctx.createGain();
+  _sourceA = _ctx.createMediaElementSource(_deckA);
+  _sourceB = _ctx.createMediaElementSource(_deckB);
+  _sourceA.connect(_gainA).connect(_ctx.destination);
+  _sourceB.connect(_gainB).connect(_ctx.destination);
+  _gainA.gain.value = 1;
+  _gainB.gain.value = 0;
+}
+
+function _activeDeckEl() { return _activeDeck === 'A' ? _deckA : _deckB; }
+function _inactiveDeckEl() { return _activeDeck === 'A' ? _deckB : _deckA; }
+function _activeGain() { return _activeDeck === 'A' ? _gainA : _gainB; }
+function _inactiveGain() { return _activeDeck === 'A' ? _gainB : _gainA; }
+
+function _gainFor(deck) { return deck === _deckA ? _gainA : _gainB; }
+
+function _startCrossfade() {
+  if (!_ctx) return;
+
+  // If already crossfading, kill the fading-out deck immediately
+  if (_crossfading && _fadingOutDeck) {
+    _fadingOutDeck.pause();
+    _fadingOutDeck.src = '';
+    clearTimeout(_crossfadeTimer);
+    _crossfading = false;
+  }
+
+  // The current active deck will fade out, inactive will fade in
+  _fadingOutDeck = _activeDeckEl();
+  const fadingInDeck = _inactiveDeckEl();
+  const fadeOutGain = _activeGain();
+  const fadeInGain = _inactiveGain();
+
+  // Swap active deck NOW — the new track is the active one from this point
+  _activeDeck = _activeDeck === 'A' ? 'B' : 'A';
+  _crossfading = true;
+
+  const now = _ctx.currentTime;
+  const dur = crossfadeDuration;
+
+  // Cancel any pending ramps
+  fadeOutGain.gain.cancelScheduledValues(now);
+  fadeInGain.gain.cancelScheduledValues(now);
+
+  // Fade out old deck
+  fadeOutGain.gain.setValueAtTime(fadeOutGain.gain.value, now);
+  fadeOutGain.gain.linearRampToValueAtTime(0, now + dur);
+
+  // Fade in new deck
+  fadeInGain.gain.setValueAtTime(0, now);
+  fadeInGain.gain.linearRampToValueAtTime(1, now + dur);
+
+  // After crossfade completes, clean up old deck
+  clearTimeout(_crossfadeTimer);
+  const deckToStop = _fadingOutDeck;
+  _crossfadeTimer = setTimeout(() => {
+    deckToStop.pause();
+    deckToStop.src = '';
+    _fadingOutDeck = null;
+    _crossfading = false;
+    resumePrefetch();
+  }, dur * 1000 + 100);
+}
+
+// Expose active deck as `audio` for backward compatibility
+const audio = _deckA;
+export function getAudio() { return _activeDeckEl(); }
+
 function _ab() { return window.AndroidBridge || null; }
 let _lastAbUpdate = 0;
 
 // Android native media action callback (notification buttons → WebView)
 window._androidMediaAction = function(action) {
   switch (action) {
-    case 'play': audio.play().catch(() => {}); break;
-    case 'pause': audio.pause(); break;
+    case 'play': _activeDeckEl().play().catch(() => {}); break;
+    case 'pause': _activeDeckEl().pause(); break;
     case 'next': nextTrack(); break;
     case 'prev': prevTrack(); break;
   }
@@ -24,7 +117,7 @@ window._androidMediaAction = function(action) {
 
 // Called by native side when bridge is injected (may be after playback started)
 window._androidBridgeReady = function() {
-  if (!audio.paused && _ab()) {
+  if (!_activeDeckEl().paused && _ab()) {
     const item = store.playerQueue[store.playerIndex];
     if (item) _ab().onPlay(item.name || '', item.artist || '');
   }
@@ -32,7 +125,7 @@ window._androidBridgeReady = function() {
 
 // ── Helper: get duration with Safari fallback ──
 function _getDuration() {
-  let dur = audio.duration;
+  let dur = _activeDeckEl().duration;
   if (dur && isFinite(dur) && dur > 0) return dur;
   const item = store.playerQueue[store.playerIndex] || _currentRecItem;
   if (item && item.duration_ms > 0) return item.duration_ms / 1000;
@@ -106,15 +199,33 @@ export function loadAndPlay() {
       .then(() => { /* cast started */ })
       .catch(e => { showToast('Cast failed: ' + (e.message || '')); _castTransitioning = false; });
   } else {
+    _ensureAudioContext();
+    if (_ctx.state === 'suspended') _ctx.resume();
     const cached = getCachedUrl(cleanName, cleanArtist);
-    if (cached) {
-      audio.src = cached;
+    const src = cached || `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken })}`;
+
+    const currentDeck = _activeDeckEl();
+    if (!currentDeck.paused && currentDeck.src && cached) {
+      // Crossfade — ONLY if next track is pre-cached (no extra network load)
+      pausePrefetch();
+      const nextDeck = _inactiveDeckEl();
+      nextDeck.src = src;
+      nextDeck.load();
+      nextDeck.play().catch(() => {});
+      _startCrossfade();
     } else {
-      const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
-      audio.src = `/api/player/stream?${params}`;
+      // Hard cut — next track not cached or nothing playing
+      if (_crossfading) _finishCrossfade();
+      if (_fadingOutDeck) { _fadingOutDeck.pause(); _fadingOutDeck.src = ''; _fadingOutDeck = null; }
+      const deck = _crossfading ? _activeDeckEl() : currentDeck;
+      deck.src = src;
+      deck.load();
+      deck.play().catch(() => {});
+      if (_activeGain()) {
+        _activeGain().gain.cancelScheduledValues(0);
+        _activeGain().gain.value = 1;
+      }
     }
-    audio.load();
-    audio.play().catch(() => {});
     // Prefetch starts on 'playing' event (after current track buffers)
     prefetchCleanup(store.playerQueue, store.playerIndex);
   }
@@ -228,7 +339,7 @@ async function _autoCastAndPlay(item, cleanName, cleanArtist) {
       device_id: device.id, name: cleanName, artist: cleanArtist,
       album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
     }});
-    audio.pause();
+    _activeDeckEl().pause();
     _syncCastButtonsFn('var(--accent)');
     _startCastPollFn();
   } catch (e) {
@@ -248,7 +359,7 @@ export function nextTrack() {
   import('./recommendations.js').then(m => {
     if (m.isPlayingRec()) {
       m.playNextRec().then(filled => {
-        if (!filled) { audio.pause(); updatePlayPauseIcon(false); }
+        if (!filled) { _activeDeckEl().pause(); updatePlayPauseIcon(false); }
       });
       return;
     }
@@ -288,12 +399,12 @@ function _nextTrackInQueue() {
           saveQueueDebounced();
         } else {
           showToast('No more similar tracks found');
-          audio.pause();
+          _activeDeckEl().pause();
           updatePlayPauseIcon(false);
         }
       }).catch(() => {
         showToast('Failed to load more tracks');
-        audio.pause();
+        _activeDeckEl().pause();
         updatePlayPauseIcon(false);
       }).finally(() => { store.radioLoading = false; });
     }
@@ -302,7 +413,7 @@ function _nextTrackInQueue() {
     import('./recommendations.js').then(m => {
       m.playNextRec().then(filled => {
         if (!filled) {
-          audio.pause();
+          _activeDeckEl().pause();
           updatePlayPauseIcon(false);
         }
       });
@@ -338,15 +449,28 @@ export function playRecTrack(item) {
       album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
     }}).catch(e => { showToast('Cast failed: ' + (e.message || '')); _castTransitioning = false; });
   } else {
+    _ensureAudioContext();
+    if (_ctx.state === 'suspended') _ctx.resume();
     const cached = getCachedUrl(cleanName, cleanArtist);
-    if (cached) {
-      audio.src = cached;
+    const src = cached || `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken })}`;
+    const curDeck = _activeDeckEl();
+    if (!curDeck.paused && curDeck.src && cached) {
+      pausePrefetch();
+      const nextDeck = _inactiveDeckEl();
+      nextDeck.src = src;
+      nextDeck.load();
+      nextDeck.play().catch(() => {});
+      _startCrossfade();
     } else {
-      const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
-      audio.src = `/api/player/stream?${params}`;
+      if (_crossfading) _finishCrossfade();
+      curDeck.src = src;
+      curDeck.load();
+      curDeck.play().catch(() => {});
+      if (_activeGain()) {
+        _activeGain().gain.cancelScheduledValues(0);
+        _activeGain().gain.value = 1;
+      }
     }
-    audio.load();
-    audio.play().catch(() => {});
   }
   showPlayerBar();
   updatePlayPauseIcon(true);
@@ -368,8 +492,8 @@ function updateMediaSessionWith(item) {
     title: item.name || '', artist: item.artist || '', album: item.album || '',
     artwork: item.image ? [{ src: item.image, sizes: '300x300', type: 'image/jpeg' }] : [],
   });
-  navigator.mediaSession.setActionHandler('play', () => audio.play());
-  navigator.mediaSession.setActionHandler('pause', () => audio.pause());
+  navigator.mediaSession.setActionHandler('play', () => _activeDeckEl().play());
+  navigator.mediaSession.setActionHandler('pause', () => _activeDeckEl().pause());
   navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
   navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
 }
@@ -391,8 +515,8 @@ export function prevTrack() {
       return;
     }
     // Normal queue navigation
-    if (!store.castDevice && audio.currentTime > 3) {
-      audio.currentTime = 0;
+    if (!store.castDevice && _activeDeckEl().currentTime > 3) {
+      _activeDeckEl().currentTime = 0;
     } else if (store.playerIndex > 0) {
       store.playerIndex--;
       loadAndPlay();
@@ -448,7 +572,7 @@ async function saveQueueNow() {
       body: {
         queue: store.playerQueue,
         current_index: store.playerIndex,
-        position_seconds: audio.currentTime || 0,
+        position_seconds: _activeDeckEl().currentTime || 0,
         volume: store.playerVolume,
         playlist_mode: store.playlistMode,
       },
@@ -463,19 +587,20 @@ export async function loadQueueState() {
       store.playerQueue = data.queue;
       store.playerIndex = data.current_index >= 0 ? data.current_index : 0;
       store.playerVolume = data.volume ?? 1.0;
-      audio.volume = store.playerVolume;
+      _deckA.volume = store.playerVolume;
+      _deckB.volume = store.playerVolume;
       $('#playerVolume').value = Math.round(store.playerVolume * 100);
       const item = store.playerQueue[store.playerIndex];
       if (item) {
         $('#playerImg').src = item.image || '';
         $('#playerTitle').textContent = item.name || '';
         $('#playerArtist').textContent = item.artist || '';
-        // Pre-set audio source so play button works immediately
+        const deck = _activeDeckEl();
         const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: store.authToken });
-        audio.src = `/api/player/stream?${params}`;
-        audio.preload = 'none';
+        deck.src = `/api/player/stream?${params}`;
+        deck.preload = 'none';
         if (data.position_seconds > 0) {
-          audio.addEventListener('loadedmetadata', () => { audio.currentTime = data.position_seconds; }, { once: true });
+          deck.addEventListener('loadedmetadata', () => { deck.currentTime = data.position_seconds; }, { once: true });
         }
         syncFullPlayer();
         updateDownloadButtons(item);
@@ -500,69 +625,102 @@ function updateMediaSession() {
     title: item.name || '', artist: item.artist || '', album: item.album || '',
     artwork: item.image ? [{ src: item.image, sizes: '300x300', type: 'image/jpeg' }] : [],
   });
-  navigator.mediaSession.setActionHandler('play', () => audio.play());
-  navigator.mediaSession.setActionHandler('pause', () => audio.pause());
+  navigator.mediaSession.setActionHandler('play', () => _activeDeckEl().play());
+  navigator.mediaSession.setActionHandler('pause', () => _activeDeckEl().pause());
   navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
   navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
 }
 
 // ── Audio Element Reference (exported for other modules) ──
-export { audio };
-export function getAudio() { return audio; }
+// Export deckA as `audio` for backward compat — other modules use it for
+// paused state checks and currentTime. During crossfade both decks play
+// but UI modules only need the active one.
+export { _deckA as audio };
 
 // ── Init ──
 export function init() {
   // Audio events
-  audio.addEventListener('play', () => {
-    updatePlayPauseIcon(true);
-    if (_ab()) {
-      const item = store.playerQueue[store.playerIndex];
-      if (item) _ab().onPlay(item.name || '', item.artist || '');
-    }
+  [_deckA, _deckB].forEach(deck => {
+    deck.addEventListener('play', () => {
+      if (deck !== _activeDeckEl() && !_crossfading) return;
+      updatePlayPauseIcon(true);
+      if (_ab()) {
+        const item = store.playerQueue[store.playerIndex];
+        if (item) _ab().onPlay(item.name || '', item.artist || '');
+      }
+    });
+    // 'playing' fires after buffering — safe to start prefetch
+    deck.addEventListener('playing', () => {
+      if (deck !== _activeDeckEl()) return;
+      resumePrefetch();
+    });
+    deck.addEventListener('pause', () => {
+      if (deck !== _activeDeckEl()) return;
+      updatePlayPauseIcon(false);
+      pausePrefetch();
+      if (_ab()) _ab().onPause();
+    });
   });
-  // 'playing' fires after buffering — safe to start prefetch without competing
-  audio.addEventListener('playing', () => {
-    resumePrefetch();
+  // Both decks need ended/error handlers
+  [_deckA, _deckB].forEach(deck => {
+    deck.addEventListener('ended', () => {
+      // Only handle if this is the active deck and no crossfade in progress
+      if (deck !== _activeDeckEl() || _crossfading) return;
+      if (store.repeatMode === 'one') {
+        deck.currentTime = 0;
+        deck.play().catch(() => {});
+      } else {
+        nextTrack();
+      }
+    });
+    deck.addEventListener('error', () => {
+      if (deck !== _activeDeckEl()) return;
+      showToast('Stream error, skipping...');
+      setTimeout(() => nextTrack(), 1000);
+    });
   });
-  audio.addEventListener('pause', () => {
-    updatePlayPauseIcon(false);
-    pausePrefetch();
-    if (_ab()) _ab().onPause();
+
+  let _crossfadeTriggered = false;
+  // Timeupdate on both decks, but only UI-update from active deck
+  [_deckA, _deckB].forEach(deck => {
+    deck.addEventListener('timeupdate', () => {
+      if (deck !== _activeDeckEl()) return;
+      const dur = _getDuration();
+      if (!dur) return;
+      const pct = (deck.currentTime / dur) * 100;
+      $('#playerProgressFill').style.width = pct + '%';
+      $('#playerTimeCurrent').textContent = fmtTime(deck.currentTime);
+      $('#playerTimeTotal').textContent = fmtTime(dur);
+      document.getElementById('playerBar').style.setProperty('--player-progress', pct + '%');
+      const fpFill = $('#fpProgressFill');
+      if (fpFill) fpFill.style.width = pct + '%';
+      const fpCur = $('#fpTimeCurrent');
+      if (fpCur) fpCur.textContent = fmtTime(deck.currentTime);
+      const fpTot = $('#fpTimeTotal');
+      if (fpTot) fpTot.textContent = fmtTime(dur);
+      if (_ab() && Math.abs(deck.currentTime - (_lastAbUpdate || 0)) >= 1) {
+        _lastAbUpdate = deck.currentTime;
+        _ab().onProgress(Math.floor(deck.currentTime * 1000), Math.floor(dur * 1000));
+      }
+      // ── Auto-crossfade: trigger nextTrack when approaching end ──
+      // Only auto-trigger if next track is cached (otherwise let 'ended' event handle it)
+      const remaining = dur - deck.currentTime;
+      if (remaining <= crossfadeDuration && remaining > 0 && !_crossfadeTriggered
+          && store.repeatMode !== 'one' && !store.castDevice) {
+        const nextIdx = store.playerIndex + 1;
+        const nextItem = store.playerQueue[nextIdx];
+        if (nextItem && getCachedUrl(_decodeEntities(nextItem.name || ''), _decodeEntities(nextItem.artist || ''))) {
+          _crossfadeTriggered = true;
+          nextTrack();
+        }
+        // If not cached, 'ended' event will fire and do hard cut
+      }
+      if (remaining > crossfadeDuration + 1) {
+        _crossfadeTriggered = false; // reset for seeks backward
+      }
+    });
   });
-  audio.addEventListener('ended', () => {
-    if (store.repeatMode === 'one') {
-      audio.currentTime = 0;
-      audio.play().catch(() => {});
-    } else {
-      nextTrack();
-    }
-  });
-  audio.addEventListener('timeupdate', () => {
-    const dur = _getDuration();
-    if (!dur) return;
-    const pct = (audio.currentTime / dur) * 100;
-    $('#playerProgressFill').style.width = pct + '%';
-    $('#playerTimeCurrent').textContent = fmtTime(audio.currentTime);
-    $('#playerTimeTotal').textContent = fmtTime(dur);
-    // Sync mini bar top progress line
-    document.getElementById('playerBar').style.setProperty('--player-progress', pct + '%');
-    // Sync full player
-    const fpFill = $('#fpProgressFill');
-    if (fpFill) fpFill.style.width = pct + '%';
-    const fpCur = $('#fpTimeCurrent');
-    if (fpCur) fpCur.textContent = fmtTime(audio.currentTime);
-    const fpTot = $('#fpTimeTotal');
-    if (fpTot) fpTot.textContent = fmtTime(dur);
-    // Update Android notification progress (throttled to ~1/sec)
-    if (_ab() && Math.abs(audio.currentTime - (_lastAbUpdate || 0)) >= 1) {
-      _lastAbUpdate = audio.currentTime;
-      _ab().onProgress(Math.floor(audio.currentTime * 1000), Math.floor(dur * 1000));
-    }
-  });
-  audio.addEventListener('error', () => {
-    showToast('Stream error, skipping...');
-    setTimeout(() => nextTrack(), 1000);
-  });
+  // (error handlers registered in the deck loop above)
 
   // Controls
   $('#playerPlayPause').addEventListener('click', () => {
@@ -570,8 +728,16 @@ export function init() {
       if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
       else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
     } else {
-      if (audio.paused) audio.play().catch(() => {});
-      else audio.pause();
+      _ensureAudioContext();
+      if (_ctx.state === 'suspended') _ctx.resume();
+      const deck = _activeDeckEl();
+      if (deck.paused) {
+        deck.play().catch(() => {});
+      } else {
+        deck.pause();
+        // Also pause fading-out deck if crossfading
+        if (_fadingOutDeck && !_fadingOutDeck.paused) _fadingOutDeck.pause();
+      }
     }
   });
   $('#playerNext').addEventListener('click', nextTrack);
@@ -581,7 +747,8 @@ export function init() {
     if (store.castDevice) {
       apiJson('/api/dlna/volume', { method: 'POST', body: { volume: parseInt(e.target.value) } }).catch(() => {});
     } else {
-      audio.volume = store.playerVolume;
+      _deckA.volume = store.playerVolume;
+      _deckB.volume = store.playerVolume;
     }
   });
   function _seekFromEvent(bar, e) {
@@ -593,7 +760,7 @@ export function init() {
     if (store.castDevice) {
       apiJson('/api/dlna/seek', { method: 'POST', body: { position_seconds: pct * dur } }).catch(() => {});
     } else {
-      try { audio.currentTime = pct * dur; } catch {}
+      try { _activeDeckEl().currentTime = pct * dur; } catch {}
     }
   }
   const miniBar = $('#playerProgressBar');
@@ -690,7 +857,7 @@ export function init() {
         album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
       }});
       store.castDevice = device;
-      audio.pause();
+      _activeDeckEl().pause();
       _syncCastButtons('var(--accent)');
       showToast(`Casting to ${device.name}`);
       _startCastPoll();
@@ -784,7 +951,7 @@ export function init() {
   // Keyboard controls (when not in input)
   document.addEventListener('keydown', (e) => {
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-    if (!store.playerQueue.length && !audio.src) return;
+    if (!store.playerQueue.length && !_activeDeckEl().src) return;
     switch (e.code) {
       case 'Space':
         e.preventDefault();
@@ -792,7 +959,15 @@ export function init() {
           if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
           else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
         } else {
-          if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+          _ensureAudioContext();
+          if (_ctx.state === 'suspended') _ctx.resume();
+          const deck = _activeDeckEl();
+          if (deck.paused) {
+            deck.play().catch(() => {});
+          } else {
+            deck.pause();
+            if (_fadingOutDeck && !_fadingOutDeck.paused) _fadingOutDeck.pause();
+          }
         }
         break;
       case 'ArrowRight':
@@ -809,7 +984,7 @@ export function init() {
         $('#playerVolume').value = Math.round(store.playerVolume * 100);
         if ($('#fpVolume')) $('#fpVolume').value = Math.round(store.playerVolume * 100);
         if (store.castDevice) apiJson('/api/dlna/volume', { method: 'POST', body: { volume: Math.round(store.playerVolume * 100) } }).catch(() => {});
-        else audio.volume = store.playerVolume;
+        else { _deckA.volume = store.playerVolume; _deckB.volume = store.playerVolume; }
         break;
       case 'ArrowDown':
         e.preventDefault();
@@ -817,7 +992,7 @@ export function init() {
         $('#playerVolume').value = Math.round(store.playerVolume * 100);
         if ($('#fpVolume')) $('#fpVolume').value = Math.round(store.playerVolume * 100);
         if (store.castDevice) apiJson('/api/dlna/volume', { method: 'POST', body: { volume: Math.round(store.playerVolume * 100) } }).catch(() => {});
-        else audio.volume = store.playerVolume;
+        else { _deckA.volume = store.playerVolume; _deckB.volume = store.playerVolume; }
         break;
     }
   });
@@ -836,7 +1011,7 @@ export function init() {
         if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
         xhr.send(JSON.stringify({
           queue: store.playerQueue, current_index: store.playerIndex,
-          position_seconds: audio.currentTime || 0, volume: store.playerVolume,
+          position_seconds: _activeDeckEl().currentTime || 0, volume: store.playerVolume,
           playlist_mode: store.playlistMode,
         }));
       } catch {}

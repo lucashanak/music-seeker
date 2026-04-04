@@ -115,6 +115,19 @@ async function _loadDeviceSettings() {
     if (nameEl) nameEl.value = store.deviceName;
     if (modeEl) modeEl.value = store.deviceOutputMode;
     if (dlnaUrlEl) dlnaUrlEl.value = store.deviceDlnaRendererUrl;
+    // Player engine (stored in localStorage, per-device)
+    const engineEl = $('#settingPlayerEngine');
+    const cfDurEl = $('#settingCrossfadeDuration');
+    if (engineEl) {
+      engineEl.value = localStorage.getItem('ms_player_engine') || 'classic';
+      engineEl.addEventListener('change', () => {
+        const row = $('#crossfadeDurationRow');
+        if (row) row.style.display = engineEl.value === 'crossfade' ? '' : 'none';
+      });
+    }
+    if (cfDurEl) cfDurEl.value = localStorage.getItem('ms_crossfade_duration') || '5';
+    const cfRow = $('#crossfadeDurationRow');
+    if (cfRow) cfRow.style.display = (engineEl?.value === 'crossfade') ? '' : 'none';
     _toggleDeviceDlnaRow();
   } catch {}
   _loadMyDevices();
@@ -169,7 +182,12 @@ async function _saveDeviceSettings() {
     store.deviceName = name;
     store.deviceOutputMode = mode;
     store.deviceDlnaRendererUrl = dlnaUrl;
-    showToast('Device settings saved');
+    // Save player engine to localStorage
+    const engine = $('#settingPlayerEngine')?.value || 'classic';
+    const cfDur = $('#settingCrossfadeDuration')?.value || '5';
+    localStorage.setItem('ms_player_engine', engine);
+    localStorage.setItem('ms_crossfade_duration', cfDur);
+    showToast('Device settings saved — reload to switch player engine');
     _loadMyDevices();
   } catch { showToast('Failed to save device settings', true); }
 }

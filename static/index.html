@@ -457,6 +457,17 @@
             <option value="dlna_only">DLNA Only (cast to receiver)</option>
           </select>
         </div>
+        <div class="setting-group">
+          <label class="setting-label">Player Engine</label>
+          <select class="setting-select" id="settingPlayerEngine">
+            <option value="classic">Classic</option>
+            <option value="crossfade">Crossfade (Web Audio API)</option>
+          </select>
+        </div>
+        <div class="setting-group" id="crossfadeDurationRow" style="display:none;">
+          <label class="setting-label">Crossfade Duration (seconds)</label>
+          <input class="setting-input" id="settingCrossfadeDuration" type="number" min="1" max="15" value="5">
+        </div>
         <div class="setting-group" id="deviceDlnaRow" style="display:none;">
           <label class="setting-label">DLNA Renderer URL</label>
           <input class="setting-input" id="settingDeviceDlnaUrl" type="text" placeholder="http://192.168.1.95:8888/upnp_descriptor_0">

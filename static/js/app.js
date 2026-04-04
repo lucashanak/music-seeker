@@ -7,7 +7,12 @@ import { init as initSearch } from './search.js';
 import { init as initSpotify, loadPlaylists, closePlaylistDetail, closeShowDetail, closeArtistDetail } from './spotify.js';
 import { init as initDiscover, loadTags, closeTagDetail } from './discover.js';
 import { init as initDownloads } from './downloads.js';
-import { init as initPlayer, loadAndPlay, hidePlayerBar, saveQueueDebounced, nextTrack, prevTrack, updatePlayPauseIcon, audio } from './player.js';
+// Dynamic player engine selection (classic or crossfade)
+const _playerEngine = localStorage.getItem('ms_player_engine') || 'classic';
+const _playerModule = _playerEngine === 'crossfade'
+  ? await import('./player_v2.js')
+  : await import('./player.js');
+const { init: initPlayer, loadAndPlay, hidePlayerBar, saveQueueDebounced, nextTrack, prevTrack, updatePlayPauseIcon, audio, getAudio } = _playerModule;
 import { init as initQueue, setPlayerRefs as setQueuePlayerRefs } from './queue.js';
 import { init as initFullPlayer, setPlayerRefs as setFpPlayerRefs } from './fullplayer.js';
 import { init as initRadio } from './radio.js';
@@ -23,10 +28,10 @@ import { initVirtualKeyboard } from './utils.js';
 // ── Wire up cross-module references ──
 
 // Queue module needs player functions (avoids circular import)
-setQueuePlayerRefs({ loadAndPlay, hidePlayerBar, saveQueueDebounced, audio });
+setQueuePlayerRefs({ loadAndPlay, hidePlayerBar, saveQueueDebounced, audio, getAudio });
 
 // Full player module needs player functions (avoids circular import)
-setFpPlayerRefs({ nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon, audio });
+setFpPlayerRefs({ nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon, audio, getAudio });
 
 // Router needs close handlers for popstate
 setCloseHandlers({

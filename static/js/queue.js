@@ -4,13 +4,17 @@ import { store } from './store.js';
 import { $, $$, esc, historyBack, showToast } from './utils.js';
 
 // Forward references set during init to avoid circular imports
-let loadAndPlay, hidePlayerBar, saveQueueDebounced, audio;
+let loadAndPlay, hidePlayerBar, saveQueueDebounced;
+let _audioRef = null;
+let _audioGetter = null;
+function audio() { return _audioGetter ? _audioGetter() : _audioRef; }
 
 export function setPlayerRefs(refs) {
   loadAndPlay = refs.loadAndPlay;
   hidePlayerBar = refs.hidePlayerBar;
   saveQueueDebounced = refs.saveQueueDebounced;
-  audio = refs.audio;
+  _audioRef = refs.audio;
+  _audioGetter = refs.getAudio || null;
 }
 
 // ── Render Queue Into Element ──
@@ -50,7 +54,7 @@ export function renderQueueInto(el) {
       else if (idx === store.playerIndex) {
         if (store.playerIndex >= store.playerQueue.length) store.playerIndex = store.playerQueue.length - 1;
         if (store.playerIndex >= 0) loadAndPlay();
-        else { audio.pause(); hidePlayerBar(); }
+        else { audio().pause(); hidePlayerBar(); }
       }
       renderQueue();
       saveQueueDebounced();
@@ -248,7 +252,7 @@ export function init() {
   });
   $('#queuePanelClose').addEventListener('click', () => closeQueuePanel());
   $('#clearQueue').addEventListener('click', () => {
-    audio.pause();
+    audio().pause();
     store.playerQueue = [];
     store.playerIndex = -1;
     store.playlistMode = null;
@@ -259,7 +263,7 @@ export function init() {
   });
   $('#fpQueuePanelClose').addEventListener('click', () => closeFpQueuePanel());
   $('#fpQueueClear').addEventListener('click', () => {
-    audio.pause();
+    audio().pause();
     store.playerQueue = [];
     store.playerIndex = -1;
     store.playlistMode = null;

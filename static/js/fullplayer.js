@@ -6,7 +6,13 @@ import { apiJson } from './api.js';
 import { renderQueueInto, renderQueue, openFpQueuePanel, closeFpQueuePanel, closeQueuePanel, scrollToNowPlaying } from './queue.js';
 
 // Forward references set during init to avoid circular imports
-let nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon, audio;
+let nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon;
+let _audioRef = null;    // static ref (classic player)
+let _audioGetter = null; // dynamic getter (crossfade player — returns active deck)
+
+function audio() {
+  return _audioGetter ? _audioGetter() : _audioRef;
+}
 
 export function setPlayerRefs(refs) {
   nextTrack = refs.nextTrack;
@@ -15,7 +21,8 @@ export function setPlayerRefs(refs) {
   hidePlayerBar = refs.hidePlayerBar;
   saveQueueDebounced = refs.saveQueueDebounced;
   updatePlayPauseIcon = refs.updatePlayPauseIcon;
-  audio = refs.audio;
+  _audioRef = refs.audio;
+  _audioGetter = refs.getAudio || null;
 }
 
 // ── Sync Full Player ──
@@ -33,7 +40,7 @@ export function syncFullPlayer() {
   const fpCur = $('#fpTimeCurrent');
   if (fpCur) fpCur.textContent = '0:00';
   const fpTot = $('#fpTimeTotal');
-  if (fpTot) fpTot.textContent = fmtTime(audio ? audio.duration || 0 : 0);
+  if (fpTot) { const _a2 = audio(); fpTot.textContent = fmtTime(_a2 ? _a2.duration || 0 : 0); }
   // Sync volume
   const fpVol = $('#fpVolume');
   if (fpVol) fpVol.value = Math.round(store.playerVolume * 100);
@@ -44,11 +51,12 @@ export function openFullPlayer() {
   if (store.fullPlayerOpen || store.playerIndex < 0) return;
   syncFullPlayer();
   // Update progress if already playing
-  if (audio && audio.duration) {
-    const pct = (audio.currentTime / audio.duration) * 100;
+  const _a = audio();
+  if (_a && _a.duration) {
+    const pct = (_a.currentTime / _a.duration) * 100;
     $('#fpProgressFill').style.width = pct + '%';
-    $('#fpTimeCurrent').textContent = fmtTime(audio.currentTime);
-    $('#fpTimeTotal').textContent = fmtTime(audio.duration);
+    $('#fpTimeCurrent').textContent = fmtTime(_a.currentTime);
+    $('#fpTimeTotal').textContent = fmtTime(_a.duration);
   }
   if (updatePlayPauseIcon) updatePlayPauseIcon(store.playerPlaying);
   $('#fullPlayer').classList.add('open');
@@ -98,7 +106,7 @@ export function init() {
 
   // Desktop inline queue clear button
   $('#fpClearQueue').addEventListener('click', () => {
-    audio.pause();
+    audio().pause();
     store.playerQueue = [];
     store.playerIndex = -1;
     hidePlayerBar();
@@ -113,7 +121,8 @@ export function init() {
       if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
       else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
     } else {
-      if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+      const a = audio();
+      if (a.paused) a.play().catch(() => {}); else a.pause();
     }
   });
   $('#fpPrev').addEventListener('click', () => prevTrack());
@@ -121,8 +130,9 @@ export function init() {
 
   // Full player seek
   function _fpSeek(e) {
-    const dur = audio.duration && isFinite(audio.duration) && audio.duration > 0
-      ? audio.duration
+    const a = audio();
+    const dur = a.duration && isFinite(a.duration) && a.duration > 0
+      ? a.duration
       : (() => { const item = store.playerQueue[store.playerIndex]; return item?.duration_ms > 0 ? item.duration_ms / 1000 : null; })();
     if (!dur) return;
     const bar = $('#fpProgressBar');
@@ -132,7 +142,7 @@ export function init() {
     if (store.castDevice) {
       apiJson('/api/dlna/seek', { method: 'POST', body: { position_seconds: pct * dur } }).catch(() => {});
     } else {
-      try { audio.currentTime = pct * dur; } catch {}
+      try { a.currentTime = pct * dur; } catch {}
     }
   }
   $('#fpProgressBar').addEventListener('click', _fpSeek);
@@ -145,7 +155,7 @@ export function init() {
     if (store.castDevice) {
       apiJson('/api/dlna/volume', { method: 'POST', body: { volume: parseInt(e.target.value) } }).catch(() => {});
     } else {
-      audio.volume = store.playerVolume;
+      audio().volume = store.playerVolume;
     }
   });
 
@@ -236,7 +246,8 @@ export function init() {
       if (Math.abs(dx) < 5) {
         art.style.transform = '';
         art.style.opacity = '';
-        if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+        const a = audio();
+        if (a.paused) a.play().catch(() => {}); else a.pause();
         return;
       }
       if (Math.abs(dx) >= THRESHOLD) {
