@@ -44,22 +44,26 @@ def _resolve_local_file(name: str, artist: str) -> dict | None:
     title_variants.add(alt)
 
     # Search across all user dirs: /music/{user}/{artist}/{album}/{title}.ext
-    for user_dir in MUSIC_DIR.iterdir():
-        if not user_dir.is_dir() or user_dir.name.startswith('.'):
-            continue
-        search_dirs = []
-        if safe_artist:
-            artist_dir = user_dir / safe_artist
-            if artist_dir.is_dir():
-                search_dirs.append(artist_dir)
-        else:
-            search_dirs.append(user_dir)
-        for search_dir in search_dirs:
-            for title in title_variants:
-                for ext in ("flac", "mp3", "opus", "m4a"):
-                    matches = list(search_dir.rglob(f"{title}.{ext}"))
-                    if matches:
-                        return {"source": "local", "path": str(matches[0])}
+    # Pass 1: match artist dir if exists. Pass 2: search all dirs (fallback).
+    for broad_search in (False, True):
+        for user_dir in MUSIC_DIR.iterdir():
+            if not user_dir.is_dir() or user_dir.name.startswith('.'):
+                continue
+            if not broad_search and safe_artist:
+                artist_dir = user_dir / safe_artist
+                if not artist_dir.is_dir():
+                    continue
+                search_dirs = [artist_dir]
+            else:
+                search_dirs = [user_dir]
+            for search_dir in search_dirs:
+                for title in title_variants:
+                    for ext in ("flac", "mp3", "opus", "m4a"):
+                        matches = list(search_dir.rglob(f"{title}.{ext}"))
+                        if matches:
+                            return {"source": "local", "path": str(matches[0])}
+        if not safe_artist:
+            break  # no point doing broad search again without artist
     return None
 
 
