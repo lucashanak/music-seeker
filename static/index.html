@@ -537,12 +537,43 @@
           <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Instead of playing tracks sequentially, picks the best next track from the remaining queue based on BPM similarity (and optionally harmonic key). Only considers tracks that have been analyzed — unanalyzed tracks play in order. Does not reorder the queue.</p>
         </div>
         <div class="setting-group">
+          <label class="setting-label">Outro Skip</label>
+          <select class="setting-select" id="settingDjOutroSkip">
+            <option value="0">Off — crossfade before actual track end</option>
+            <option value="auto" selected>Auto — detect where rhythm fades, skip quiet endings</option>
+            <option value="15">Skip last 15 seconds</option>
+            <option value="30">Skip last 30 seconds</option>
+            <option value="60">Skip last 60 seconds</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Detects where the beat stops and starts the crossfade there, skipping quiet endings, spoken outros, and fade-outs. Auto uses beat analysis to find where the rhythm breaks down.</p>
+        </div>
+        <div class="setting-group">
           <label class="setting-label">Outro Fade</label>
           <select class="setting-select" id="settingDjOutroFade">
             <option value="0">Off — outgoing track stops abruptly after crossfade</option>
             <option value="1" selected>On — outgoing track fades out smoothly</option>
           </select>
           <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">When the crossfade ends, the outgoing track can either stop immediately or fade out its remaining audio gracefully.</p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Prefetch Tracks</label>
+          <select class="setting-select" id="settingDjPrefetchCount">
+            <option value="1">1 track ahead</option>
+            <option value="3" selected>3 tracks ahead</option>
+            <option value="5">5 tracks ahead</option>
+            <option value="10">10 tracks ahead</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Number of upcoming tracks to pre-download for instant crossfade. More = smoother transitions but uses more memory and data. Audio is cached as blob URLs in browser memory.</p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Pre-analyze Tracks</label>
+          <select class="setting-select" id="settingDjPreAnalyze">
+            <option value="3">3 tracks ahead</option>
+            <option value="5">5 tracks ahead</option>
+            <option value="10" selected>10 tracks ahead</option>
+            <option value="20">20 tracks ahead</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Number of upcoming tracks to analyze for BPM, key, and beat grid. More = better Smart Queue picks but more server load. Tracks with existing tags are instant.</p>
         </div>
         <button class="btn-save" id="saveDjSettings" style="margin-top:4px;">Save DJ Settings</button>
         <span class="save-status" id="djSaveStatus"></span>

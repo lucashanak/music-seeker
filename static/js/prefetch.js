@@ -8,7 +8,7 @@ import { apiFetch } from './api.js';
 const _cache = new Map();
 const _fetching = new Map(); // key → { priority, controller }
 const MAX_CONCURRENT = 1;
-const PREFETCH_COUNT = 3;
+let PREFETCH_COUNT = parseInt(localStorage.getItem('ms_dj_prefetch_count')) || 3;
 
 let _paused = false;
 /** Stop starting new prefetches (running ones finish). */

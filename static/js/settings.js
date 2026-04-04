@@ -196,7 +196,8 @@ function _toggleDjSection() {
 
 const DJ_DEFAULTS = {
   crossfade_beats: '16', crossfade_sec: '5', intro_skip: 'auto',
-  tempo_range: '8', transition_style: 'auto', smart_queue: 'off', outro_fade: '1',
+  tempo_range: '8', transition_style: 'auto', smart_queue: 'off',
+  outro_skip: 'auto', outro_fade: '1', prefetch_count: '3', pre_analyze: '10',
 };
 
 function _loadDjSettings() {
@@ -216,7 +217,10 @@ function _saveDjSettings() {
     tempo_range: '#settingDjTempoRange',
     transition_style: '#settingDjTransitionStyle',
     smart_queue: '#settingDjSmartQueue',
+    outro_skip: '#settingDjOutroSkip',
     outro_fade: '#settingDjOutroFade',
+    prefetch_count: '#settingDjPrefetchCount',
+    pre_analyze: '#settingDjPreAnalyze',
   };
   for (const [key, sel] of Object.entries(map)) {
     const el = $(sel);

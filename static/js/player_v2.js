@@ -145,7 +145,7 @@ function _startCrossfade() {
  *  Triggers server-side analysis (which reads tags or runs full analysis).
  *  Sets _inDjData for the immediate next track. */
 async function _preAnalyzeUpcoming() {
-  const PRE_ANALYZE = 10;
+  const PRE_ANALYZE = parseInt(_djSetting('pre_analyze', '10')) || 10;
   for (let i = 1; i <= PRE_ANALYZE; i++) {
     const idx = store.playerIndex + i;
     const item = store.playerQueue[idx];
@@ -804,14 +804,22 @@ export function init() {
         _ab().onProgress(Math.floor(deck.currentTime * 1000), Math.floor(dur * 1000));
       }
       // ── Auto-crossfade: trigger nextTrack when approaching end ──
-      // Uses beat grid when available for beat-synced trigger
-      const remaining = dur - deck.currentTime;
+      // Outro skip: use detected outro_start or manual setting as effective end
+      let effectiveEnd = dur;
+      const outroSkip = _djSetting('outro_skip', 'auto');
+      if (outroSkip === 'auto' && _outDjData && _outDjData.outro_start) {
+        effectiveEnd = _outDjData.outro_start;
+      } else if (outroSkip !== '0' && outroSkip !== 'auto') {
+        effectiveEnd = dur - (parseInt(outroSkip) || 0);
+      }
+
+      const remaining = effectiveEnd - deck.currentTime;
       // Calculate trigger point: use beat grid or fallback to fixed duration
       let triggerAt = crossfadeDuration;
       if (_outDjData && _outDjData.beat_grid && _outDjData.bpm) {
         const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
-        const startBeat = findCrossfadeStartBeat(_outDjData.beat_grid, dur, numBeats);
-        triggerAt = dur - startBeat;
+        const startBeat = findCrossfadeStartBeat(_outDjData.beat_grid, effectiveEnd, numBeats);
+        triggerAt = effectiveEnd - startBeat;
         // Bug #8 fix: don't trigger crossfade in first half of track
         if (triggerAt > dur * 0.5) triggerAt = crossfadeDuration;
       }
