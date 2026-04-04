@@ -22,6 +22,15 @@ BPM_CACHE_FILE = DATA_DIR / "bpm_analysis.json"
 ZOUK_MIN_BPM = 65
 ZOUK_MAX_BPM = 110
 
+CAMELOT_MAP = {
+    "A minor": "8A", "E minor": "9A", "B minor": "10A", "F# minor": "11A",
+    "Db minor": "12A", "Ab minor": "1A", "Eb minor": "2A", "Bb minor": "3A",
+    "F minor": "4A", "C minor": "5A", "G minor": "6A", "D minor": "7A",
+    "C major": "8B", "G major": "9B", "D major": "10B", "A major": "11B",
+    "E major": "12B", "B major": "1B", "F# major": "2B", "Db major": "3B",
+    "Ab major": "4B", "Eb major": "5B", "Bb major": "6B", "F major": "7B",
+}
+
 _bpm_cache: dict = {}
 
 # 4 threads — C extensions (librosa/numpy FFT, essentia C++, madmom Cython)
@@ -102,9 +111,13 @@ def analyze_bpm(file_path: str) -> dict:
     )
     bt = librosa.frames_to_time(beat_frames, sr=22050, hop_length=HOP)
     raw["librosa_beats"] = round(float(60.0 / np.median(np.diff(bt))), 1) if len(bt) > 1 else raw["librosa_tempo"]
+    # Store beat positions (offset by segment start for absolute track time)
+    seg_offset = start / 44100
+    beat_positions = [round(float(t) + seg_offset, 3) for t in bt]
     del y_perc, onset_env, bt
 
     # ── 2. essentia (hopSize=256 → 2× faster) ──
+    detected_key = None
     try:
         import essentia.standard as es
         audio_es = mono_44k_seg.astype(np.float32)
@@ -115,9 +128,16 @@ def analyze_bpm(file_path: str) -> dict:
             method="multifeature", maxTempo=120, minTempo=55,
         )(audio_es)
         raw["essentia_rhythm"] = round(float(rbpm), 1)
+        # Key detection
+        try:
+            key_name, scale, strength = es.KeyExtractor()(audio_es)
+            detected_key = f"{key_name} {scale}"
+        except Exception as e:
+            logger.warning("Key detection failed: %s", e)
+            detected_key = None
         del audio_es
     except ImportError:
-        pass
+        detected_key = None
 
     # ── 3. madmom (RNN) — SKIP if essentia+librosa agree ±2 BPM ──
     run_madmom = True
@@ -149,6 +169,9 @@ def analyze_bpm(file_path: str) -> dict:
         except ImportError:
             pass
 
+    # Track duration for beat grid (before freeing buffers)
+    track_duration = len(mono_44k) / 44100
+
     # Free audio buffers
     del data_44k, mono_44k, mono_44k_seg, data_44k_seg, mono_22k
 
@@ -167,56 +190,163 @@ def analyze_bpm(file_path: str) -> dict:
     std = float(np.std(values)) if len(values) > 1 else 0.0
     confidence = 0.95 if std < 1 else 0.85 if std < 2 else 0.70 if std < 4 else 0.50 if std < 8 else 0.30
 
-    return {"bpm": round(final_bpm, 1), "confidence": confidence, "raw": raw, "normalized": normalized}
+    # ── Beat grid (quantized from final BPM, full track) ──
+    beat_period = 60.0 / final_bpm
+    anchor = beat_positions[0] if beat_positions else 0
+    beat_grid = [round(anchor + i * beat_period, 3)
+                 for i in range(int((track_duration - anchor) / beat_period) + 1)]
+
+    # ── Key / Camelot ──
+    camelot = CAMELOT_MAP.get(detected_key) if detected_key else None
+
+    return {
+        "bpm": round(final_bpm, 1), "confidence": confidence,
+        "raw": raw, "normalized": normalized,
+        "beat_positions": beat_positions,
+        "beat_grid": beat_grid,
+        "key": detected_key,
+        "camelot": camelot,
+    }
 
 
 # ── File tag read/write ──
 
-def read_bpm_tag(file_path: str) -> int | None:
+def _open_tags(file_path: str):
+    """Open mutagen tags for reading/writing. Returns (tags, format) or (None, None)."""
     try:
         if file_path.endswith(".flac"):
             from mutagen.flac import FLAC
-            val = FLAC(file_path).get("BPM") or FLAC(file_path).get("bpm")
-        elif file_path.endswith(".mp3"):
-            from mutagen.easyid3 import EasyID3
-            val = EasyID3(file_path).get("bpm")
-        else:
-            return None
-        if val:
-            return int(float(val[0]))
-    except Exception:
-        pass
-    return None
-
-
-def write_bpm_tag(file_path: str, bpm: int):
-    try:
-        if file_path.endswith(".flac"):
-            from mutagen.flac import FLAC
-            tags = FLAC(file_path)
-            tags["BPM"] = str(bpm)
-            tags.save()
+            return FLAC(file_path), "flac"
         elif file_path.endswith(".mp3"):
             from mutagen.easyid3 import EasyID3
             try:
-                tags = EasyID3(file_path)
+                return EasyID3(file_path), "mp3"
             except Exception:
                 tags = EasyID3()
                 tags.filename = file_path
-            tags["bpm"] = str(bpm)
-            tags.save()
+                return tags, "mp3"
+    except Exception:
+        pass
+    return None, None
+
+
+def read_bpm_tag(file_path: str) -> int | None:
+    tags, _ = _open_tags(file_path)
+    if not tags:
+        return None
+    val = tags.get("BPM") or tags.get("bpm")
+    if val:
+        try:
+            return int(float(val[0]))
+        except Exception:
+            pass
+    return None
+
+
+def read_key_tag(file_path: str) -> str | None:
+    """Read musical key from INITIALKEY/KEY tag."""
+    tags, fmt = _open_tags(file_path)
+    if not tags:
+        return None
+    if fmt == "flac":
+        val = tags.get("INITIALKEY") or tags.get("KEY") or tags.get("key")
+    else:
+        # EasyID3 doesn't map TKEY by default, try raw
+        val = tags.get("initialkey") or tags.get("key")
+    if val:
+        return val[0]
+    return None
+
+
+def read_anchor_tag(file_path: str) -> float | None:
+    """Read beat anchor (time of first beat in seconds) from custom tag."""
+    tags, fmt = _open_tags(file_path)
+    if not tags:
+        return None
+    val = tags.get("BEAT_ANCHOR") or tags.get("beat_anchor")
+    if val:
+        try:
+            return float(val[0])
+        except Exception:
+            pass
+    return None
+
+
+def write_tags(file_path: str, bpm: int = None, key: str = None, beat_anchor: float = None):
+    """Write BPM, key, and beat anchor to file tags."""
+    tags, fmt = _open_tags(file_path)
+    if not tags:
+        return
+    try:
+        if bpm is not None:
+            if fmt == "flac":
+                tags["BPM"] = str(bpm)
+            else:
+                tags["bpm"] = str(bpm)
+        if key is not None:
+            if fmt == "flac":
+                tags["INITIALKEY"] = key
+            else:
+                from mutagen.easyid3 import EasyID3
+                if "initialkey" not in EasyID3.valid_keys:
+                    from mutagen.id3 import TKEY
+                    EasyID3.RegisterTextKey("initialkey", "TKEY")
+                tags["initialkey"] = key
+        if beat_anchor is not None:
+            if fmt == "flac":
+                tags["BEAT_ANCHOR"] = str(round(beat_anchor, 3))
+            else:
+                # MP3: store in TXXX custom frame
+                from mutagen.easyid3 import EasyID3
+                if "beat_anchor" not in EasyID3.valid_keys:
+                    from mutagen.id3 import TXXX
+                    EasyID3.RegisterTXXXKey("beat_anchor", "BEAT_ANCHOR")
+                tags["beat_anchor"] = str(round(beat_anchor, 3))
+        tags.save()
     except Exception as e:
-        logger.error("Failed to write BPM tag to %s: %s", file_path, e)
+        logger.error("Failed to write tags to %s: %s", file_path, e)
+
+
+def _reconstruct_beat_grid(bpm: float, anchor: float, file_path: str) -> list:
+    """Reconstruct beat grid from BPM + anchor. Needs track duration."""
+    try:
+        import soundfile as sf
+        info = sf.info(file_path)
+        duration = info.duration
+    except Exception:
+        duration = 300  # fallback 5 min
+    beat_period = 60.0 / bpm
+    return [round(anchor + i * beat_period, 3)
+            for i in range(int((duration - anchor) / beat_period) + 1)]
 
 
 def _analyze_or_read_tag(file_path: str) -> dict:
-    """Check file tags first, then run full analysis."""
-    existing = read_bpm_tag(file_path)
-    if existing:
-        return {"bpm": float(existing), "confidence": 1.0,
-                "raw": {"tag": existing}, "normalized": {"tag": float(existing)}}
+    """Check file tags first, run full analysis if any tag missing."""
+    existing_bpm = read_bpm_tag(file_path)
+    existing_key = read_key_tag(file_path)
+    existing_anchor = read_anchor_tag(file_path)
+
+    if existing_bpm and existing_key and existing_anchor is not None:
+        # All tags present — reconstruct everything from tags (fast path)
+        bpm = float(existing_bpm)
+        camelot = CAMELOT_MAP.get(existing_key)
+        beat_grid = _reconstruct_beat_grid(bpm, existing_anchor, file_path)
+        return {
+            "bpm": bpm, "confidence": 1.0,
+            "raw": {"tag_bpm": existing_bpm, "tag_key": existing_key},
+            "normalized": {"tag": bpm},
+            "key": existing_key, "camelot": camelot,
+            "beat_positions": beat_grid, "beat_grid": beat_grid,
+        }
+
+    # Need full analysis (missing tag(s))
     result = analyze_bpm(file_path)
-    write_bpm_tag(file_path, int(round(result["bpm"])))
+    # Write all tags
+    anchor = result.get("beat_positions", [None])[0]
+    write_tags(file_path,
+               bpm=int(round(result["bpm"])),
+               key=result.get("key"),
+               beat_anchor=anchor)
     return result
 
 

@@ -117,17 +117,12 @@ async function _loadDeviceSettings() {
     if (dlnaUrlEl) dlnaUrlEl.value = store.deviceDlnaRendererUrl;
     // Player engine (stored in localStorage, per-device)
     const engineEl = $('#settingPlayerEngine');
-    const cfDurEl = $('#settingCrossfadeDuration');
     if (engineEl) {
       engineEl.value = localStorage.getItem('ms_player_engine') || 'classic';
-      engineEl.addEventListener('change', () => {
-        const row = $('#crossfadeDurationRow');
-        if (row) row.style.display = engineEl.value === 'crossfade' ? '' : 'none';
-      });
+      engineEl.addEventListener('change', () => _toggleDjSection());
     }
-    if (cfDurEl) cfDurEl.value = localStorage.getItem('ms_crossfade_duration') || '5';
-    const cfRow = $('#crossfadeDurationRow');
-    if (cfRow) cfRow.style.display = (engineEl?.value === 'crossfade') ? '' : 'none';
+    _toggleDjSection();
+    _loadDjSettings();
     _toggleDeviceDlnaRow();
   } catch {}
   _loadMyDevices();
@@ -184,12 +179,52 @@ async function _saveDeviceSettings() {
     store.deviceDlnaRendererUrl = dlnaUrl;
     // Save player engine to localStorage
     const engine = $('#settingPlayerEngine')?.value || 'classic';
-    const cfDur = $('#settingCrossfadeDuration')?.value || '5';
     localStorage.setItem('ms_player_engine', engine);
-    localStorage.setItem('ms_crossfade_duration', cfDur);
     showToast('Device settings saved — reload to switch player engine');
     _loadMyDevices();
+    _toggleDjSection();
   } catch { showToast('Failed to save device settings', true); }
+}
+
+// ── DJ Mode Settings ──
+
+function _toggleDjSection() {
+  const engine = $('#settingPlayerEngine')?.value || localStorage.getItem('ms_player_engine') || 'classic';
+  const section = $('#djModeSection');
+  if (section) section.style.display = engine === 'crossfade' ? '' : 'none';
+}
+
+const DJ_DEFAULTS = {
+  crossfade_beats: '16', crossfade_sec: '5', intro_skip: 'auto',
+  tempo_range: '8', transition_style: 'auto', outro_fade: '1',
+};
+
+function _loadDjSettings() {
+  for (const [key, def] of Object.entries(DJ_DEFAULTS)) {
+    const el = $(`#settingDj${key.replace(/_([a-z])/g, (_, c) => c.toUpperCase()).replace(/^./, c => c.toUpperCase())}`);
+    if (!el) continue;
+    const stored = localStorage.getItem(`ms_dj_${key}`);
+    el.value = stored || def;
+  }
+}
+
+function _saveDjSettings() {
+  const map = {
+    crossfade_beats: '#settingDjCrossfadeBeats',
+    crossfade_sec: '#settingDjCrossfadeSec',
+    intro_skip: '#settingDjIntroSkip',
+    tempo_range: '#settingDjTempoRange',
+    transition_style: '#settingDjTransitionStyle',
+    outro_fade: '#settingDjOutroFade',
+  };
+  for (const [key, sel] of Object.entries(map)) {
+    const el = $(sel);
+    if (el) localStorage.setItem(`ms_dj_${key}`, el.value);
+  }
+  // Also update crossfade_duration for backward compat
+  localStorage.setItem('ms_crossfade_duration', $(map.crossfade_sec)?.value || '5');
+  const status = $('#djSaveStatus');
+  if (status) { status.textContent = 'Saved!'; setTimeout(() => { status.textContent = ''; }, 2000); }
 }
 
 // ── Disk Usage ──
@@ -542,6 +577,8 @@ export function init() {
 
   // Device settings
   $('#saveDeviceSettings')?.addEventListener('click', _saveDeviceSettings);
+  // DJ Mode settings
+  $('#saveDjSettings')?.addEventListener('click', _saveDjSettings);
   $('#settingOutputMode')?.addEventListener('change', () => {
     store.deviceOutputMode = $('#settingOutputMode').value;
     _toggleDeviceDlnaRow();

@@ -464,10 +464,6 @@
             <option value="crossfade">Crossfade (Web Audio API)</option>
           </select>
         </div>
-        <div class="setting-group" id="crossfadeDurationRow" style="display:none;">
-          <label class="setting-label">Crossfade Duration (seconds)</label>
-          <input class="setting-input" id="settingCrossfadeDuration" type="number" min="1" max="15" value="5">
-        </div>
         <div class="setting-group" id="deviceDlnaRow" style="display:none;">
           <label class="setting-label">DLNA Renderer URL</label>
           <input class="setting-input" id="settingDeviceDlnaUrl" type="text" placeholder="http://192.168.1.95:8888/upnp_descriptor_0">
@@ -477,6 +473,70 @@
           <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;">My Devices</summary>
           <div id="myDevicesList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;"></div>
         </details>
+      </div>
+    </details>
+
+    <details class="setting-section" id="djModeSection" style="display:none;">
+      <summary class="setting-section-title">DJ Mode</summary>
+      <div class="setting-section-body">
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">
+          DJ-quality transitions between tracks. The crossfade player analyzes BPM, musical key, and beat positions to create smooth, beat-matched transitions — like a real DJ.
+        </p>
+        <div class="setting-group">
+          <label class="setting-label">Crossfade Length (beats)</label>
+          <select class="setting-select" id="settingDjCrossfadeBeats">
+            <option value="8">8 beats (2 bars) — tight, punchy transitions</option>
+            <option value="16" selected>16 beats (4 bars) — standard DJ blend</option>
+            <option value="32">32 beats (8 bars) — long atmospheric blend</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">How many beats both tracks overlap. At 85 BPM: 8 beats = ~5.6s, 16 beats = ~11.3s, 32 beats = ~22.6s</p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Crossfade Fallback (seconds)</label>
+          <input class="setting-input" id="settingDjCrossfadeSec" type="number" min="2" max="20" value="5">
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">When BPM/beat grid is not yet analyzed, this fixed duration is used instead</p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Intro Skip</label>
+          <select class="setting-select" id="settingDjIntroSkip">
+            <option value="0">Off — play from the very start</option>
+            <option value="auto" selected>Auto — skip silence/intro, start at first beat</option>
+            <option value="15">Skip first 15 seconds</option>
+            <option value="30">Skip first 30 seconds</option>
+            <option value="60">Skip first 60 seconds</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Many tracks have slow intros that don't mix well. Auto uses beat analysis to find where the rhythm starts.</p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Tempo Match</label>
+          <select class="setting-select" id="settingDjTempoRange">
+            <option value="0">Off — no speed adjustment</option>
+            <option value="4">±4% — very subtle, barely noticeable</option>
+            <option value="8" selected>±8% — standard DJ range</option>
+            <option value="12">±12% — aggressive, may be audible on vocals</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Adjusts the incoming track's speed to match the outgoing BPM during crossfade. After the transition, speed gradually returns to normal over ~10 seconds. Pitch is preserved (no chipmunk effect).</p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Transition Style</label>
+          <select class="setting-select" id="settingDjTransitionStyle">
+            <option value="auto" selected>Auto — choose based on musical key</option>
+            <option value="blend">Always Blend — smooth equal-power crossfade</option>
+            <option value="bass_swap">Always Bass Swap — swap bass frequencies at midpoint</option>
+            <option value="cut">Always Quick Cut — fast 2-beat switch</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Auto analyzes the Camelot wheel position of both tracks: Blend for harmonically matching keys (same key or relative major/minor), Bass Swap for nearby keys (±1-2 on the wheel), Quick Cut for clashing keys to avoid dissonance.</p>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Outro Fade</label>
+          <select class="setting-select" id="settingDjOutroFade">
+            <option value="0">Off — outgoing track stops abruptly after crossfade</option>
+            <option value="1" selected>On — outgoing track fades out smoothly</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">When the crossfade ends, the outgoing track can either stop immediately or fade out its remaining audio gracefully.</p>
+        </div>
+        <button class="btn-save" id="saveDjSettings" style="margin-top:4px;">Save DJ Settings</button>
+        <span class="save-status" id="djSaveStatus"></span>
       </div>
     </details>
 

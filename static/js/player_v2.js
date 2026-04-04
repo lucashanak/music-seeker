@@ -8,37 +8,52 @@ import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, prefetchUpcoming, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
+import { fetchDjData, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat } from './djmix.js';
 
-// ── Dual-deck Web Audio API crossfade engine ──
-// Two audio elements routed through GainNodes for smooth transitions.
+// ── Dual-deck Web Audio API crossfade engine with DJ mixing ──
 
 const _deckA = $('#audioElement');
 const _deckB = document.createElement('audio');
 _deckB.preload = 'none';
 document.body.appendChild(_deckB);
 
-let _ctx = null;       // AudioContext (lazy init on first user gesture)
-let _gainA = null;      // GainNode for deck A
-let _gainB = null;      // GainNode for deck B
-let _sourceA = null;    // MediaElementSourceNode A
-let _sourceB = null;    // MediaElementSourceNode B
-let _activeDeck = 'A';  // Which deck is currently the "main" one
+let _ctx = null;
+let _gainA = null, _gainB = null;
+let _sourceA = null, _sourceB = null;
+// EQ filters for bass swap transitions
+let _lowA = null, _lowB = null;
+let _activeDeck = 'A';
 let _crossfading = false;
 let _crossfadeTimer = null;
-let _fadingOutDeck = null; // reference to deck being faded out
+let _fadingOutDeck = null;
 
-// Crossfade duration in seconds (configurable via settings)
-let crossfadeDuration = parseInt(localStorage.getItem('ms_crossfade_duration')) || 5;
+// DJ data for current and next track (fetched asynchronously)
+let _outDjData = null;
+let _inDjData = null;
+
+// DJ settings from localStorage
+function _djSetting(key, def) { return localStorage.getItem(`ms_dj_${key}`) || def; }
+let crossfadeDuration = parseInt(_djSetting('crossfade_sec', '5')) || 5;
 
 function _ensureAudioContext() {
   if (_ctx) return;
   _ctx = new (window.AudioContext || window.webkitAudioContext)();
   _gainA = _ctx.createGain();
   _gainB = _ctx.createGain();
+
+  // Bass EQ filters for DJ bass-swap transitions
+  _lowA = _ctx.createBiquadFilter();
+  _lowA.type = 'lowshelf'; _lowA.frequency.value = 250; _lowA.gain.value = 0;
+  _lowB = _ctx.createBiquadFilter();
+  _lowB.type = 'lowshelf'; _lowB.frequency.value = 250; _lowB.gain.value = 0;
+
   _sourceA = _ctx.createMediaElementSource(_deckA);
   _sourceB = _ctx.createMediaElementSource(_deckB);
-  _sourceA.connect(_gainA).connect(_ctx.destination);
-  _sourceB.connect(_gainB).connect(_ctx.destination);
+
+  // Chain: source → lowShelf → gain → destination
+  _sourceA.connect(_lowA).connect(_gainA).connect(_ctx.destination);
+  _sourceB.connect(_lowB).connect(_gainB).connect(_ctx.destination);
+
   _gainA.gain.value = 1;
   _gainB.gain.value = 0;
 }
@@ -47,44 +62,49 @@ function _activeDeckEl() { return _activeDeck === 'A' ? _deckA : _deckB; }
 function _inactiveDeckEl() { return _activeDeck === 'A' ? _deckB : _deckA; }
 function _activeGain() { return _activeDeck === 'A' ? _gainA : _gainB; }
 function _inactiveGain() { return _activeDeck === 'A' ? _gainB : _gainA; }
+function _activeLow() { return _activeDeck === 'A' ? _lowA : _lowB; }
+function _inactiveLow() { return _activeDeck === 'A' ? _lowB : _lowA; }
 
-function _gainFor(deck) { return deck === _deckA ? _gainA : _gainB; }
+/** Build deck descriptor object for djmix.js */
+function _deckDesc(deckEl) {
+  const isA = deckEl === _deckA;
+  return {
+    element: deckEl,
+    gain: isA ? _gainA : _gainB,
+    lowFilter: isA ? _lowA : _lowB,
+  };
+}
 
 function _startCrossfade() {
   if (!_ctx) return;
 
   // If already crossfading, kill the fading-out deck immediately
   if (_crossfading && _fadingOutDeck) {
+    resetDeckAfterTransition(_deckDesc(_fadingOutDeck));
     _fadingOutDeck.pause();
     _fadingOutDeck.src = '';
     clearTimeout(_crossfadeTimer);
     _crossfading = false;
   }
 
-  // The current active deck will fade out, inactive will fade in
   _fadingOutDeck = _activeDeckEl();
-  const fadingInDeck = _inactiveDeckEl();
-  const fadeOutGain = _activeGain();
-  const fadeInGain = _inactiveGain();
+  const outDesc = _deckDesc(_fadingOutDeck);
+  const inDesc = _deckDesc(_inactiveDeckEl());
 
-  // Swap active deck NOW — the new track is the active one from this point
+  // Swap active deck NOW
   _activeDeck = _activeDeck === 'A' ? 'B' : 'A';
   _crossfading = true;
 
-  const now = _ctx.currentTime;
-  const dur = crossfadeDuration;
+  // Read DJ settings
+  const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
+  const tempoRange = parseInt(_djSetting('tempo_range', '8')) || 8;
+  const transStyle = _djSetting('transition_style', 'auto');
 
-  // Cancel any pending ramps
-  fadeOutGain.gain.cancelScheduledValues(now);
-  fadeInGain.gain.cancelScheduledValues(now);
-
-  // Fade out old deck
-  fadeOutGain.gain.setValueAtTime(fadeOutGain.gain.value, now);
-  fadeOutGain.gain.linearRampToValueAtTime(0, now + dur);
-
-  // Fade in new deck
-  fadeInGain.gain.setValueAtTime(0, now);
-  fadeInGain.gain.linearRampToValueAtTime(1, now + dur);
+  // Use DJ mix engine for beat-synced, key-aware transition
+  const result = scheduleDjTransition(_ctx, outDesc, inDesc, _outDjData, _inDjData, {
+    numBeats, tempoRange, transitionStyle: transStyle,
+  });
+  const dur = result.duration || crossfadeDuration;
 
   // After crossfade completes, clean up old deck
   clearTimeout(_crossfadeTimer);
@@ -92,10 +112,30 @@ function _startCrossfade() {
   _crossfadeTimer = setTimeout(() => {
     deckToStop.pause();
     deckToStop.src = '';
+    resetDeckAfterTransition(_deckDesc(deckToStop));
     _fadingOutDeck = null;
     _crossfading = false;
+    _outDjData = _inDjData;
+    _inDjData = null;
     resumePrefetch();
-  }, dur * 1000 + 100);
+    // Gradually return new deck playbackRate to 1.0 over ~10 seconds
+    const newDeck = _activeDeckEl();
+    if (newDeck.playbackRate !== 1.0) {
+      const startRate = newDeck.playbackRate;
+      const steps = 20;
+      const stepMs = 500; // 20 steps × 500ms = 10s
+      let step = 0;
+      const rateTimer = setInterval(() => {
+        step++;
+        if (step >= steps || newDeck !== _activeDeckEl()) {
+          newDeck.playbackRate = 1.0;
+          clearInterval(rateTimer);
+        } else {
+          newDeck.playbackRate = startRate + (1.0 - startRate) * (step / steps);
+        }
+      }, stepMs);
+    }
+  }, dur * 1000 + 200);
 }
 
 // Expose active deck as `audio` for backward compatibility
@@ -206,18 +246,31 @@ export function loadAndPlay() {
 
     const currentDeck = _activeDeckEl();
     if (!currentDeck.paused && currentDeck.src && cached) {
-      // Crossfade — ONLY if next track is pre-cached (no extra network load)
+      // DJ crossfade — ONLY if next track is pre-cached
       pausePrefetch();
+      // Fetch DJ data for incoming track (non-blocking, best-effort)
+      _inDjData = null;
+      fetchDjData(cleanName, cleanArtist).then(d => { _inDjData = d; }).catch(() => {});
       const nextDeck = _inactiveDeckEl();
       nextDeck.src = src;
       nextDeck.load();
+      // Apply intro skip setting
+      const introSkip = _djSetting('intro_skip', 'auto');
+      if (introSkip === 'auto' && _inDjData && _inDjData.beat_grid && _inDjData.beat_grid.length) {
+        nextDeck.currentTime = _inDjData.beat_grid[0]; // skip to first beat
+      } else if (introSkip !== '0' && introSkip !== 'auto') {
+        nextDeck.currentTime = parseInt(introSkip) || 0;
+      }
       nextDeck.play().catch(() => {});
       _startCrossfade();
     } else {
       // Hard cut — next track not cached or nothing playing
-      if (_crossfading) _finishCrossfade();
-      if (_fadingOutDeck) { _fadingOutDeck.pause(); _fadingOutDeck.src = ''; _fadingOutDeck = null; }
-      const deck = _crossfading ? _activeDeckEl() : currentDeck;
+      if (_crossfading && _fadingOutDeck) {
+        resetDeckAfterTransition(_deckDesc(_fadingOutDeck));
+        _fadingOutDeck.pause(); _fadingOutDeck.src = ''; _fadingOutDeck = null;
+        clearTimeout(_crossfadeTimer); _crossfading = false;
+      }
+      const deck = currentDeck;
       deck.src = src;
       deck.load();
       deck.play().catch(() => {});
@@ -225,6 +278,9 @@ export function loadAndPlay() {
         _activeGain().gain.cancelScheduledValues(0);
         _activeGain().gain.value = 1;
       }
+      // Set current track as outgoing DJ data for next transition
+      _outDjData = null;
+      fetchDjData(cleanName, cleanArtist).then(d => { _outDjData = d; }).catch(() => {});
     }
     // Prefetch starts on 'playing' event (after current track buffers)
     prefetchCleanup(store.playerQueue, store.playerIndex);
@@ -462,7 +518,11 @@ export function playRecTrack(item) {
       nextDeck.play().catch(() => {});
       _startCrossfade();
     } else {
-      if (_crossfading) _finishCrossfade();
+      if (_crossfading && _fadingOutDeck) {
+        resetDeckAfterTransition(_deckDesc(_fadingOutDeck));
+        _fadingOutDeck.pause(); _fadingOutDeck.src = ''; _fadingOutDeck = null;
+        clearTimeout(_crossfadeTimer); _crossfading = false;
+      }
       curDeck.src = src;
       curDeck.load();
       curDeck.play().catch(() => {});
@@ -653,6 +713,21 @@ export function init() {
     deck.addEventListener('playing', () => {
       if (deck !== _activeDeckEl()) return;
       resumePrefetch();
+      // Pre-fetch DJ data for current track (beat grid for auto-crossfade timing)
+      if (!_outDjData) {
+        const item = store.playerQueue[store.playerIndex];
+        if (item) {
+          fetchDjData(_decodeEntities(item.name || ''), _decodeEntities(item.artist || ''))
+            .then(d => { if (d) _outDjData = d; }).catch(() => {});
+        }
+      }
+      // Pre-analyze next track in background (triggers server-side analysis if needed)
+      const nextIdx = store.playerIndex + 1;
+      const nextItem = store.playerQueue[nextIdx];
+      if (nextItem) {
+        fetchDjData(_decodeEntities(nextItem.name || ''), _decodeEntities(nextItem.artist || ''))
+          .then(d => { if (d) _inDjData = d; }).catch(() => {});
+      }
     });
     deck.addEventListener('pause', () => {
       if (deck !== _activeDeckEl()) return;
@@ -703,9 +778,16 @@ export function init() {
         _ab().onProgress(Math.floor(deck.currentTime * 1000), Math.floor(dur * 1000));
       }
       // ── Auto-crossfade: trigger nextTrack when approaching end ──
-      // Only auto-trigger if next track is cached (otherwise let 'ended' event handle it)
+      // Uses beat grid when available for beat-synced trigger
       const remaining = dur - deck.currentTime;
-      if (remaining <= crossfadeDuration && remaining > 0 && !_crossfadeTriggered
+      // Calculate trigger point: use beat grid or fallback to fixed duration
+      let triggerAt = crossfadeDuration;
+      if (_outDjData && _outDjData.beat_grid && _outDjData.bpm) {
+        const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
+        const startBeat = findCrossfadeStartBeat(_outDjData.beat_grid, dur, numBeats);
+        triggerAt = dur - startBeat;
+      }
+      if (remaining <= triggerAt && remaining > 0 && !_crossfadeTriggered
           && store.repeatMode !== 'one' && !store.castDevice) {
         const nextIdx = store.playerIndex + 1;
         const nextItem = store.playerQueue[nextIdx];
@@ -713,10 +795,9 @@ export function init() {
           _crossfadeTriggered = true;
           nextTrack();
         }
-        // If not cached, 'ended' event will fire and do hard cut
       }
-      if (remaining > crossfadeDuration + 1) {
-        _crossfadeTriggered = false; // reset for seeks backward
+      if (remaining > triggerAt + 1) {
+        _crossfadeTriggered = false;
       }
     });
   });
