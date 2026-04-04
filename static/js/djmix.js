@@ -241,9 +241,11 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   inDeck.element.preservesPitch = true;
   inDeck.element.playbackRate = clampedRatio;
 
-  /* ---- 2. Crossfade duration from BPM ---- */
+  /* ---- 2. Crossfade duration ---- */
   const beatPeriod = 60 / outBpm;
-  const duration = numBeats * beatPeriod;
+  // Use beat-based duration if DJ data exists, otherwise fallback seconds
+  const fallbackSec = opts.fallbackSec || 5;
+  const duration = outData?.bpm ? numBeats * beatPeriod : fallbackSec;
 
   /* ---- 3. Find crossfade start beat (snap to beat grid) ---- */
   let crossfadeStart = now; // refined below when beat grid is available

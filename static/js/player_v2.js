@@ -107,6 +107,7 @@ function _startCrossfade() {
   // Use DJ mix engine for beat-synced, key-aware transition
   const result = scheduleDjTransition(_ctx, outDesc, inDesc, _outDjData, _inDjData, {
     numBeats, tempoRange, transitionStyle: transStyle, introSkip,
+    fallbackSec: _crossfadeDur(),
   });
   const dur = result.duration || _crossfadeDur();
 
@@ -847,8 +848,9 @@ export function init() {
         // Bug #8 fix: don't trigger crossfade in first half of track
         if (triggerAt > dur * 0.5) triggerAt = _crossfadeDur();
       }
-      if (remaining <= triggerAt && remaining > 0 && !_crossfadeTriggered
-          && store.repeatMode !== 'one' && !store.castDevice) {
+      if (remaining <= triggerAt && !_crossfadeTriggered
+          && store.repeatMode !== 'one' && !store.castDevice
+          && deck.currentTime > 1) { // avoid triggering at very start
         // Check if there's a next track at all
         const hasNext = store.playerIndex < store.playerQueue.length - 1 || store.repeatMode === 'all';
         if (hasNext) {
