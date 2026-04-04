@@ -7,7 +7,7 @@ import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
-import { getCachedUrl, prefetchUpcoming, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
+import { getCachedUrl, prefetchUpcoming, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
 import { fetchDjData, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, pickSmartNext } from './djmix.js';
 
 // ── Dual-deck Web Audio API crossfade engine with DJ mixing ──
@@ -147,26 +147,44 @@ function _startCrossfade() {
   }, dur * 1000 + 200);
 }
 
-/** Pre-analyze upcoming tracks that don't have BPM data yet.
- *  Triggers server-side analysis (which reads tags or runs full analysis).
- *  Sets _inDjData for the immediate next track. */
+/** Pre-analyze upcoming tracks, predict Smart Queue pick, prefetch it.
+ *  1. Analyze next N tracks for BPM/key data
+ *  2. Predict which track Smart Queue would pick
+ *  3. Prefetch that track's audio for smooth crossfade */
 async function _preAnalyzeUpcoming() {
   const PRE_ANALYZE = parseInt(_djSetting('pre_analyze', '10')) || 10;
+  const { getDjData } = await import('./bpm.js');
+
+  // Step 1: Analyze upcoming tracks
   for (let i = 1; i <= PRE_ANALYZE; i++) {
     const idx = store.playerIndex + i;
     const item = store.playerQueue[idx];
     if (!item) break;
     const name = _decodeEntities(item.name || '');
     const artist = _decodeEntities(item.artist || '');
-    // Skip if already cached (instant check, no API call)
-    const { getDjData } = await import('./bpm.js');
-    if (getDjData(name, artist)) {
-      if (i === 1) _inDjData = getDjData(name, artist);
-      continue;
+    if (getDjData(name, artist)) continue; // already cached
+    await fetchDjData(name, artist).catch(() => null);
+  }
+
+  // Step 2: Predict Smart Queue pick and set _inDjData
+  const smartMode = _djSetting('smart_queue', 'off');
+  if (smartMode !== 'off' && !store.shuffleEnabled && _outDjData) {
+    const smartIdx = pickSmartNext(store.playerQueue, store.playerIndex, _outDjData, smartMode);
+    if (smartIdx != null) {
+      const item = store.playerQueue[smartIdx];
+      const name = _decodeEntities(item.name || '');
+      const artist = _decodeEntities(item.artist || '');
+      _inDjData = getDjData(name, artist);
+      // Step 3: Prefetch Smart Queue pick's audio (priority)
+      prefetchTrack(name, artist);
+      return;
     }
-    // Not cached — trigger analysis (reads tags or full analysis)
-    const d = await fetchDjData(name, artist).catch(() => null);
-    if (i === 1 && d) _inDjData = d;
+  }
+
+  // Fallback: sequential next track
+  const nextItem = store.playerQueue[store.playerIndex + 1];
+  if (nextItem) {
+    _inDjData = getDjData(_decodeEntities(nextItem.name || ''), _decodeEntities(nextItem.artist || ''));
   }
 }
 
@@ -831,16 +849,9 @@ export function init() {
       }
       if (remaining <= triggerAt && remaining > 0 && !_crossfadeTriggered
           && store.repeatMode !== 'one' && !store.castDevice) {
-        // Predict which track will actually play next (Smart Queue may pick non-sequential)
-        let predictedItem = null;
-        const smartMode = _djSetting('smart_queue', 'off');
-        if (smartMode !== 'off' && !store.shuffleEnabled && _outDjData) {
-          const smartIdx = pickSmartNext(store.playerQueue, store.playerIndex, _outDjData, smartMode);
-          predictedItem = smartIdx != null ? store.playerQueue[smartIdx] : store.playerQueue[store.playerIndex + 1];
-        } else {
-          predictedItem = store.playerQueue[store.playerIndex + 1];
-        }
-        if (predictedItem && getCachedUrl(_decodeEntities(predictedItem.name || ''), _decodeEntities(predictedItem.artist || ''))) {
+        // Check if there's a next track at all
+        const hasNext = store.playerIndex < store.playerQueue.length - 1 || store.repeatMode === 'all';
+        if (hasNext) {
           _crossfadeTriggered = true;
           nextTrack();
         }

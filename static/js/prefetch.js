@@ -96,7 +96,16 @@ async function _fetchTrack(item, key, priority) {
   }
 }
 
-/** Revoke blob URLs for tracks outside the keep window. */
+/** Prefetch a specific track with highest priority (for Smart Queue picks). */
+export function prefetchTrack(name, artist) {
+  if (store.castDevice || _paused) return;
+  const key = _key(name, artist);
+  if (_cache.has(key) || _fetching.has(key)) return; // already cached or fetching
+  _fetchTrack({ name, artist }, key, 0); // priority 0 = highest
+}
+
+/** Revoke blob URLs for tracks outside the keep window.
+ *  Keeps: current-1 to current+prefetchCount, plus any actively fetching tracks. */
 export function cleanup(queue, currentIndex) {
   if (!queue || !queue.length) return;
   const keepKeys = new Set();
@@ -105,6 +114,8 @@ export function cleanup(queue, currentIndex) {
   for (let i = lo; i <= hi; i++) {
     keepKeys.add(_key(queue[i].name, queue[i].artist));
   }
+  // Also keep any track currently being fetched (e.g., Smart Queue priority pick)
+  for (const [k] of _fetching) keepKeys.add(k);
   for (const [k, entry] of _cache) {
     if (!keepKeys.has(k)) {
       URL.revokeObjectURL(entry.blobUrl);
