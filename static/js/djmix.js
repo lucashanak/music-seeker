@@ -248,31 +248,33 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   const duration = outData?.bpm ? numBeats * beatPeriod : fallbackSec;
 
   /* ---- 3. Beat-aligned scheduling ---- */
-  // Map track-time beats to AudioContext time for sample-accurate scheduling
-  let startCtxTime = now; // default: start immediately
-  if (outData?.beat_grid && outData.beat_grid.length > 0) {
-    // Find the NEXT beat in the outgoing track from current position
-    const nextBeatTrackTime = outData.beat_grid.find(b => b > outCurrentTime);
-    if (nextBeatTrackTime != null) {
-      // Schedule crossfade to start exactly on that beat
-      const delayToNextBeat = nextBeatTrackTime - outCurrentTime;
-      startCtxTime = now + delayToNextBeat;
-    }
-  }
+  // The crossfade starts NOW — no delay to next beat.
+  // Instead, we align the INCOMING track's beat to the outgoing track's beat grid.
+  const startCtxTime = now;
 
-  /* ---- 4. Intro skip + phase alignment ---- */
+  /* ---- 4. Incoming track start position (phase-locked to outgoing beats) ---- */
   let inStartTime = 0;
+  // Intro skip: determine earliest valid start position
   if (introSkip === 'auto' && inData?.intro_end != null) {
     inStartTime = inData.intro_end;
   } else if (introSkip !== '0' && introSkip !== 'auto') {
     inStartTime = parseInt(introSkip) || 0;
   }
-  // Phase alignment using ACTUAL outgoing position (not ideal crossfadeStart)
-  if (outData?.beat_grid && inData?.beat_grid) {
-    const offset = calculatePhaseOffset(outData.beat_grid, inData.beat_grid, outCurrentTime);
-    inStartTime = Math.max(inStartTime, offset);
+  // Phase alignment: find the incoming track position where its beat
+  // will coincide with the outgoing track's CURRENT beat position.
+  if (outData?.bpm && inData?.beat_grid && inData.beat_grid.length > 0) {
+    const outBeatPeriod = 60 / outBpm;
+    const inBeatPeriod = 60 / (inBpm * clampedRatio); // adjusted for tempo match
+    // Find where we are in the outgoing beat cycle (0..1)
+    const outPhase = (outCurrentTime % outBeatPeriod) / outBeatPeriod;
+    // Find a start position in the incoming track where the beat phase matches
+    const firstInBeat = inData.intro_end || inData.beat_grid[0] || 0;
+    // Start from firstInBeat, then offset by the phase difference
+    const phaseOffset = outPhase * inBeatPeriod;
+    inStartTime = Math.max(inStartTime, firstInBeat - phaseOffset);
+    if (inStartTime < 0) inStartTime += inBeatPeriod; // wrap around
   }
-  // Seek incoming deck BEFORE it starts producing audio
+  // Seek incoming deck
   if (inStartTime > 0) {
     inDeck.element.currentTime = inStartTime;
   }
