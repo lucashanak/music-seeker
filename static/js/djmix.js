@@ -228,6 +228,7 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   const tempoRange = (opts.tempoRange ?? 8) / 100;
   const forceStyle = opts.transitionStyle || 'auto';
   const introSkip = opts.introSkip || '0';
+  const seekable = opts.seekable !== false; // default true
 
   const now = ctx.currentTime;
   const outBpm = outData?.bpm || 85;
@@ -274,8 +275,8 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
     inStartTime = Math.max(inStartTime, firstInBeat - phaseOffset);
     if (inStartTime < 0) inStartTime += inBeatPeriod; // wrap around
   }
-  // Seek incoming deck — defer if not ready yet (stream still loading)
-  if (inStartTime > 0) {
+  // Seek incoming deck — only if source is seekable (cached blob)
+  if (inStartTime > 0 && seekable) {
     if (inDeck.element.readyState >= 1) {
       try { inDeck.element.currentTime = inStartTime; } catch {}
     } else {

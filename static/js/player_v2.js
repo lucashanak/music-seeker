@@ -106,9 +106,15 @@ function _startCrossfade() {
   const transStyle = _djSetting('transition_style', 'auto');
   const introSkip = _djSetting('intro_skip', 'auto');
 
+  // Check if incoming deck has a seekable source (cached blob or local file)
+  const inEl = _activeDeckEl(); // after swap, active = incoming
+  const inSeekable = inEl.src && inEl.src.startsWith('blob:');
+
   // Use DJ mix engine for beat-synced, key-aware transition
   const result = scheduleDjTransition(_ctx, outDesc, inDesc, _outDjData, _inDjData, {
-    numBeats, tempoRange, transitionStyle: transStyle, introSkip,
+    numBeats, tempoRange, transitionStyle: transStyle,
+    introSkip: inSeekable ? introSkip : '0',  // no seek on non-cached streams
+    seekable: inSeekable,
     fallbackSec: _crossfadeDur(),
   });
   const dur = result.duration || _crossfadeDur();
