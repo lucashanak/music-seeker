@@ -18,20 +18,24 @@ export function setPlayerRefs(refs) {
   _audioGetter = refs.getAudio || null;
 }
 
-let _bpmRefreshTimer = null;
-/** Periodically check cache and add BPM badges as data becomes available. */
-function _loadMissingBpm(el) {
-  clearInterval(_bpmRefreshTimer);
-  let rounds = 0;
-  _bpmRefreshTimer = setInterval(() => {
-    if (++rounds > 30) { clearInterval(_bpmRefreshTimer); return; } // stop after 30s
-    let allDone = true;
-    $$('.queue-item', el).forEach(qi => {
-      if (qi.querySelector('.qi-bpm')) return;
+import { fetchTrackBpm } from './bpm.js';
+
+let _bpmLoadTimer = null;
+/** Lazy-load BPM badges for tracks not yet in cache. */
+async function _loadMissingBpm(el) {
+  clearTimeout(_bpmLoadTimer);
+  _bpmLoadTimer = setTimeout(async () => {
+    const items = $$('.queue-item', el);
+    for (const qi of items) {
+      if (qi.querySelector('.qi-bpm')) continue;
       const idx = parseInt(qi.dataset.qi);
       const item = store.playerQueue[idx];
-      if (!item) return;
-      const bpm = getCachedBpm(item.name, item.artist);
+      if (!item) continue;
+      let bpm = getCachedBpm(item.name, item.artist);
+      if (!bpm) {
+        const data = await fetchTrackBpm(item.name, item.artist).catch(() => null);
+        if (data) bpm = data.bpm;
+      }
       if (bpm) {
         const rmBtn = qi.querySelector('.qi-remove');
         if (rmBtn) {
@@ -40,12 +44,9 @@ function _loadMissingBpm(el) {
           badge.textContent = Math.round(bpm);
           rmBtn.before(badge);
         }
-      } else {
-        allDone = false;
       }
-    });
-    if (allDone) clearInterval(_bpmRefreshTimer);
-  }, 1000);
+    }
+  }, 500);
 }
 
 // ── Render Queue Into Element ──
