@@ -8,7 +8,7 @@ import { apiFetch } from './api.js';
 const _cache = new Map();
 const _fetching = new Map(); // key → { priority, controller }
 const MAX_CONCURRENT = 1;
-let PREFETCH_COUNT = parseInt(localStorage.getItem('ms_dj_prefetch_count')) || 3;
+function _prefetchCount() { return parseInt(localStorage.getItem('ms_dj_prefetch_count')) || 3; }
 
 let _paused = false;
 /** Stop starting new prefetches (running ones finish). */
@@ -34,7 +34,8 @@ export function getCachedUrl(name, artist) {
 }
 
 /** Prefetch current + next N tracks, prioritized. */
-export function prefetchUpcoming(queue, currentIndex, count = PREFETCH_COUNT) {
+export function prefetchUpcoming(queue, currentIndex, count) {
+  if (count == null) count = _prefetchCount();
   if (store.castDevice || !queue || !queue.length || _paused) return;
 
   // Build priority list: next track (1) > rest (2+)
@@ -54,7 +55,7 @@ export function prefetchUpcoming(queue, currentIndex, count = PREFETCH_COUNT) {
   if (toFetch.length > 0 && _fetching.size >= MAX_CONCURRENT) {
     const highestNeed = toFetch[0].priority;
     for (const [key, info] of _fetching) {
-      if (info.priority > highestNeed + PREFETCH_COUNT) {
+      if (info.priority > highestNeed + _prefetchCount()) {
         // Cancel far-away fetch to make room
         info.controller.abort();
         _fetching.delete(key);
@@ -100,7 +101,7 @@ export function cleanup(queue, currentIndex) {
   if (!queue || !queue.length) return;
   const keepKeys = new Set();
   const lo = Math.max(0, currentIndex - 1);
-  const hi = Math.min(queue.length - 1, currentIndex + PREFETCH_COUNT);
+  const hi = Math.min(queue.length - 1, currentIndex + _prefetchCount());
   for (let i = lo; i <= hi; i++) {
     keepKeys.add(_key(queue[i].name, queue[i].artist));
   }

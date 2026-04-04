@@ -225,7 +225,7 @@ export function calculatePhaseOffset(outBeatGrid, inBeatGrid, crossfadeStartTime
  */
 export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts = {}) {
   const numBeats = opts.numBeats || 16;
-  const tempoRange = (opts.tempoRange || 8) / 100;
+  const tempoRange = (opts.tempoRange ?? 8) / 100;
   const forceStyle = opts.transitionStyle || 'auto';
   const introSkip = opts.introSkip || '0';
 

@@ -32,9 +32,9 @@ let _rateReturnTimer = null; // Bug #4: stored so we can clear on rapid next
 let _outDjData = null;
 let _inDjData = null;
 
-// DJ settings from localStorage
+// DJ settings from localStorage (read fresh each call)
 function _djSetting(key, def) { return localStorage.getItem(`ms_dj_${key}`) || def; }
-let crossfadeDuration = parseInt(_djSetting('crossfade_sec', '5')) || 5;
+function _crossfadeDur() { return parseInt(_djSetting('crossfade_sec', '5')) || 5; }
 
 function _ensureAudioContext() {
   if (_ctx) return;
@@ -99,7 +99,8 @@ function _startCrossfade() {
 
   // Read DJ settings
   const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
-  const tempoRange = parseInt(_djSetting('tempo_range', '8')) || 8;
+  const tr = _djSetting('tempo_range', '8');
+  const tempoRange = tr === '0' ? 0 : (parseInt(tr) || 8);
   const transStyle = _djSetting('transition_style', 'auto');
   const introSkip = _djSetting('intro_skip', 'auto');
 
@@ -107,14 +108,19 @@ function _startCrossfade() {
   const result = scheduleDjTransition(_ctx, outDesc, inDesc, _outDjData, _inDjData, {
     numBeats, tempoRange, transitionStyle: transStyle, introSkip,
   });
-  const dur = result.duration || crossfadeDuration;
+  const dur = result.duration || _crossfadeDur();
 
   // After crossfade completes, clean up old deck
   clearTimeout(_crossfadeTimer);
   const deckToStop = _fadingOutDeck;
-  _crossfadeTimer = setTimeout(() => {
+  const outroFade = _djSetting('outro_fade', '1') === '1';
+  // outro_fade=off: stop old deck immediately (no fade, hard cut)
+  if (!outroFade) {
     deckToStop.pause();
     deckToStop.src = '';
+  }
+  _crossfadeTimer = setTimeout(() => {
+    if (outroFade) { deckToStop.pause(); deckToStop.src = ''; }
     resetDeckAfterTransition(_deckDesc(deckToStop));
     _fadingOutDeck = null;
     _crossfading = false;
@@ -815,19 +821,26 @@ export function init() {
 
       const remaining = effectiveEnd - deck.currentTime;
       // Calculate trigger point: use beat grid or fallback to fixed duration
-      let triggerAt = crossfadeDuration;
+      let triggerAt = _crossfadeDur();
       if (_outDjData && _outDjData.beat_grid && _outDjData.bpm) {
         const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
         const startBeat = findCrossfadeStartBeat(_outDjData.beat_grid, effectiveEnd, numBeats);
         triggerAt = effectiveEnd - startBeat;
         // Bug #8 fix: don't trigger crossfade in first half of track
-        if (triggerAt > dur * 0.5) triggerAt = crossfadeDuration;
+        if (triggerAt > dur * 0.5) triggerAt = _crossfadeDur();
       }
       if (remaining <= triggerAt && remaining > 0 && !_crossfadeTriggered
           && store.repeatMode !== 'one' && !store.castDevice) {
-        const nextIdx = store.playerIndex + 1;
-        const nextItem = store.playerQueue[nextIdx];
-        if (nextItem && getCachedUrl(_decodeEntities(nextItem.name || ''), _decodeEntities(nextItem.artist || ''))) {
+        // Predict which track will actually play next (Smart Queue may pick non-sequential)
+        let predictedItem = null;
+        const smartMode = _djSetting('smart_queue', 'off');
+        if (smartMode !== 'off' && !store.shuffleEnabled && _outDjData) {
+          const smartIdx = pickSmartNext(store.playerQueue, store.playerIndex, _outDjData, smartMode);
+          predictedItem = smartIdx != null ? store.playerQueue[smartIdx] : store.playerQueue[store.playerIndex + 1];
+        } else {
+          predictedItem = store.playerQueue[store.playerIndex + 1];
+        }
+        if (predictedItem && getCachedUrl(_decodeEntities(predictedItem.name || ''), _decodeEntities(predictedItem.artist || ''))) {
           _crossfadeTriggered = true;
           nextTrack();
         }

@@ -364,7 +364,7 @@ def _analyze_or_read_tag(file_path: str) -> dict:
     existing_anchor = read_anchor_tag(file_path)
     existing_outro = read_outro_tag(file_path)
 
-    if existing_bpm and existing_key and existing_anchor is not None:
+    if existing_bpm and existing_key and existing_anchor is not None and existing_outro is not None:
         # All tags present — reconstruct everything from tags (fast path)
         bpm = float(existing_bpm)
         camelot = CAMELOT_MAP.get(existing_key)
