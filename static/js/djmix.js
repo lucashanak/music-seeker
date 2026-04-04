@@ -10,38 +10,12 @@
  *       blend (harmonic match), bass_swap (nearby key), cut (clashing keys)
  */
 
-import { apiJson } from './api.js';
+// Single source of truth for BPM/DJ data: bpm.js cache
+// No separate _djCache — getDjData reads from bpm._cache, fetchTrackBpm populates it
+import { getDjData, fetchTrackBpm } from './bpm.js';
 
-/* ------------------------------------------------------------------ */
-/*  DJ data fetching                                                   */
-/* ------------------------------------------------------------------ */
-
-/** Cache for track DJ data (beat grid, bpm, key, camelot) */
-const _djCache = {};
-
-/**
- * Fetch DJ data (bpm, beat_grid, key, camelot) for a track from the BPM API.
- * Caches results. Returns null if not available.
- * @param {string} name  - Track title
- * @param {string} artist - Artist name
- * @returns {Promise<object|null>}
- */
-export async function fetchDjData(name, artist) {
-  const key = `${(artist || '').toLowerCase()}::${(name || '').toLowerCase()}`;
-  if (_djCache[key]) return _djCache[key];
-  try {
-    const data = await apiJson(
-      `/api/bpm/track?name=${encodeURIComponent(name)}&artist=${encodeURIComponent(artist)}`
-    );
-    if (data && data.bpm) {
-      _djCache[key] = data;
-      return data;
-    }
-  } catch {
-    /* API unavailable — degrade gracefully */
-  }
-  return null;
-}
+/** Re-export fetchTrackBpm as fetchDjData for player_v2.js compatibility */
+export { fetchTrackBpm as fetchDjData };
 
 /* ------------------------------------------------------------------ */
 /*  Camelot Wheel                                                      */
@@ -382,8 +356,7 @@ export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm') 
 
   for (let i = currentIndex + 1; i < queue.length; i++) {
     const item = queue[i];
-    const key = `${(item.artist || '').toLowerCase()}::${(item.name || '').toLowerCase()}`;
-    const data = _djCache[key];
+    const data = getDjData(item.name, item.artist);
     if (!data || !data.bpm) continue; // not analyzed yet, skip
 
     // BPM distance (lower is better)

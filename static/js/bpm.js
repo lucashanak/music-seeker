@@ -23,6 +23,25 @@ export function getCachedBpm(name, artist) {
   return entry ? entry.bpm : null;
 }
 
+/** Get full cached DJ data (bpm, key, camelot, beat_grid). Returns object or null. */
+export function getDjData(name, artist) {
+  return _cache[_key(name, artist)] || null;
+}
+
+/** Fetch and cache BPM/DJ data for a single track. Triggers server analysis if needed. */
+export async function fetchTrackBpm(name, artist) {
+  const key = _key(name, artist);
+  if (_cache[key]) return _cache[key];
+  try {
+    const data = await apiJson(`/api/bpm/track?name=${encodeURIComponent(name)}&artist=${encodeURIComponent(artist)}`);
+    if (data && data.bpm) {
+      _cache[key] = data;
+      return data;
+    }
+  } catch {}
+  return null;
+}
+
 /** Add BPM badges to rendered cards in a container. */
 export function addBpmBadges(container) {
   const cards = $$(`.card`, typeof container === 'string' ? $(container) : container);

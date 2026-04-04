@@ -388,23 +388,35 @@ async def _get_audio_file(song_id: str, name: str, artist: str) -> str | None:
 
 # ── Public API ──
 
+# Per-track locks to prevent duplicate concurrent analysis (#10 fix)
+_analysis_locks: dict[str, asyncio.Lock] = {}
+
+
 async def analyze_track(song_id: str, name: str, artist: str,
                         force: bool = False) -> dict | None:
     key = _cache_key(name, artist)
     if not force and key in _bpm_cache:
         return _bpm_cache[key]
 
-    file_path = await _get_audio_file(song_id, name, artist)
-    if not file_path:
-        return None
+    # Per-track lock: only one analysis at a time per track
+    if key not in _analysis_locks:
+        _analysis_locks[key] = asyncio.Lock()
+    async with _analysis_locks[key]:
+        # Re-check cache after acquiring lock (another request may have finished)
+        if not force and key in _bpm_cache:
+            return _bpm_cache[key]
 
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(_executor, _analyze_or_read_tag, file_path)
-    result["name"] = name
-    result["artist"] = artist
-    _bpm_cache[key] = result
-    _save_cache()
-    return result
+        file_path = await _get_audio_file(song_id, name, artist)
+        if not file_path:
+            return None
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(_executor, _analyze_or_read_tag, file_path)
+        result["name"] = name
+        result["artist"] = artist
+        _bpm_cache[key] = result
+        _save_cache()
+        return result
 
 
 async def analyze_playlist(playlist_id: str, force: bool = False,

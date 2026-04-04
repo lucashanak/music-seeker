@@ -141,16 +141,25 @@ function _startCrossfade() {
   }, dur * 1000 + 200);
 }
 
-/** Pre-analyze upcoming tracks for DJ data (BPM, key, beat grid).
- *  Bug #3 fix: analyzes from actual next index, sets _inDjData for immediate next. */
+/** Pre-analyze upcoming tracks that don't have BPM data yet.
+ *  Triggers server-side analysis (which reads tags or runs full analysis).
+ *  Sets _inDjData for the immediate next track. */
 async function _preAnalyzeUpcoming() {
-  const PRE_ANALYZE = 5;
+  const PRE_ANALYZE = 10;
   for (let i = 1; i <= PRE_ANALYZE; i++) {
     const idx = store.playerIndex + i;
     const item = store.playerQueue[idx];
     if (!item) break;
-    const d = await fetchDjData(_decodeEntities(item.name || ''), _decodeEntities(item.artist || '')).catch(() => null);
-    // Set _inDjData only for the immediate next track
+    const name = _decodeEntities(item.name || '');
+    const artist = _decodeEntities(item.artist || '');
+    // Skip if already cached (instant check, no API call)
+    const { getDjData } = await import('./bpm.js');
+    if (getDjData(name, artist)) {
+      if (i === 1) _inDjData = getDjData(name, artist);
+      continue;
+    }
+    // Not cached — trigger analysis (reads tags or full analysis)
+    const d = await fetchDjData(name, artist).catch(() => null);
     if (i === 1 && d) _inDjData = d;
   }
 }
