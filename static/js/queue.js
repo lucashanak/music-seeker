@@ -2,7 +2,7 @@
 
 import { store } from './store.js';
 import { $, $$, esc, historyBack, showToast } from './utils.js';
-import { getCachedBpm, fetchTrackBpm } from './bpm.js';
+import { getCachedBpm } from './bpm.js';
 
 // Forward references set during init to avoid circular imports
 let loadAndPlay, hidePlayerBar, saveQueueDebounced;
@@ -18,24 +18,20 @@ export function setPlayerRefs(refs) {
   _audioGetter = refs.getAudio || null;
 }
 
-let _bpmLoadTimer = null;
-async function _loadMissingBpm(el) {
-  // Debounce — queue re-renders frequently
-  clearTimeout(_bpmLoadTimer);
-  _bpmLoadTimer = setTimeout(async () => {
-    const items = $$('.queue-item', el);
-    for (const qi of items) {
-      if (qi.querySelector('.qi-bpm')) continue; // already has badge
+let _bpmRefreshTimer = null;
+/** Periodically check cache and add BPM badges as data becomes available. */
+function _loadMissingBpm(el) {
+  clearInterval(_bpmRefreshTimer);
+  let rounds = 0;
+  _bpmRefreshTimer = setInterval(() => {
+    if (++rounds > 30) { clearInterval(_bpmRefreshTimer); return; } // stop after 30s
+    let allDone = true;
+    $$('.queue-item', el).forEach(qi => {
+      if (qi.querySelector('.qi-bpm')) return;
       const idx = parseInt(qi.dataset.qi);
       const item = store.playerQueue[idx];
-      if (!item) continue;
-      // Try cache first (instant)
-      let bpm = getCachedBpm(item.name, item.artist);
-      if (!bpm) {
-        // Fetch from API (triggers tag read on server — instant if tagged)
-        const data = await fetchTrackBpm(item.name, item.artist).catch(() => null);
-        if (data) bpm = data.bpm;
-      }
+      if (!item) return;
+      const bpm = getCachedBpm(item.name, item.artist);
       if (bpm) {
         const rmBtn = qi.querySelector('.qi-remove');
         if (rmBtn) {
@@ -44,9 +40,12 @@ async function _loadMissingBpm(el) {
           badge.textContent = Math.round(bpm);
           rmBtn.before(badge);
         }
+      } else {
+        allDone = false;
       }
-    }
-  }, 500);
+    });
+    if (allDone) clearInterval(_bpmRefreshTimer);
+  }, 1000);
 }
 
 // ── Render Queue Into Element ──
