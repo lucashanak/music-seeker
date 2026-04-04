@@ -2,7 +2,7 @@
 
 import { store } from './store.js';
 import { $, $$, esc, historyBack, showToast } from './utils.js';
-import { getCachedBpm } from './bpm.js';
+import { getCachedBpm, fetchTrackBpm } from './bpm.js';
 
 // Forward references set during init to avoid circular imports
 let loadAndPlay, hidePlayerBar, saveQueueDebounced;
@@ -16,6 +16,37 @@ export function setPlayerRefs(refs) {
   saveQueueDebounced = refs.saveQueueDebounced;
   _audioRef = refs.audio;
   _audioGetter = refs.getAudio || null;
+}
+
+let _bpmLoadTimer = null;
+async function _loadMissingBpm(el) {
+  // Debounce — queue re-renders frequently
+  clearTimeout(_bpmLoadTimer);
+  _bpmLoadTimer = setTimeout(async () => {
+    const items = $$('.queue-item', el);
+    for (const qi of items) {
+      if (qi.querySelector('.qi-bpm')) continue; // already has badge
+      const idx = parseInt(qi.dataset.qi);
+      const item = store.playerQueue[idx];
+      if (!item) continue;
+      // Try cache first (instant)
+      let bpm = getCachedBpm(item.name, item.artist);
+      if (!bpm) {
+        // Fetch from API (triggers tag read on server — instant if tagged)
+        const data = await fetchTrackBpm(item.name, item.artist).catch(() => null);
+        if (data) bpm = data.bpm;
+      }
+      if (bpm) {
+        const rmBtn = qi.querySelector('.qi-remove');
+        if (rmBtn) {
+          const badge = document.createElement('span');
+          badge.className = 'qi-bpm';
+          badge.textContent = Math.round(bpm);
+          rmBtn.before(badge);
+        }
+      }
+    }
+  }, 500);
 }
 
 // ── Render Queue Into Element ──
@@ -39,6 +70,8 @@ export function renderQueueInto(el) {
     </div>
   `).join('');
   _attachDragHandlers(el);
+  // Lazy-load BPM badges for tracks not yet in cache
+  _loadMissingBpm(el);
   $$('.queue-item', el).forEach(qi => {
     qi.addEventListener('click', (e) => {
       if (e.target.closest('.qi-remove')) return;
