@@ -345,13 +345,10 @@ export function loadAndPlay() {
         _activeGain().gain.cancelScheduledValues(0);
         _activeGain().gain.value = 1;
       }
-      // Fetch DJ data for current track BEFORE playback advances
-      // (needed for auto-crossfade timing — triggerAt calculation)
+      // Fetch DJ data for current track (needed for crossfade timing)
       _outDjData = null;
       fetchDjData(cleanName, cleanArtist).then(d => {
         if (d) _outDjData = d;
-        // After DJ data arrives, pre-analyze upcoming tracks
-        _preAnalyzeUpcoming();
       }).catch(() => {});
     }
     // Prefetch starts on 'playing' event (after current track buffers)

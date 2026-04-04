@@ -6,7 +6,8 @@ import { apiFetch } from './api.js';
 
 // Cache: "artist:name" → { blobUrl }
 const _cache = new Map();
-let _currentFetch = null; // { key, controller, promise }
+const _activeFetches = new Map(); // key → controller (max 2 concurrent)
+const MAX_CONCURRENT = 2;
 let _paused = false;
 const _queue = [];         // priority queue: [{ item, key, priority }]
 
@@ -47,8 +48,7 @@ export function prefetchTrack(name, artist) {
   // Remove if already in queue, then add at front
   const idx = _queue.findIndex(q => q.key === key);
   if (idx >= 0) _queue.splice(idx, 1);
-  // Don't add if currently fetching this track
-  if (_currentFetch && _currentFetch.key === key) return;
+  if (_activeFetches.has(key)) return;
   _queue.unshift({ item: { name, artist }, key, priority: 0 });
   _processNext();
 }
@@ -70,35 +70,39 @@ function _fillQueueFrom(queue, currentIndex, count) {
     const item = queue[i];
     const key = _key(item.name, item.artist);
     if (_cache.has(key)) continue;
-    if (_currentFetch && _currentFetch.key === key) continue;
+    if (_activeFetches.has(key)) continue;
     if (_queue.some(q => q.key === key)) continue;
     _queue.push({ item, key, priority: i - currentIndex });
   }
 }
 
-/** Process next item in queue (strictly one at a time). */
+/** Process queue — up to MAX_CONCURRENT (2) downloads at a time. */
 async function _processNext() {
-  if (_paused || _currentFetch || _queue.length === 0) return;
+  while (!_paused && _activeFetches.size < MAX_CONCURRENT && _queue.length > 0) {
+    const entry = _queue.shift();
+    if (_cache.has(entry.key) || _activeFetches.has(entry.key)) continue;
+    _startFetch(entry);
+  }
+}
 
-  const entry = _queue.shift();
+async function _startFetch(entry) {
   const controller = new AbortController();
-  _currentFetch = { key: entry.key, controller };
+  _activeFetches.set(entry.key, controller);
 
   try {
     const cleanName = _decodeEntities(entry.item.name || '');
     const cleanArtist = _decodeEntities(entry.item.artist || '');
     const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken });
     const res = await apiFetch(`/api/player/stream?${params}`, { signal: controller.signal });
-    if (!res.ok) { _currentFetch = null; _processNext(); return; }
-    const blob = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    _cache.set(entry.key, { blobUrl });
+    if (res.ok) {
+      const blob = await res.blob();
+      _cache.set(entry.key, { blobUrl: URL.createObjectURL(blob) });
+    }
   } catch (e) {
     if (e.name !== 'AbortError') { /* network error, skip */ }
   }
 
-  _currentFetch = null;
-  // Continue with next in queue
+  _activeFetches.delete(entry.key);
   if (!_paused) _processNext();
 }
 
@@ -111,8 +115,8 @@ export function cleanup(queue, currentIndex) {
   for (let i = lo; i <= hi; i++) {
     keepKeys.add(_key(queue[i].name, queue[i].artist));
   }
-  // Keep currently fetching track
-  if (_currentFetch) keepKeys.add(_currentFetch.key);
+  // Keep actively fetching tracks
+  for (const [k] of _activeFetches) keepKeys.add(k);
   // Keep everything in queue (Smart Queue picks etc.)
   for (const q of _queue) keepKeys.add(q.key);
   for (const [k, entry] of _cache) {
