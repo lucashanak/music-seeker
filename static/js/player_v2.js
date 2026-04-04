@@ -8,7 +8,7 @@ import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, prefetchUpcoming, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
-import { fetchDjData, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, pickSmartNext } from './djmix.js';
+import { fetchDjData, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, pickSmartNext, CrossfadeBeatSync } from './djmix.js';
 
 // ── Dual-deck Web Audio API crossfade engine with DJ mixing ──
 
@@ -27,6 +27,7 @@ let _crossfading = false;
 let _crossfadeTimer = null;
 let _fadingOutDeck = null;
 let _rateReturnTimer = null; // Bug #4: stored so we can clear on rapid next
+let _beatSync = null;        // real-time beat drift correction during crossfade
 
 // DJ data for current and next track (fetched asynchronously)
 let _outDjData = null;
@@ -85,7 +86,8 @@ function _startCrossfade() {
     _fadingOutDeck.pause();
     _fadingOutDeck.src = '';
     clearTimeout(_crossfadeTimer);
-    clearInterval(_rateReturnTimer); // Bug #4: clear any pending rate return
+    clearInterval(_rateReturnTimer);
+    if (_beatSync) { _beatSync.stop(); _beatSync = null; }
     _crossfading = false;
   }
 
@@ -110,9 +112,18 @@ function _startCrossfade() {
     fallbackSec: _crossfadeDur(),
   });
   const dur = result.duration || _crossfadeDur();
-  // Account for beat-alignment delay (crossfade may start slightly in the future)
   const beatDelay = (result.crossfadeStartTime - _ctx.currentTime) * 1000;
   const timerDur = dur * 1000 + Math.max(0, beatDelay) + 200;
+
+  // Start real-time beat drift correction during the crossfade overlap
+  if (_beatSync) _beatSync.stop();
+  if (_outDjData?.bpm && _inDjData?.bpm) {
+    _beatSync = new CrossfadeBeatSync(
+      _fadingOutDeck, _activeDeckEl(),
+      _outDjData.bpm, _inDjData.bpm, result.tempoRatio
+    );
+    _beatSync.start();
+  }
 
   // After crossfade completes, clean up old deck
   clearTimeout(_crossfadeTimer);
@@ -126,6 +137,7 @@ function _startCrossfade() {
   _crossfadeTimer = setTimeout(() => {
     if (outroFade) { deckToStop.pause(); deckToStop.src = ''; }
     resetDeckAfterTransition(_deckDesc(deckToStop));
+    if (_beatSync) { _beatSync.stop(); _beatSync = null; }
     _fadingOutDeck = null;
     _crossfading = false;
     _outDjData = _inDjData;

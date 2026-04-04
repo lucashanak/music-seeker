@@ -396,3 +396,80 @@ export function resetDeckAfterTransition(deck) {
     deck.highFilter.gain.value = 0;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/*  Real-time beat drift correction (PLL)                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Keeps two decks beat-phase-locked during crossfade overlap.
+ *
+ * Uses a PI controller (phase-locked loop) that compares the beat-cycle
+ * phase of both decks each animation frame and applies micro playbackRate
+ * corrections (±0.5%) to the incoming deck. Inaudible with preservesPitch.
+ *
+ * Usage:
+ *   const sync = new CrossfadeBeatSync(outEl, inEl, outBpm, inBpm, tempoRatio);
+ *   sync.start();
+ *   // ... later, when crossfade completes:
+ *   sync.stop();
+ */
+export class CrossfadeBeatSync {
+  constructor(outElement, inElement, outBpm, inBpm, tempoRatio) {
+    this.out = outElement;
+    this.in = inElement;
+    this.outPeriod = 60 / outBpm;
+    this.inPeriod = 60 / (inBpm * tempoRatio);
+    this.baseRate = tempoRatio;
+    this.active = false;
+    this._raf = null;
+
+    // PI controller (tuned for slow, smooth convergence)
+    this.kp = 0.003;     // proportional gain
+    this.ki = 0.0002;    // integral gain
+    this.integral = 0;
+    this.maxCorr = 0.005; // max ±0.5% rate adjustment
+
+    // Capture initial phase relationship to maintain it
+    this.targetDiff = this._outPhase() - this._inPhase();
+  }
+
+  _outPhase() {
+    return (this.out.currentTime % this.outPeriod) / this.outPeriod;
+  }
+
+  _inPhase() {
+    return (this.in.currentTime % this.inPeriod) / this.inPeriod;
+  }
+
+  start() {
+    this.active = true;
+    this._tick();
+  }
+
+  stop() {
+    this.active = false;
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this.in.playbackRate = this.baseRate;
+  }
+
+  _tick() {
+    if (!this.active) return;
+
+    // Current phase error (how far incoming has drifted from target alignment)
+    let error = (this._outPhase() - this._inPhase()) - this.targetDiff;
+    // Wrap to [-0.5, 0.5]
+    while (error > 0.5) error -= 1;
+    while (error < -0.5) error += 1;
+
+    // PI controller
+    this.integral += error;
+    this.integral = Math.max(-20, Math.min(20, this.integral)); // anti-windup
+    let corr = this.kp * error + this.ki * this.integral;
+    corr = Math.max(-this.maxCorr, Math.min(this.maxCorr, corr));
+
+    this.in.playbackRate = this.baseRate + corr;
+
+    this._raf = requestAnimationFrame(() => this._tick());
+  }
+}
