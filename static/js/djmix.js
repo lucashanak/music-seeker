@@ -274,9 +274,15 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
     inStartTime = Math.max(inStartTime, firstInBeat - phaseOffset);
     if (inStartTime < 0) inStartTime += inBeatPeriod; // wrap around
   }
-  // Seek incoming deck
+  // Seek incoming deck — defer if not ready yet (stream still loading)
   if (inStartTime > 0) {
-    inDeck.element.currentTime = inStartTime;
+    if (inDeck.element.readyState >= 1) {
+      try { inDeck.element.currentTime = inStartTime; } catch {}
+    } else {
+      inDeck.element.addEventListener('loadedmetadata', () => {
+        try { inDeck.element.currentTime = inStartTime; } catch {}
+      }, { once: true });
+    }
   }
 
   /* ---- 5. Determine transition style ---- */

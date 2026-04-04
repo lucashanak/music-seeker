@@ -808,7 +808,7 @@ export function init() {
       }
     });
     deck.addEventListener('error', () => {
-      if (deck !== _activeDeckEl()) return;
+      if (deck !== _activeDeckEl() || _crossfading) return; // ignore during crossfade
       showToast('Stream error, skipping...');
       setTimeout(() => nextTrack(), 1000);
     });
