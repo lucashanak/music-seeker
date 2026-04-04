@@ -46,6 +46,8 @@ export function pausePrefetch() { _paused = true; }
 /** Resume and refill queue from current position. */
 export function resumePrefetch() {
   _paused = false;
+  // Clear stale queue entries (tracks behind current position)
+  _queue.length = 0;
   _fillQueue();
   _processNext();
 }
@@ -136,12 +138,13 @@ async function _startFetch(entry) {
   if (!_paused) _processNext();
 }
 
-/** Revoke blob URLs for tracks outside the keep window. */
+/** Revoke blob URLs for tracks outside the keep window.
+ *  Keeps a wider window to avoid re-downloading tracks after Smart Queue jumps. */
 export function cleanup(queue, currentIndex) {
   if (!queue || !queue.length) return;
   const keepKeys = new Set();
-  const lo = Math.max(0, currentIndex - 1);
-  const hi = Math.min(queue.length - 1, currentIndex + _prefetchCount());
+  const lo = Math.max(0, currentIndex - 3);   // keep 3 behind (for prev/Smart Queue)
+  const hi = Math.min(queue.length - 1, currentIndex + _prefetchCount() + 2);
   for (let i = lo; i <= hi; i++) {
     keepKeys.add(_key(queue[i].name, queue[i].artist));
   }
