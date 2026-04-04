@@ -110,6 +110,9 @@ function _startCrossfade() {
     fallbackSec: _crossfadeDur(),
   });
   const dur = result.duration || _crossfadeDur();
+  // Account for beat-alignment delay (crossfade may start slightly in the future)
+  const beatDelay = (result.crossfadeStartTime - _ctx.currentTime) * 1000;
+  const timerDur = dur * 1000 + Math.max(0, beatDelay) + 200;
 
   // After crossfade completes, clean up old deck
   clearTimeout(_crossfadeTimer);
@@ -145,7 +148,7 @@ function _startCrossfade() {
         }
       }, 500);
     }
-  }, dur * 1000 + 200);
+  }, timerDur);
 }
 
 /** Pre-analyze upcoming tracks, predict Smart Queue pick, prefetch it.
@@ -305,8 +308,10 @@ export function loadAndPlay() {
       const nextDeck = _inactiveDeckEl();
       nextDeck.src = src;
       nextDeck.load();
-      nextDeck.play().catch(() => {});
+      // Start crossfade scheduling (sets gain=0 on incoming, schedules beat-aligned curves)
       _startCrossfade();
+      // Play incoming deck — gain is 0 so no audio until curves kick in
+      nextDeck.play().catch(() => {});
     } else {
       // Cold start — nothing currently playing
       if (_crossfading && _fadingOutDeck) {

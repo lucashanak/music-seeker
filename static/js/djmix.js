@@ -232,42 +232,47 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   const now = ctx.currentTime;
   const outBpm = outData?.bpm || 85;
   const inBpm = inData?.bpm || outBpm;
+  const outCurrentTime = outDeck.element.currentTime;
 
   /* ---- 1. Tempo match ---- */
   const tempoRatio = outBpm / inBpm;
   const clampedRatio = tempoRange > 0
     ? Math.max(1 - tempoRange, Math.min(1 + tempoRange, tempoRatio))
-    : 1.0; // tempo match disabled
+    : 1.0;
   inDeck.element.preservesPitch = true;
   inDeck.element.playbackRate = clampedRatio;
 
   /* ---- 2. Crossfade duration ---- */
   const beatPeriod = 60 / outBpm;
-  // Use beat-based duration if DJ data exists, otherwise fallback seconds
   const fallbackSec = opts.fallbackSec || 5;
   const duration = outData?.bpm ? numBeats * beatPeriod : fallbackSec;
 
-  /* ---- 3. Find crossfade start beat (snap to beat grid) ---- */
-  let crossfadeStart = now; // refined below when beat grid is available
-  if (outData?.beat_grid) {
-    const outDuration = outDeck.element.duration || 0;
-    crossfadeStart = findCrossfadeStartBeat(outData.beat_grid, outDuration, numBeats);
+  /* ---- 3. Beat-aligned scheduling ---- */
+  // Map track-time beats to AudioContext time for sample-accurate scheduling
+  let startCtxTime = now; // default: start immediately
+  if (outData?.beat_grid && outData.beat_grid.length > 0) {
+    // Find the NEXT beat in the outgoing track from current position
+    const nextBeatTrackTime = outData.beat_grid.find(b => b > outCurrentTime);
+    if (nextBeatTrackTime != null) {
+      // Schedule crossfade to start exactly on that beat
+      const delayToNextBeat = nextBeatTrackTime - outCurrentTime;
+      startCtxTime = now + delayToNextBeat;
+    }
   }
 
   /* ---- 4. Intro skip + phase alignment ---- */
-  // Bug #1 fix: apply intro skip and phase alignment together, not separately
   let inStartTime = 0;
   if (introSkip === 'auto' && inData?.intro_end != null) {
-    inStartTime = inData.intro_end; // skip to first detected beat (full-track analysis)
+    inStartTime = inData.intro_end;
   } else if (introSkip !== '0' && introSkip !== 'auto') {
     inStartTime = parseInt(introSkip) || 0;
   }
-  // Phase alignment: adjust start so beats align with outgoing track
+  // Phase alignment using ACTUAL outgoing position (not ideal crossfadeStart)
   if (outData?.beat_grid && inData?.beat_grid) {
-    const offset = calculatePhaseOffset(outData.beat_grid, inData.beat_grid, crossfadeStart);
-    // Use whichever is later: intro skip or phase alignment
+    const offset = calculatePhaseOffset(outData.beat_grid, inData.beat_grid, outCurrentTime);
     inStartTime = Math.max(inStartTime, offset);
   }
+  // Seek incoming deck BEFORE it starts producing audio
   if (inStartTime > 0) {
     inDeck.element.currentTime = inStartTime;
   }
@@ -275,57 +280,44 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   /* ---- 5. Determine transition style ---- */
   let style;
   if (forceStyle !== 'auto') {
-    style = forceStyle; // user override from settings
+    style = forceStyle;
   } else {
     style = (outData?.camelot && inData?.camelot)
       ? getTransitionStyle(outData.camelot, inData.camelot)
       : 'blend';
   }
 
-  /* ---- 6. Schedule audio automation ---- */
-  const startCtxTime = now; // player_v2 triggers at the right moment
+  /* ---- 6. Schedule gain automation on beat boundary ---- */
+  // Keep incoming deck silent until the beat-aligned start
+  inDeck.gain.gain.cancelScheduledValues(now);
+  inDeck.gain.gain.setValueAtTime(0, now); // silent from now
+  outDeck.gain.gain.cancelScheduledValues(now);
+  outDeck.gain.gain.setValueAtTime(outDeck.gain.gain.value, now); // hold current
 
-  // Pre-compute equal-power curves
   const curves = makeEqualPowerCurves(256);
 
   if (style === 'blend' || !outDeck.lowFilter) {
-    // ---- BLEND: simple equal-power crossfade ----
-    outDeck.gain.gain.cancelScheduledValues(startCtxTime);
-    inDeck.gain.gain.cancelScheduledValues(startCtxTime);
     outDeck.gain.gain.setValueCurveAtTime(curves.fadeOut, startCtxTime, duration);
     inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, duration);
 
   } else if (style === 'bass_swap') {
-    // ---- BASS SWAP: EQ-assisted transition ----
-    // Bass (lowFilter) swaps at 40% of the crossfade; volume uses equal-power.
     const midTime = startCtxTime + duration * 0.4;
-
-    // Incoming: start with bass killed, bring it in by midpoint
     inDeck.lowFilter.gain.setValueAtTime(-30, startCtxTime);
     inDeck.lowFilter.gain.linearRampToValueAtTime(0, midTime);
-
-    // Outgoing: bass present at start, cut by midpoint
     outDeck.lowFilter.gain.setValueAtTime(0, startCtxTime);
     outDeck.lowFilter.gain.linearRampToValueAtTime(-30, midTime);
-
-    // Volume: equal-power for the overall envelope
-    outDeck.gain.gain.cancelScheduledValues(startCtxTime);
-    inDeck.gain.gain.cancelScheduledValues(startCtxTime);
     outDeck.gain.gain.setValueCurveAtTime(curves.fadeOut, startCtxTime, duration);
     inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, duration);
 
   } else {
-    // ---- CUT: quick 2-beat swap for clashing keys ----
     const quickDur = Math.min(2 * beatPeriod, duration);
-    outDeck.gain.gain.cancelScheduledValues(startCtxTime);
-    inDeck.gain.gain.cancelScheduledValues(startCtxTime);
     outDeck.gain.gain.setValueAtTime(1, startCtxTime);
     outDeck.gain.gain.linearRampToValueAtTime(0, startCtxTime + quickDur);
     inDeck.gain.gain.setValueAtTime(0, startCtxTime);
     inDeck.gain.gain.linearRampToValueAtTime(1, startCtxTime + quickDur);
   }
 
-  return { crossfadeStartTime: crossfadeStart, duration, tempoRatio: clampedRatio, style };
+  return { crossfadeStartTime: startCtxTime, duration, tempoRatio: clampedRatio, style };
 }
 
 /* ------------------------------------------------------------------ */
