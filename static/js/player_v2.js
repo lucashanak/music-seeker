@@ -815,8 +815,7 @@ export function init() {
   // Both decks need ended/error handlers
   [_deckA, _deckB].forEach(deck => {
     deck.addEventListener('ended', () => {
-      // Only handle if this is the active deck and no crossfade in progress
-      if (deck !== _activeDeckEl() || _crossfading) return;
+      if (deck !== _activeDeckEl() || _crossfading || !deck.src) return;
       if (store.repeatMode === 'one') {
         deck.currentTime = 0;
         deck.play().catch(() => {});
@@ -825,7 +824,7 @@ export function init() {
       }
     });
     deck.addEventListener('error', () => {
-      if (deck !== _activeDeckEl()) return;
+      if (deck !== _activeDeckEl() || !deck.src) return; // ignore error from cleared src
       if (_crossfading) {
         // Error on incoming deck during crossfade — abort crossfade, skip track
         if (_fadingOutDeck) {
