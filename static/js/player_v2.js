@@ -864,14 +864,22 @@ export function init() {
       // Update prefetch status indicator (~2/sec)
       if (!window._pfLastUpdate || Date.now() - window._pfLastUpdate > 500) {
         window._pfLastUpdate = Date.now();
+        const curItem = store.playerQueue[store.playerIndex];
         const nextItem = store.playerQueue[store.playerIndex + 1];
+        // Now: is current track from cache (blob) or streaming?
+        const nowCached = deck.src && deck.src.startsWith('blob:');
+        const nowSt = curItem ? getPrefetchStatus(_decodeEntities(curItem.name || ''), _decodeEntities(curItem.artist || '')) : null;
+        const nowReady = nowCached || (nowSt && nowSt.state === 'ready');
+        // Next: prefetch progress
         const nextSt = nextItem ? getPrefetchStatus(_decodeEntities(nextItem.name || ''), _decodeEntities(nextItem.artist || '')) : null;
-        // Build status text
-        const nowPct = deck.buffered.length ? Math.round((deck.buffered.end(deck.buffered.length - 1) / (dur || 1)) * 100) : 0;
         const nextPct = nextSt ? nextSt.progress : -1;
-        let html = `<span class="prefetch-dot ${nowPct > 50 ? 'ready' : 'loading'}"></span>${nowPct}%`;
+        let html = '';
+        // Now dot
+        html += `<span class="prefetch-dot ${nowReady ? 'ready' : 'loading'}" title="Now"></span>`;
+        // Next dot + progress
         if (nextItem) {
-          html += ` <span class="prefetch-dot ${nextPct >= 100 ? 'ready' : nextPct >= 0 ? 'loading' : ''}"></span>${nextPct >= 0 ? nextPct + '%' : '—'}`;
+          html += `<span class="prefetch-dot ${nextPct >= 100 ? 'ready' : nextPct >= 0 ? 'loading' : ''}" title="Next"></span>`;
+          if (nextPct >= 0 && nextPct < 100) html += `${nextPct}%`;
         }
         for (const id of ['prefetchStatus', 'fpPrefetchStatus']) {
           const el = $(`#${id}`);
