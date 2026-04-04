@@ -4,6 +4,7 @@ import { store } from './store.js';
 import { $, $$, esc, showToast, historyBack, showPlaylistPicker } from './utils.js';
 import { apiJson } from './api.js';
 import { renderResults } from './search.js';
+import { fetchPlaylistBpm, addBpmBadges, createBpmFilter, addScanButton } from './bpm.js';
 
 let libraryCache = null;
 let currentLibPlaylistId = null;
@@ -70,6 +71,11 @@ async function loadLibraryDetail(id) {
     $('#libDetailCount').textContent = `${currentLibPlaylistTracks.length} tracks`;
     renderResults(currentLibPlaylistTracks, '#libraryTracks');
     _addBulkCheckboxes();
+    // BPM: filter bar with scan button, fetch cached BPM, add badges
+    _initBpmFilter(id);
+    fetchPlaylistBpm(id).then(() => {
+      addBpmBadges('#libraryTracks');
+    });
   } catch (e) {
     tracksEl.innerHTML = `<div class="empty-state"><p>Failed to load playlist</p></div>`;
   }
@@ -104,6 +110,15 @@ function _updateBulkUI() {
   const count = $('#libBulkCount');
   if (actions) actions.style.display = _bulkSelected.size > 0 ? 'flex' : 'none';
   if (count) count.textContent = `${_bulkSelected.size} selected`;
+}
+
+function _initBpmFilter(playlistId) {
+  const existing = $('#libraryDetail .bpm-filter');
+  if (existing) existing.remove();
+  const filter = createBpmFilter('#libraryTracks');
+  addScanButton(filter, playlistId, '#libraryTracks');
+  const tracksEl = $('#libraryTracks');
+  tracksEl.parentNode.insertBefore(filter, tracksEl);
 }
 
 export function closeLibraryDetail(fromPopstate) {

@@ -1,5 +1,11 @@
 #!/bin/sh
 
+# BLAS/numba threading — let each analysis thread use multiple cores
+# 6 Python threads × 3 BLAS threads = 18 threads on 16 cores (slight oversubscription is fine)
+export OPENBLAS_NUM_THREADS=3
+export MKL_NUM_THREADS=3
+export NUMBA_NUM_THREADS=3
+
 # Auto-bump cache version on every container start
 CACHE_BUST=$(date +%s)
 

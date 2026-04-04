@@ -8,3 +8,7 @@ yt-dlp>=2026.3
 ytmusicapi>=1.11,<2.0
 defusedxml>=0.7,<1.0
 async-upnp-client>=0.43.0
+librosa>=0.10.0
+essentia>=2.1b5
+madmom @ git+https://github.com/CPJKU/madmom.git
+mutagen>=1.47.0

@@ -114,9 +114,11 @@
     flex-direction: column; align-items: flex-start; padding: 18px;
   }
   .playlist-hero-actions {
-    flex-direction: row; align-items: center; width: 100%;
+    flex-direction: row; flex-wrap: wrap; align-items: center; width: 100%; gap: 8px;
   }
-  .playlist-hero-actions .btn-download { flex: 1; }
+  .playlist-hero-actions .btn-download { padding: 10px 16px !important; font-size: 13px; }
+  .playlist-hero-actions .btn-download:nth-child(-n+2) { flex: 1; }
+  .playlist-hero-actions .btn-download:nth-child(n+3) { flex: 0 0 auto; }
 
   /* Recognize result responsive */
   .recognize-result .rr-header { flex-wrap: wrap; }

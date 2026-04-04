@@ -279,6 +279,13 @@ async def _download_track_ytdlp(artist: str, title: str, album: str, fmt: str,
             if os.path.exists(cover_path):
                 os.remove(cover_path)
 
+    # Analyze BPM and write to file tags
+    try:
+        from app.services import bpm as bpm_service
+        await bpm_service.analyze_and_tag(final_file, title, artist)
+    except Exception:
+        pass  # BPM analysis is optional
+
     return True
 
 
@@ -470,6 +477,12 @@ async def _download_track_slskd(artist: str, title: str, album: str, username: s
                     if found:
                         dest = os.path.join(dest_dir, f"{_sanitize(title)}.{basename.rsplit('.', 1)[-1]}")
                         shutil.move(found, dest)
+                        # Analyze BPM and write to file tags
+                        try:
+                            from app.services import bpm as bpm_service
+                            await bpm_service.analyze_and_tag(dest, title, artist)
+                        except Exception:
+                            pass
                         return True
                     return False  # download succeeded but file not found locally
                 if any(s in state for s in ("Failed", "Cancelled", "Errored")):
