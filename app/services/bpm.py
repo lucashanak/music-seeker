@@ -172,6 +172,17 @@ def analyze_bpm(file_path: str) -> dict:
     # Track duration for beat grid (before freeing buffers)
     track_duration = len(mono_44k) / 44100
 
+    # ── Full-track beat detection for intro/outro (lightweight, forced BPM) ──
+    # Downsample full track to 22050 for librosa
+    mono_22k_full = librosa.resample(mono_44k, orig_sr=44100, target_sr=22050)
+    _, full_beat_frames = librosa.beat.beat_track(
+        y=mono_22k_full, sr=22050, hop_length=HOP,
+        bpm=raw.get("librosa_tempo", 85),  # forced BPM = skip tempo estimation, fast
+        tightness=120,
+    )
+    full_beats = librosa.frames_to_time(full_beat_frames, sr=22050, hop_length=HOP).tolist()
+    del mono_22k_full
+
     # Free audio buffers
     del data_44k, mono_44k, mono_44k_seg, data_44k_seg, mono_22k
 
@@ -192,19 +203,21 @@ def analyze_bpm(file_path: str) -> dict:
 
     # ── Beat grid (quantized from final BPM, full track) ──
     beat_period = 60.0 / final_bpm
-    anchor = beat_positions[0] if beat_positions else 0
+    # Use first full-track beat as anchor (not segment offset)
+    anchor = full_beats[0] if full_beats else 0
     beat_grid = [round(anchor + i * beat_period, 3)
                  for i in range(int((track_duration - anchor) / beat_period) + 1)]
 
-    # ── Outro detection: find where rhythm fades ──
-    outro_start = track_duration  # default: end of track
-    if len(beat_positions) > 8:
-        beat_period_s = 60.0 / final_bpm
-        # Scan from end of beat_positions backwards
-        for i in range(len(beat_positions) - 1, 0, -1):
-            gap = beat_positions[i] - beat_positions[i - 1]
-            if gap > beat_period_s * 1.5:
-                outro_start = round(beat_positions[i - 1], 3)
+    # ── Intro detection: first beat in the track ──
+    intro_end = round(full_beats[0], 3) if full_beats else 0
+
+    # ── Outro detection: scan full-track beats from end ──
+    outro_start = track_duration
+    if len(full_beats) > 8:
+        for i in range(len(full_beats) - 1, 0, -1):
+            gap = full_beats[i] - full_beats[i - 1]
+            if gap > beat_period * 1.5:
+                outro_start = round(full_beats[i - 1], 3)
                 break
 
     # ── Key / Camelot ──
@@ -217,6 +230,7 @@ def analyze_bpm(file_path: str) -> dict:
         "beat_grid": beat_grid,
         "key": detected_key,
         "camelot": camelot,
+        "intro_end": intro_end,
         "outro_start": outro_start,
     }
 
@@ -284,6 +298,20 @@ def read_anchor_tag(file_path: str) -> float | None:
     return None
 
 
+def read_intro_tag(file_path: str) -> float | None:
+    """Read intro end time (first beat) from custom tag."""
+    tags, fmt = _open_tags(file_path)
+    if not tags:
+        return None
+    val = tags.get("INTRO_END") or tags.get("intro_end")
+    if val:
+        try:
+            return float(val[0])
+        except Exception:
+            pass
+    return None
+
+
 def read_outro_tag(file_path: str) -> float | None:
     """Read outro start time (seconds) from custom tag."""
     tags, fmt = _open_tags(file_path)
@@ -299,8 +327,9 @@ def read_outro_tag(file_path: str) -> float | None:
 
 
 def write_tags(file_path: str, bpm: int = None, key: str = None,
-               beat_anchor: float = None, outro_start: float = None):
-    """Write BPM, key, beat anchor, and outro start to file tags."""
+               beat_anchor: float = None, intro_end: float = None,
+               outro_start: float = None):
+    """Write BPM, key, beat anchor, intro end, and outro start to file tags."""
     tags, fmt = _open_tags(file_path)
     if not tags:
         return
@@ -329,15 +358,17 @@ def write_tags(file_path: str, bpm: int = None, key: str = None,
                     from mutagen.id3 import TXXX
                     EasyID3.RegisterTXXXKey("beat_anchor", "BEAT_ANCHOR")
                 tags["beat_anchor"] = str(round(beat_anchor, 3))
-        if outro_start is not None:
-            if fmt == "flac":
-                tags["OUTRO_START"] = str(round(outro_start, 3))
-            else:
-                from mutagen.easyid3 import EasyID3
-                if "outro_start" not in EasyID3.valid_keys:
-                    from mutagen.id3 import TXXX
-                    EasyID3.RegisterTXXXKey("outro_start", "OUTRO_START")
-                tags["outro_start"] = str(round(outro_start, 3))
+        for tag_name, value in [("INTRO_END", intro_end), ("OUTRO_START", outro_start)]:
+            if value is not None:
+                if fmt == "flac":
+                    tags[tag_name] = str(round(value, 3))
+                else:
+                    from mutagen.easyid3 import EasyID3
+                    lk = tag_name.lower()
+                    if lk not in EasyID3.valid_keys:
+                        from mutagen.id3 import TXXX
+                        EasyID3.RegisterTXXXKey(lk, tag_name)
+                    tags[lk] = str(round(value, 3))
         tags.save()
     except Exception as e:
         logger.error("Failed to write tags to %s: %s", file_path, e)
@@ -362,21 +393,23 @@ def _analyze_or_read_tag(file_path: str) -> dict:
     existing_bpm = read_bpm_tag(file_path)
     existing_key = read_key_tag(file_path)
     existing_anchor = read_anchor_tag(file_path)
+    existing_intro = read_intro_tag(file_path)
     existing_outro = read_outro_tag(file_path)
 
-    if existing_bpm and existing_key and existing_anchor is not None and existing_outro is not None:
+    if (existing_bpm and existing_key and existing_anchor is not None
+            and existing_intro is not None and existing_outro is not None):
         # All tags present — reconstruct everything from tags (fast path)
         bpm = float(existing_bpm)
         camelot = CAMELOT_MAP.get(existing_key)
         beat_grid, track_duration = _reconstruct_beat_grid(bpm, existing_anchor, file_path)
-        outro = existing_outro if existing_outro is not None else track_duration
         return {
             "bpm": bpm, "confidence": 1.0,
             "raw": {"tag_bpm": existing_bpm, "tag_key": existing_key},
             "normalized": {"tag": bpm},
             "key": existing_key, "camelot": camelot,
             "beat_positions": beat_grid, "beat_grid": beat_grid,
-            "outro_start": outro,
+            "intro_end": existing_intro,
+            "outro_start": existing_outro,
         }
 
     # Need full analysis (missing tag(s))
@@ -387,6 +420,7 @@ def _analyze_or_read_tag(file_path: str) -> dict:
                bpm=int(round(result["bpm"])),
                key=result.get("key"),
                beat_anchor=anchor,
+               intro_end=result.get("intro_end"),
                outro_start=result.get("outro_start"))
     return result
 

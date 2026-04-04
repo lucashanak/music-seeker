@@ -255,8 +255,8 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   /* ---- 4. Intro skip + phase alignment ---- */
   // Bug #1 fix: apply intro skip and phase alignment together, not separately
   let inStartTime = 0;
-  if (introSkip === 'auto' && inData?.beat_grid?.length) {
-    inStartTime = inData.beat_grid[0]; // skip to first detected beat
+  if (introSkip === 'auto' && inData?.intro_end != null) {
+    inStartTime = inData.intro_end; // skip to first detected beat (full-track analysis)
   } else if (introSkip !== '0' && introSkip !== 'auto') {
     inStartTime = parseInt(introSkip) || 0;
   }
