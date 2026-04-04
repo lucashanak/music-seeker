@@ -227,7 +227,10 @@ def analyze_bpm(file_path: str) -> dict:
         for i in range(len(full_beats) - 1, 0, -1):
             gap = full_beats[i] - full_beats[i - 1]
             if gap > beat_period * 1.5:
-                outro_start = round(full_beats[i - 1], 3)
+                candidate = round(full_beats[i - 1], 3)
+                # Sanity: outro must be in the last half of the track
+                if candidate > track_duration * 0.5:
+                    outro_start = candidate
                 break
 
     # ── Key / Camelot ──

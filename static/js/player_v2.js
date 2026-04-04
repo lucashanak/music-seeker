@@ -903,7 +903,8 @@ export function init() {
         // Outro skip: use detected outro_start or manual setting as effective end
         let effectiveEnd = dur;
         const outroSkip = _djSetting('outro_skip', 'auto');
-        if (outroSkip === 'auto' && _outDjData && _outDjData.outro_start) {
+        if (outroSkip === 'auto' && _outDjData && _outDjData.outro_start
+            && _outDjData.outro_start > dur * 0.5) { // ignore outro in first half
           effectiveEnd = _outDjData.outro_start;
         } else if (outroSkip !== '0' && outroSkip !== 'auto') {
           effectiveEnd = dur - (parseInt(outroSkip) || 0);
