@@ -42,7 +42,10 @@ _executor = ThreadPoolExecutor(max_workers=6)
 def _load_cache() -> dict:
     if BPM_CACHE_FILE.exists():
         try:
-            return json.loads(BPM_CACHE_FILE.read_text())
+            data = json.loads(BPM_CACHE_FILE.read_text())
+            # Invalidate entries from older versions that lack beat_grid/outro_start
+            return {k: v for k, v in data.items()
+                    if isinstance(v, dict) and v.get("beat_grid") and v.get("outro_start") is not None}
         except Exception:
             pass
     return {}

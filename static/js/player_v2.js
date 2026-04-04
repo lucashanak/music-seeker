@@ -296,21 +296,19 @@ export function loadAndPlay() {
     const src = cached || `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken })}`;
 
     const currentDeck = _activeDeckEl();
-    if (!currentDeck.paused && currentDeck.src && cached) {
-      // DJ crossfade — ONLY if next track is pre-cached
+    if (!currentDeck.paused && currentDeck.src) {
+      // DJ crossfade — works with cached blob URL or direct stream
       pausePrefetch();
-      // Bug #2 fix: only fetch if not already pre-analyzed
       if (!_inDjData) {
         fetchDjData(cleanName, cleanArtist).then(d => { _inDjData = d; }).catch(() => {});
       }
       const nextDeck = _inactiveDeckEl();
       nextDeck.src = src;
       nextDeck.load();
-      // Bug #1 fix: intro skip + phase alignment handled together in djmix.js
       nextDeck.play().catch(() => {});
       _startCrossfade();
     } else {
-      // Hard cut — next track not cached or nothing playing
+      // Cold start — nothing currently playing
       if (_crossfading && _fadingOutDeck) {
         resetDeckAfterTransition(_deckDesc(_fadingOutDeck));
         _fadingOutDeck.pause(); _fadingOutDeck.src = ''; _fadingOutDeck = null;
@@ -324,9 +322,14 @@ export function loadAndPlay() {
         _activeGain().gain.cancelScheduledValues(0);
         _activeGain().gain.value = 1;
       }
-      // Set current track as outgoing DJ data for next transition
+      // Fetch DJ data for current track BEFORE playback advances
+      // (needed for auto-crossfade timing — triggerAt calculation)
       _outDjData = null;
-      fetchDjData(cleanName, cleanArtist).then(d => { _outDjData = d; }).catch(() => {});
+      fetchDjData(cleanName, cleanArtist).then(d => {
+        if (d) _outDjData = d;
+        // After DJ data arrives, pre-analyze upcoming tracks
+        _preAnalyzeUpcoming();
+      }).catch(() => {});
     }
     // Prefetch starts on 'playing' event (after current track buffers)
     prefetchCleanup(store.playerQueue, store.playerIndex);
@@ -829,37 +832,40 @@ export function init() {
         _ab().onProgress(Math.floor(deck.currentTime * 1000), Math.floor(dur * 1000));
       }
       // ── Auto-crossfade: trigger nextTrack when approaching end ──
-      // Outro skip: use detected outro_start or manual setting as effective end
-      let effectiveEnd = dur;
-      const outroSkip = _djSetting('outro_skip', 'auto');
-      if (outroSkip === 'auto' && _outDjData && _outDjData.outro_start) {
-        effectiveEnd = _outDjData.outro_start;
-      } else if (outroSkip !== '0' && outroSkip !== 'auto') {
-        effectiveEnd = dur - (parseInt(outroSkip) || 0);
-      }
-
-      const remaining = effectiveEnd - deck.currentTime;
-      // Calculate trigger point: use beat grid or fallback to fixed duration
-      let triggerAt = _crossfadeDur();
-      if (_outDjData && _outDjData.beat_grid && _outDjData.bpm) {
-        const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
-        const startBeat = findCrossfadeStartBeat(_outDjData.beat_grid, effectiveEnd, numBeats);
-        triggerAt = effectiveEnd - startBeat;
-        // Bug #8 fix: don't trigger crossfade in first half of track
-        if (triggerAt > dur * 0.5) triggerAt = _crossfadeDur();
-      }
-      if (remaining <= triggerAt && !_crossfadeTriggered
-          && store.repeatMode !== 'one' && !store.castDevice
-          && deck.currentTime > 1) { // avoid triggering at very start
-        // Check if there's a next track at all
-        const hasNext = store.playerIndex < store.playerQueue.length - 1 || store.repeatMode === 'all';
-        if (hasNext) {
-          _crossfadeTriggered = true;
-          nextTrack();
+      // Wait for DJ data before calculating trigger (avoids premature 5s fallback)
+      if (!_outDjData && deck.currentTime < dur - _crossfadeDur() - 5) {
+        // DJ data not loaded yet and we're far from end — skip check this tick
+      } else {
+        // Outro skip: use detected outro_start or manual setting as effective end
+        let effectiveEnd = dur;
+        const outroSkip = _djSetting('outro_skip', 'auto');
+        if (outroSkip === 'auto' && _outDjData && _outDjData.outro_start) {
+          effectiveEnd = _outDjData.outro_start;
+        } else if (outroSkip !== '0' && outroSkip !== 'auto') {
+          effectiveEnd = dur - (parseInt(outroSkip) || 0);
         }
-      }
-      if (remaining > triggerAt + 1) {
-        _crossfadeTriggered = false;
+
+        const remaining = effectiveEnd - deck.currentTime;
+        // Calculate trigger point: use beat grid or fallback to fixed duration
+        let triggerAt = _crossfadeDur();
+        if (_outDjData && _outDjData.beat_grid && _outDjData.bpm) {
+          const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
+          const startBeat = findCrossfadeStartBeat(_outDjData.beat_grid, effectiveEnd, numBeats);
+          triggerAt = effectiveEnd - startBeat;
+          if (triggerAt > dur * 0.5) triggerAt = _crossfadeDur();
+        }
+        if (remaining <= triggerAt && !_crossfadeTriggered
+            && store.repeatMode !== 'one' && !store.castDevice
+            && deck.currentTime > 1) {
+          const hasNext = store.playerIndex < store.playerQueue.length - 1 || store.repeatMode === 'all';
+          if (hasNext) {
+            _crossfadeTriggered = true;
+            nextTrack();
+          }
+        }
+        if (remaining > triggerAt + 1) {
+          _crossfadeTriggered = false;
+        }
       }
     });
   });
