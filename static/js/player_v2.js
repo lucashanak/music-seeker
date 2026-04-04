@@ -474,7 +474,13 @@ async function _autoCastAndPlay(item, cleanName, cleanArtist) {
 }
 
 // ── Next / Prev ──
+let _lastNextTime = 0;
 export function nextTrack() {
+  // Throttle: ignore if called again within 2s (prevents chain-skip)
+  const now = Date.now();
+  if (now - _lastNextTime < 2000) return;
+  _lastNextTime = now;
+
   if (store.castDevice) {
     _castTransitioning = true;
     clearTimeout(_castTransitionTimer);
