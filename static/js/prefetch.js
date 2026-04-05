@@ -20,15 +20,16 @@ export function resumePrefetch() {
   _processNext();
 }
 
-function _key(name, artist) {
-  return `${(artist || '').toLowerCase().trim()}:${(name || '').toLowerCase().trim()}`;
-}
-
 function _decodeEntities(s) {
   if (!s || !s.includes('&')) return s;
   const el = document.createElement('textarea');
   el.innerHTML = s;
   return el.value;
+}
+
+// Always decode entities before building key — ensures loadAndPlay lookups match
+function _key(name, artist) {
+  return `${_decodeEntities((artist || '')).toLowerCase().trim()}:${_decodeEntities((name || '')).toLowerCase().trim()}`;
 }
 
 /** Return cached blob URL if available, or null. */

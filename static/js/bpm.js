@@ -178,6 +178,7 @@ export function addScanButton(heroActions, playlistId, tracksContainerId) {
   heroActions.appendChild(btn);
 }
 
+function _dec(s) { if (!s || !s.includes('&')) return s; const e = document.createElement('textarea'); e.innerHTML = s; return e.value; }
 function _key(name, artist) {
-  return `${(artist || '').toLowerCase().trim()}::${(name || '').toLowerCase().trim()}`;
+  return `${_dec((artist || '')).toLowerCase().trim()}::${_dec((name || '')).toLowerCase().trim()}`;
 }

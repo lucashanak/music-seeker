@@ -77,7 +77,7 @@ function _deckDesc(deckEl) {
   };
 }
 
-function _startCrossfade() {
+function _startCrossfade(seekable = true) {
   if (!_ctx) return;
 
   // If already crossfading, kill the fading-out deck immediately
@@ -106,9 +106,8 @@ function _startCrossfade() {
   const transStyle = _djSetting('transition_style', 'auto');
   const introSkip = _djSetting('intro_skip', 'auto');
 
-  // Check if incoming deck has a seekable source (cached blob or local file)
-  const inEl = _activeDeckEl(); // after swap, active = incoming
-  const inSeekable = inEl.src && inEl.src.startsWith('blob:');
+  // Use seekable flag passed from loadAndPlay (cached blob = seekable)
+  const inSeekable = seekable;
 
   // Use DJ mix engine for beat-synced, key-aware transition
   const result = scheduleDjTransition(_ctx, outDesc, inDesc, _outDjData, _inDjData, {
@@ -320,8 +319,8 @@ export function loadAndPlay() {
     const src = cached || `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: store.authToken })}`;
 
     const currentDeck = _activeDeckEl();
-    if (!currentDeck.paused && currentDeck.src && cached) {
-      // DJ crossfade — only with cached blob (seekable, no stream errors)
+    if (!currentDeck.paused && currentDeck.src) {
+      // Crossfade: full DJ (with cached blob) or simple gain fade (uncached stream)
       pausePrefetch();
       if (!_inDjData) {
         fetchDjData(cleanName, cleanArtist).then(d => { _inDjData = d; }).catch(() => {});
@@ -329,9 +328,7 @@ export function loadAndPlay() {
       const nextDeck = _inactiveDeckEl();
       nextDeck.src = src;
       nextDeck.load();
-      // Start crossfade scheduling (sets gain=0 on incoming, schedules beat-aligned curves)
-      _startCrossfade();
-      // Play incoming deck — gain is 0 so no audio until curves kick in
+      _startCrossfade(!!cached); // pass seekable flag
       nextDeck.play().catch(() => {});
     } else {
       // Cold start — nothing currently playing
