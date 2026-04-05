@@ -202,7 +202,6 @@ async function _preAnalyzeUpcoming() {
   }
 
   // Step 2: Predict Smart Queue pick and set _inDjData
-  const smartMode = _djSetting('smart_queue', 'off');
   if (smartMode !== 'off' && !store.shuffleEnabled && _outDjData) {
     const smartIdx = pickSmartNext(store.playerQueue, store.playerIndex, _outDjData, smartMode, store.repeatMode === 'all');
     if (smartIdx != null) {
