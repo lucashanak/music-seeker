@@ -125,7 +125,7 @@ function _startCrossfade(seekable = true) {
   if (_outDjData?.bpm && _inDjData?.bpm) {
     _beatSync = new CrossfadeBeatSync(
       _fadingOutDeck, _activeDeckEl(),
-      _outDjData.bpm, _inDjData.bpm, result.tempoRatio
+      _outDjData.bpm, _inDjData.bpm, result.outRate, result.inRate
     );
     _beatSync.start();
   }

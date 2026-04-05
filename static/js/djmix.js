@@ -235,16 +235,23 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   const inBpm = inData?.bpm || outBpm;
   const outCurrentTime = outDeck.element.currentTime;
 
-  /* ---- 1. Tempo match ---- */
-  const tempoRatio = outBpm / inBpm;
-  const clampedRatio = tempoRange > 0
-    ? Math.max(1 - tempoRange, Math.min(1 + tempoRange, tempoRatio))
-    : 1.0;
+  /* ---- 1. Dual tempo match ---- */
+  // Both decks shift toward mid BPM — each changes by half the difference.
+  // This doubles effective range (±8% each = ±16% total) while staying inaudible.
+  const midBpm = (outBpm + inBpm) / 2;
+  let outRate = 1.0, inRate = 1.0;
+  if (tempoRange > 0 && outBpm !== inBpm) {
+    outRate = Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / outBpm));
+    inRate = Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / inBpm));
+  }
+  outDeck.element.preservesPitch = true;
   inDeck.element.preservesPitch = true;
-  inDeck.element.playbackRate = clampedRatio;
+  outDeck.element.playbackRate = outRate;
+  inDeck.element.playbackRate = inRate;
 
   /* ---- 2. Crossfade duration ---- */
-  const beatPeriod = 60 / outBpm;
+  const matchedBpm = outBpm * outRate; // effective BPM during crossfade
+  const beatPeriod = 60 / matchedBpm;
   const fallbackSec = opts.fallbackSec || 5;
   const duration = outData?.bpm ? numBeats * beatPeriod : fallbackSec;
 
@@ -264,8 +271,8 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   // Phase alignment: find the incoming track position where its beat
   // will coincide with the outgoing track's CURRENT beat position.
   if (outData?.bpm && inData?.beat_grid && inData.beat_grid.length > 0) {
-    const outBeatPeriod = 60 / outBpm;
-    const inBeatPeriod = 60 / (inBpm * clampedRatio); // adjusted for tempo match
+    const outBeatPeriod = 60 / (outBpm * outRate);
+    const inBeatPeriod = 60 / (inBpm * inRate);
     // Find where we are in the outgoing beat cycle (0..1)
     const outPhase = (outCurrentTime % outBeatPeriod) / outBeatPeriod;
     // Find a start position in the incoming track where the beat phase matches
@@ -325,7 +332,7 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
     inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, cutDur);
   }
 
-  return { crossfadeStartTime: startCtxTime, duration, tempoRatio: clampedRatio, style };
+  return { crossfadeStartTime: startCtxTime, duration, outRate, inRate, style };
 }
 
 /* ------------------------------------------------------------------ */
@@ -437,22 +444,23 @@ export function resetDeckAfterTransition(deck) {
  *   sync.stop();
  */
 export class CrossfadeBeatSync {
-  constructor(outElement, inElement, outBpm, inBpm, tempoRatio) {
+  constructor(outElement, inElement, outBpm, inBpm, outRate, inRate) {
     this.out = outElement;
     this.in = inElement;
-    this.outPeriod = 60 / outBpm;
-    this.inPeriod = 60 / (inBpm * tempoRatio);
-    this.baseRate = tempoRatio;
+    // Beat periods at matched tempo
+    this.outPeriod = 60 / (outBpm * outRate);
+    this.inPeriod = 60 / (inBpm * inRate);
+    this.outBaseRate = outRate;
+    this.inBaseRate = inRate;
     this.active = false;
     this._raf = null;
 
-    // PI controller (tuned for slow, smooth convergence)
-    this.kp = 0.003;     // proportional gain
-    this.ki = 0.0002;    // integral gain
+    // PI controller
+    this.kp = 0.003;
+    this.ki = 0.0002;
     this.integral = 0;
-    this.maxCorr = 0.005; // max ±0.5% rate adjustment
+    this.maxCorr = 0.003; // max ±0.3% (split between both decks)
 
-    // Capture initial phase relationship to maintain it
     this.targetDiff = this._outPhase() - this._inPhase();
   }
 
@@ -472,7 +480,9 @@ export class CrossfadeBeatSync {
   stop() {
     this.active = false;
     if (this._raf) cancelAnimationFrame(this._raf);
-    this.in.playbackRate = this.baseRate;
+    // Restore base rates
+    this.in.playbackRate = this.inBaseRate;
+    this.out.playbackRate = this.outBaseRate;
   }
 
   _tick() {
@@ -484,13 +494,15 @@ export class CrossfadeBeatSync {
     while (error > 0.5) error -= 1;
     while (error < -0.5) error += 1;
 
-    // PI controller
+    // PI controller — split correction between both decks
     this.integral += error;
-    this.integral = Math.max(-20, Math.min(20, this.integral)); // anti-windup
+    this.integral = Math.max(-20, Math.min(20, this.integral));
     let corr = this.kp * error + this.ki * this.integral;
     corr = Math.max(-this.maxCorr, Math.min(this.maxCorr, corr));
 
-    this.in.playbackRate = this.baseRate + corr;
+    // Incoming speeds up, outgoing slows down (or vice versa) — half each
+    this.in.playbackRate = this.inBaseRate + corr * 0.5;
+    this.out.playbackRate = this.outBaseRate - corr * 0.5;
 
     this._raf = requestAnimationFrame(() => this._tick());
   }
