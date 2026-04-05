@@ -178,21 +178,33 @@ async function _preAnalyzeUpcoming() {
   const PRE_ANALYZE = parseInt(_djSetting('pre_analyze', '10')) || 10;
   const { getDjData } = await import('./bpm.js');
 
-  // Step 1: Analyze upcoming tracks
+  // Step 1: Analyze tracks — forward first, then backward if Smart Queue
+  const smartMode = _djSetting('smart_queue', 'off');
+  // Forward: next N tracks
   for (let i = 1; i <= PRE_ANALYZE; i++) {
     const idx = store.playerIndex + i;
+    if (idx >= store.playerQueue.length) break;
     const item = store.playerQueue[idx];
-    if (!item) break;
     const name = _decodeEntities(item.name || '');
     const artist = _decodeEntities(item.artist || '');
-    if (getDjData(name, artist)) continue; // already cached
+    if (getDjData(name, artist)) continue;
     await fetchDjData(name, artist).catch(() => null);
+  }
+  // Backward: previous tracks (only with Smart Queue + repeat=all)
+  if (smartMode !== 'off' && store.repeatMode === 'all') {
+    for (let i = store.playerIndex - 1; i >= Math.max(0, store.playerIndex - PRE_ANALYZE); i--) {
+      const item = store.playerQueue[i];
+      const name = _decodeEntities(item.name || '');
+      const artist = _decodeEntities(item.artist || '');
+      if (getDjData(name, artist)) continue;
+      await fetchDjData(name, artist).catch(() => null);
+    }
   }
 
   // Step 2: Predict Smart Queue pick and set _inDjData
   const smartMode = _djSetting('smart_queue', 'off');
   if (smartMode !== 'off' && !store.shuffleEnabled && _outDjData) {
-    const smartIdx = pickSmartNext(store.playerQueue, store.playerIndex, _outDjData, smartMode);
+    const smartIdx = pickSmartNext(store.playerQueue, store.playerIndex, _outDjData, smartMode, store.repeatMode === 'all');
     if (smartIdx != null) {
       const item = store.playerQueue[smartIdx];
       const name = _decodeEntities(item.name || '');
@@ -508,7 +520,7 @@ function _nextTrackInQueue() {
     // Smart Queue: pick best next track by BPM/key instead of sequential
     const smartMode = _djSetting('smart_queue', 'off');
     if (smartMode !== 'off' && _outDjData) {
-      const smartIdx = pickSmartNext(store.playerQueue, store.playerIndex, _outDjData, smartMode);
+      const smartIdx = pickSmartNext(store.playerQueue, store.playerIndex, _outDjData, smartMode, store.repeatMode === 'all');
       if (smartIdx != null) {
         store.playerIndex = smartIdx;
         loadAndPlay();

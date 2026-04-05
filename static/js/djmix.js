@@ -348,7 +348,7 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
  * @param {string} mode - 'bpm' or 'bpm_key'
  * @returns {number|null} - Best index, or null if no analyzed candidates
  */
-export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm') {
+export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', repeatAll = false) {
   if (!currentDjData || !currentDjData.bpm) return null;
 
   const curBpm = currentDjData.bpm;
@@ -356,21 +356,27 @@ export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm') 
   let bestIdx = null;
   let bestScore = Infinity;
 
-  for (let i = currentIndex + 1; i < queue.length; i++) {
+  const allowReplay = repeatAll;
+
+  for (let i = 0; i < queue.length; i++) {
+    if (i === currentIndex) continue;
+    // Without repeat=all, only look forward (unplayed tracks)
+    if (i < currentIndex && !allowReplay) continue;
+
     const item = queue[i];
     const data = getDjData(item.name, item.artist);
-    if (!data || !data.bpm) continue; // not analyzed yet, skip
+    if (!data || !data.bpm) continue;
 
-    // BPM distance (lower is better)
     let score = Math.abs(data.bpm - curBpm);
 
-    // Key compatibility bonus (only in bpm_key mode)
     if (mode === 'bpm_key' && curCamelot && data.camelot) {
       const style = getTransitionStyle(curCamelot, data.camelot);
-      if (style === 'blend') score -= 3;      // harmonically perfect
-      else if (style === 'bass_swap') score -= 1; // close enough
-      // 'cut' = no bonus (clashing keys)
+      if (style === 'blend') score -= 3;
+      else if (style === 'bass_swap') score -= 1;
     }
+
+    // Small penalty for already-played tracks (prefer forward)
+    if (i < currentIndex) score += 1;
 
     if (score < bestScore) {
       bestScore = score;
