@@ -24,8 +24,9 @@ let _activeDeck = 'A';
 let _crossfading = false;
 let _crossfadeTimer = null;
 let _fadingOutDeck = null;
-let _rateReturnTimer = null; // Bug #4: stored so we can clear on rapid next
-let _beatSync = null;        // real-time beat drift correction during crossfade
+let _rateReturnTimer = null;
+let _tempoRampTimer = null; // outgoing deck tempo ramp (clearable on rapid skip)
+let _beatSync = null;
 
 // DJ data for current and next track (fetched asynchronously)
 let _outDjData = null;
@@ -96,6 +97,7 @@ function _startCrossfade(seekable = true) {
     _fadingOutDeck.src = '';
     clearTimeout(_crossfadeTimer);
     clearInterval(_rateReturnTimer);
+    clearInterval(_tempoRampTimer); _tempoRampTimer = null;
     if (_beatSync) { _beatSync.stop(); _beatSync = null; }
     _crossfading = false;
   }
@@ -129,6 +131,8 @@ function _startCrossfade(seekable = true) {
     filterResonance: parseFloat(_djSetting('filter_resonance', '2')),
   });
   const dur = result.duration || _crossfadeDur();
+  // Store tempo ramp timer for cleanup on rapid skip
+  if (result._tempoRampTimer) { clearInterval(_tempoRampTimer); _tempoRampTimer = result._tempoRampTimer; }
   const beatDelay = (result.crossfadeStartTime - _ctx.currentTime) * 1000;
   const timerDur = dur * 1000 + Math.max(0, beatDelay) + 200;
 

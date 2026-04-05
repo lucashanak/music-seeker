@@ -452,21 +452,17 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   // Incoming starts at target rate immediately (gain=0, inaudible)
   inDeck.element.playbackRate = inRate;
   // Outgoing ramps gradually to avoid audible speed jump
-  if (outRate !== 1.0) {
+  let _tempoRampTimer = null;
+  if (outRate !== 1.0 && Math.abs(outDeck.element.playbackRate - outRate) > 0.001) {
     const curRate = outDeck.element.playbackRate;
-    const rampMs = 2000; // 2 second ramp
-    const rampSteps = 20;
-    const stepMs = rampMs / rampSteps;
     let step = 0;
-    const rampTimer = setInterval(() => {
+    _tempoRampTimer = setInterval(() => {
       step++;
-      if (step >= rampSteps) {
-        outDeck.element.playbackRate = outRate;
-        clearInterval(rampTimer);
-      } else {
-        outDeck.element.playbackRate = curRate + (outRate - curRate) * (step / rampSteps);
-      }
-    }, stepMs);
+      if (step >= 20) { outDeck.element.playbackRate = outRate; clearInterval(_tempoRampTimer); _tempoRampTimer = null; }
+      else outDeck.element.playbackRate = curRate + (outRate - curRate) * (step / 20);
+    }, 100);
+  } else {
+    outDeck.element.playbackRate = outRate;
   }
 
   /* ---- 2. Duration ---- */
@@ -519,46 +515,58 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
 
   /* ---- 6. Schedule automation per style ---- */
 
+  // Cancel ALL scheduled values on ALL filters for BOTH decks (fixes interrupted transitions)
+  for (const d of [outDeck, inDeck]) {
+    d.gain.gain.cancelScheduledValues(0);
+    if (d.lowFilter) d.lowFilter.gain.cancelScheduledValues(0);
+    if (d.midFilter) d.midFilter.gain.cancelScheduledValues(0);
+    if (d.highFilter) d.highFilter.gain.cancelScheduledValues(0);
+    if (d.sweepFilter) {
+      d.sweepFilter.frequency.cancelScheduledValues(0);
+      d.sweepFilter.Q.cancelScheduledValues(0);
+    }
+  }
+
   if (style === 'eq_swap') {
     const killDb = -(opts.eqKillDepth || 36);
     const swapFrac = opts.bassSwapPoint || 0.5;
     const swapBeats = Math.round(numBeats * swapFrac);
     const swapTime = startCtxTime + swapBeats * beatPeriod;
 
-    // Cancel all previous scheduled values
-    for (const d of [outDeck, inDeck]) {
-      d.gain.gain.cancelScheduledValues(startCtxTime);
-      d.lowFilter.gain.cancelScheduledValues(startCtxTime);
-      d.midFilter.gain.cancelScheduledValues(startCtxTime);
-      d.highFilter.gain.cancelScheduledValues(startCtxTime);
-    }
+    // OUTGOING: hold current state, explicit initial values (#5 fix: use actual gain, not assumed 1.0)
+    const outGainNow = outDeck.gain.gain.value;
+    outDeck.gain.gain.setValueAtTime(outGainNow, startCtxTime);
+    outDeck.lowFilter.gain.setValueAtTime(0, startCtxTime);
+    outDeck.midFilter.gain.setValueAtTime(0, startCtxTime);
+    outDeck.highFilter.gain.setValueAtTime(0, startCtxTime);
 
-    // INCOMING: starts with EQ killed, gain at 0
-    inDeck.gain.gain.setValueAtTime(0, startCtxTime);
+    // INCOMING: bass killed, but highs + mids partially open with gain rising early (#7 fix)
+    inDeck.gain.gain.setValueAtTime(0.0001, startCtxTime);
     inDeck.lowFilter.gain.setValueAtTime(killDb, startCtxTime);
-    inDeck.midFilter.gain.setValueAtTime(killDb * 0.6, startCtxTime);
-    inDeck.highFilter.gain.setValueAtTime(killDb * 0.5, startCtxTime);
+    inDeck.midFilter.gain.setValueAtTime(killDb * 0.5, startCtxTime);
+    inDeck.highFilter.gain.setValueAtTime(-6, startCtxTime); // highs nearly open from start
 
-    // Phase 1 (0 to swap): bring in highs, then mids, raise volume
-    inDeck.highFilter.gain.linearRampToValueAtTime(0, startCtxTime + duration * 0.3);
+    // Phase 1 (0 to 25%): incoming highs open fully, gain rises, becoming audible
+    const phase1End = startCtxTime + duration * 0.25;
+    inDeck.highFilter.gain.linearRampToValueAtTime(0, phase1End);
+    inDeck.gain.gain.linearRampToValueAtTime(0.6, phase1End);
+
+    // Phase 2 (25% to swap): incoming mids open, gain continues rising
     inDeck.midFilter.gain.linearRampToValueAtTime(0, swapTime);
-    inDeck.gain.gain.linearRampToValueAtTime(0.85, swapTime);
+    inDeck.gain.gain.linearRampToValueAtTime(0.9, swapTime);
 
-    // Phase 2: HARD BASS SWAP at swapTime (instant, one beat)
+    // Bass swap: HARD CUT on one beat
     outDeck.lowFilter.gain.setValueAtTime(0, swapTime - 0.005);
     outDeck.lowFilter.gain.setValueAtTime(killDb, swapTime);
     inDeck.lowFilter.gain.setValueAtTime(killDb, swapTime - 0.005);
     inDeck.lowFilter.gain.setValueAtTime(0, swapTime);
 
-    // Phase 3 (swap to end): fade out outgoing
-    outDeck.midFilter.gain.setValueAtTime(0, swapTime);
-    outDeck.midFilter.gain.linearRampToValueAtTime(killDb * 0.6, endTime);
-    outDeck.highFilter.gain.setValueAtTime(0, swapTime);
-    outDeck.highFilter.gain.linearRampToValueAtTime(killDb * 0.5, endTime);
-    outDeck.gain.gain.setValueAtTime(1, startCtxTime);
+    // Phase 3 (swap to end): outgoing fades out (EQ + volume)
+    outDeck.midFilter.gain.linearRampToValueAtTime(killDb * 0.5, endTime);
+    outDeck.highFilter.gain.linearRampToValueAtTime(killDb * 0.4, endTime);
     outDeck.gain.gain.linearRampToValueAtTime(0, endTime);
 
-    // Incoming full by end
+    // Incoming reaches full
     inDeck.gain.gain.linearRampToValueAtTime(1, endTime);
 
   } else if (style === 'filter_sweep') {
@@ -603,7 +611,7 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, duration);
   }
 
-  return { crossfadeStartTime: startCtxTime, duration, outRate, inRate, style };
+  return { crossfadeStartTime: startCtxTime, duration, outRate, inRate, style, _tempoRampTimer };
 }
 
 /**
