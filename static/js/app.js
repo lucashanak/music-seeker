@@ -7,11 +7,17 @@ import { init as initSearch } from './search.js';
 import { init as initSpotify, loadPlaylists, closePlaylistDetail, closeShowDetail, closeArtistDetail } from './spotify.js';
 import { init as initDiscover, loadTags, closeTagDetail } from './discover.js';
 import { init as initDownloads } from './downloads.js';
-// Dynamic player engine selection (classic or crossfade)
-const _playerEngine = localStorage.getItem('ms_player_engine') || 'classic';
-const _playerModule = _playerEngine === 'crossfade'
-  ? await import('./player_v2.js')
-  : await import('./player.js');
+// Dynamic player engine selection (classic or crossfade) — fallback to classic on error
+let _playerModule;
+try {
+  const _playerEngine = localStorage.getItem('ms_player_engine') || 'classic';
+  _playerModule = _playerEngine === 'crossfade'
+    ? await import('./player_v2.js')
+    : await import('./player.js');
+} catch (e) {
+  console.error('Player engine load failed, falling back to classic:', e);
+  _playerModule = await import('./player.js');
+}
 const { init: initPlayer, loadAndPlay, hidePlayerBar, saveQueueDebounced, nextTrack, prevTrack, updatePlayPauseIcon, audio, getAudio } = _playerModule;
 import { init as initQueue, setPlayerRefs as setQueuePlayerRefs } from './queue.js';
 import { init as initFullPlayer, setPlayerRefs as setFpPlayerRefs } from './fullplayer.js';
