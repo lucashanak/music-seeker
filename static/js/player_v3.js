@@ -97,7 +97,7 @@ function _startCrossfade(seekable = true) {
     _fadingOutDeck.src = '';
     clearTimeout(_crossfadeTimer);
     clearInterval(_rateReturnTimer);
-    clearInterval(_tempoRampTimer); _tempoRampTimer = null;
+    cancelAnimationFrame(_tempoRampTimer); _tempoRampTimer = null;
     if (_beatSync) { _beatSync.stop(); _beatSync = null; }
     _crossfading = false;
   }
@@ -150,10 +150,12 @@ function _startCrossfade(seekable = true) {
   clearTimeout(_crossfadeTimer);
   const deckToStop = _fadingOutDeck;
   const outroFade = _djSetting('outro_fade', '1') === '1';
-  // outro_fade=off: stop old deck immediately (no fade, hard cut)
+  // outro_fade=off: quick 20ms fade to avoid pop, then stop
   if (!outroFade) {
-    deckToStop.pause();
-    deckToStop.src = '';
+    const desc = _deckDesc(deckToStop);
+    desc.gain.gain.setValueAtTime(desc.gain.gain.value, _ctx.currentTime);
+    desc.gain.gain.linearRampToValueAtTime(0, _ctx.currentTime + 0.02);
+    setTimeout(() => { deckToStop.pause(); deckToStop.src = ''; }, 25);
   }
   _crossfadeTimer = setTimeout(() => {
     if (outroFade) { deckToStop.pause(); deckToStop.src = ''; }

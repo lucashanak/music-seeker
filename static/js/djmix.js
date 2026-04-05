@@ -247,16 +247,16 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   outDeck.element.preservesPitch = true;
   inDeck.element.preservesPitch = true;
   inDeck.element.playbackRate = inRate;
-  // Outgoing ramps gradually to avoid audible speed jump
+  // Outgoing ramps gradually via requestAnimationFrame
   if (outRate !== 1.0 && outDeck.element.playbackRate !== outRate) {
     const curRate = outDeck.element.playbackRate;
-    const steps = 20;
-    let step = 0;
-    const rt = setInterval(() => {
-      step++;
-      if (step >= steps) { outDeck.element.playbackRate = outRate; clearInterval(rt); }
-      else outDeck.element.playbackRate = curRate + (outRate - curRate) * (step / steps);
-    }, 100);
+    const rampStart = performance.now();
+    const tick = () => {
+      const t = Math.min(1, (performance.now() - rampStart) / 2000);
+      outDeck.element.playbackRate = curRate + (outRate - curRate) * t;
+      if (t < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   } else {
     outDeck.element.playbackRate = outRate;
   }
@@ -451,16 +451,20 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   inDeck.element.preservesPitch = true;
   // Incoming starts at target rate immediately (gain=0, inaudible)
   inDeck.element.playbackRate = inRate;
-  // Outgoing ramps gradually to avoid audible speed jump
+  // Outgoing ramps gradually via requestAnimationFrame (smoother than setInterval)
   let _tempoRampTimer = null;
   if (outRate !== 1.0 && Math.abs(outDeck.element.playbackRate - outRate) > 0.001) {
     const curRate = outDeck.element.playbackRate;
-    let step = 0;
-    _tempoRampTimer = setInterval(() => {
-      step++;
-      if (step >= 20) { outDeck.element.playbackRate = outRate; clearInterval(_tempoRampTimer); _tempoRampTimer = null; }
-      else outDeck.element.playbackRate = curRate + (outRate - curRate) * (step / 20);
-    }, 100);
+    const rampStart = performance.now();
+    const rampDur = 2000; // 2 seconds
+    const tick = () => {
+      const elapsed = performance.now() - rampStart;
+      const t = Math.min(1, elapsed / rampDur);
+      outDeck.element.playbackRate = curRate + (outRate - curRate) * t;
+      if (t < 1) _tempoRampTimer = requestAnimationFrame(tick);
+      else _tempoRampTimer = null;
+    };
+    _tempoRampTimer = requestAnimationFrame(tick);
   } else {
     outDeck.element.playbackRate = outRate;
   }
@@ -555,11 +559,11 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     inDeck.midFilter.gain.linearRampToValueAtTime(0, swapTime);
     inDeck.gain.gain.linearRampToValueAtTime(0.9, swapTime);
 
-    // Bass swap: HARD CUT on one beat
-    outDeck.lowFilter.gain.setValueAtTime(0, swapTime - 0.005);
-    outDeck.lowFilter.gain.setValueAtTime(killDb, swapTime);
-    inDeck.lowFilter.gain.setValueAtTime(killDb, swapTime - 0.005);
-    inDeck.lowFilter.gain.setValueAtTime(0, swapTime);
+    // Bass swap: snappy 15ms micro-ramp (eliminates click, still sounds instant)
+    outDeck.lowFilter.gain.setValueAtTime(0, swapTime - 0.015);
+    outDeck.lowFilter.gain.linearRampToValueAtTime(killDb, swapTime);
+    inDeck.lowFilter.gain.setValueAtTime(killDb, swapTime - 0.015);
+    inDeck.lowFilter.gain.linearRampToValueAtTime(0, swapTime);
 
     // Phase 3 (swap to end): outgoing fades out (EQ + volume)
     outDeck.midFilter.gain.linearRampToValueAtTime(killDb * 0.5, endTime);
