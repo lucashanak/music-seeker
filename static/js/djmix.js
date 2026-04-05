@@ -348,20 +348,31 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
  * @param {string} mode - 'bpm' or 'bpm_key'
  * @returns {number|null} - Best index, or null if no analyzed candidates
  */
+// Track which indices have already been played by Smart Queue
+const _playedIndices = new Set();
+
+/** Reset played tracking (call when queue changes or playback restarts) */
+export function resetSmartQueuePlayed() { _playedIndices.clear(); }
+
+/** Mark current index as played */
+export function markPlayed(idx) { _playedIndices.add(idx); }
+
 export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', repeatAll = false) {
   if (!currentDjData || !currentDjData.bpm) return null;
+
+  // Mark current as played
+  _playedIndices.add(currentIndex);
 
   const curBpm = currentDjData.bpm;
   const curCamelot = currentDjData.camelot;
   let bestIdx = null;
   let bestScore = Infinity;
 
-  const allowReplay = repeatAll;
-
   for (let i = 0; i < queue.length; i++) {
     if (i === currentIndex) continue;
-    // Without repeat=all, only look forward (unplayed tracks)
-    if (i < currentIndex && !allowReplay) continue;
+    // Skip already-played tracks (unless repeat=all AND all have been played)
+    if (_playedIndices.has(i) && !repeatAll) continue;
+    if (_playedIndices.has(i) && repeatAll && _playedIndices.size < queue.length) continue;
 
     const item = queue[i];
     const data = getDjData(item.name, item.artist);
@@ -375,13 +386,18 @@ export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', 
       else if (style === 'bass_swap') score -= 1;
     }
 
-    // Small penalty for already-played tracks (prefer forward)
-    if (i < currentIndex) score += 1;
-
     if (score < bestScore) {
       bestScore = score;
       bestIdx = i;
     }
+  }
+
+  // If nothing found (all played, repeat=off), return null → queue ends
+  // If repeat=all and all played, clear history and try again
+  if (bestIdx == null && repeatAll && _playedIndices.size >= queue.length) {
+    _playedIndices.clear();
+    _playedIndices.add(currentIndex);
+    return pickSmartNext(queue, currentIndex, currentDjData, mode, repeatAll);
   }
   return bestIdx;
 }

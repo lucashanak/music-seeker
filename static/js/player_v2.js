@@ -8,7 +8,7 @@ import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, getStatus as getPrefetchStatus, prefetchUpcoming, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
-import { fetchDjData, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, pickSmartNext, CrossfadeBeatSync } from './djmix.js';
+import { fetchDjData, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, pickSmartNext, resetSmartQueuePlayed, CrossfadeBeatSync } from './djmix.js';
 
 // ── Dual-deck Web Audio API crossfade engine with DJ mixing ──
 
@@ -190,8 +190,8 @@ async function _preAnalyzeUpcoming() {
     if (getDjData(name, artist)) continue;
     await fetchDjData(name, artist).catch(() => null);
   }
-  // Backward: previous tracks (only with Smart Queue + repeat=all)
-  if (smartMode !== 'off' && store.repeatMode === 'all') {
+  // Backward: previous tracks (when Smart Queue searches whole playlist)
+  if (smartMode !== 'off') {
     for (let i = store.playerIndex - 1; i >= Math.max(0, store.playerIndex - PRE_ANALYZE); i--) {
       const item = store.playerQueue[i];
       const name = _decodeEntities(item.name || '');
@@ -263,6 +263,7 @@ export function playTrack(item) {
   store.radioMode = false;
   store.playerQueue = [item];
   store.playerIndex = 0;
+  resetSmartQueuePlayed();
   loadAndPlay();
 }
 
