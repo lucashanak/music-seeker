@@ -246,11 +246,23 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
   }
   outDeck.element.preservesPitch = true;
   inDeck.element.preservesPitch = true;
-  outDeck.element.playbackRate = outRate;
   inDeck.element.playbackRate = inRate;
+  // Outgoing ramps gradually to avoid audible speed jump
+  if (outRate !== 1.0 && outDeck.element.playbackRate !== outRate) {
+    const curRate = outDeck.element.playbackRate;
+    const steps = 20;
+    let step = 0;
+    const rt = setInterval(() => {
+      step++;
+      if (step >= steps) { outDeck.element.playbackRate = outRate; clearInterval(rt); }
+      else outDeck.element.playbackRate = curRate + (outRate - curRate) * (step / steps);
+    }, 100);
+  } else {
+    outDeck.element.playbackRate = outRate;
+  }
 
   /* ---- 2. Crossfade duration ---- */
-  const matchedBpm = outBpm * outRate; // effective BPM during crossfade
+  const matchedBpm = outBpm * outRate;
   const beatPeriod = 60 / matchedBpm;
   const fallbackSec = opts.fallbackSec || 5;
   const duration = outData?.bpm ? numBeats * beatPeriod : fallbackSec;
@@ -431,14 +443,31 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   const inBpm = inData?.bpm || outBpm;
   const outCurrentTime = outDeck.element.currentTime;
 
-  /* ---- 1. Dual tempo match ---- */
+  /* ---- 1. Dual tempo match (gradual ramp on outgoing deck) ---- */
   const midBpm = (outBpm + inBpm) / 2;
   let outRate = tempoRange > 0 ? Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / outBpm)) : 1;
   let inRate = tempoRange > 0 ? Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / inBpm)) : 1;
   outDeck.element.preservesPitch = true;
   inDeck.element.preservesPitch = true;
-  outDeck.element.playbackRate = outRate;
+  // Incoming starts at target rate immediately (gain=0, inaudible)
   inDeck.element.playbackRate = inRate;
+  // Outgoing ramps gradually to avoid audible speed jump
+  if (outRate !== 1.0) {
+    const curRate = outDeck.element.playbackRate;
+    const rampMs = 2000; // 2 second ramp
+    const rampSteps = 20;
+    const stepMs = rampMs / rampSteps;
+    let step = 0;
+    const rampTimer = setInterval(() => {
+      step++;
+      if (step >= rampSteps) {
+        outDeck.element.playbackRate = outRate;
+        clearInterval(rampTimer);
+      } else {
+        outDeck.element.playbackRate = curRate + (outRate - curRate) * (step / rampSteps);
+      }
+    }, stepMs);
+  }
 
   /* ---- 2. Duration ---- */
   const matchedBpm = outBpm * outRate;
