@@ -155,7 +155,10 @@ function _startCrossfade(seekable = true) {
     const newDeck = _activeDeckEl();
     if (newDeck.playbackRate !== 1.0) {
       const startRate = newDeck.playbackRate;
-      const steps = 20;
+      const diff = Math.abs(startRate - 1.0);
+      // Slower return for larger tempo differences: 30s for ±8%, 15s for ±2%
+      const returnSec = Math.max(15, Math.round(diff * 400));
+      const steps = Math.round(returnSec * 2); // 2 steps/sec
       let step = 0;
       _rateReturnTimer = setInterval(() => {
         step++;
@@ -163,7 +166,10 @@ function _startCrossfade(seekable = true) {
           newDeck.playbackRate = 1.0;
           clearInterval(_rateReturnTimer);
         } else {
-          newDeck.playbackRate = startRate + (1.0 - startRate) * (step / steps);
+          // Ease-out curve: fast at first, slowing down as approaching 1.0
+          const t = step / steps;
+          const eased = 1 - (1 - t) * (1 - t); // quadratic ease-out
+          newDeck.playbackRate = startRate + (1.0 - startRate) * eased;
         }
       }, 500);
     }
@@ -209,8 +215,11 @@ async function _preAnalyzeUpcoming() {
       const name = _decodeEntities(item.name || '');
       const artist = _decodeEntities(item.artist || '');
       _inDjData = getDjData(name, artist);
-      // Step 3: Prefetch Smart Queue pick's audio (priority)
+      // Step 3: Prefetch Smart Queue pick (priority) + sequential fallback
       prefetchTrack(name, artist);
+      // Also prefetch sequential next as fallback
+      const seqNext = store.playerQueue[store.playerIndex + 1];
+      if (seqNext) prefetchTrack(_decodeEntities(seqNext.name || ''), _decodeEntities(seqNext.artist || ''));
       return;
     }
   }
@@ -219,6 +228,7 @@ async function _preAnalyzeUpcoming() {
   const nextItem = store.playerQueue[store.playerIndex + 1];
   if (nextItem) {
     _inDjData = getDjData(_decodeEntities(nextItem.name || ''), _decodeEntities(nextItem.artist || ''));
+    prefetchTrack(_decodeEntities(nextItem.name || ''), _decodeEntities(nextItem.artist || ''));
   }
 }
 
@@ -846,7 +856,12 @@ export function init() {
       // Wait for current track to buffer enough before starting prefetch/pre-analyze
       _waitForBuffer(deck).then(() => {
         if (deck !== _activeDeckEl() || deck.paused) return;
-        resumePrefetch();
+        const sm = _djSetting('smart_queue', 'off');
+        if (sm === 'off') {
+          // Sequential mode: prefetch next N tracks in order
+          resumePrefetch();
+        }
+        // Pre-analyze handles Smart Queue prefetch via prefetchTrack()
         _preAnalyzeUpcoming();
       });
     });
