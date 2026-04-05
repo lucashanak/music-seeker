@@ -11,9 +11,13 @@ import { init as initDownloads } from './downloads.js';
 let _playerModule;
 try {
   const _playerEngine = localStorage.getItem('ms_player_engine') || 'classic';
-  _playerModule = _playerEngine === 'crossfade'
-    ? await import('./player_v2.js')
-    : await import('./player.js');
+  if (_playerEngine === 'dj') {
+    _playerModule = await import('./player_v3.js');
+  } else if (_playerEngine === 'crossfade') {
+    _playerModule = await import('./player_v2.js');
+  } else {
+    _playerModule = await import('./player.js');
+  }
 } catch (e) {
   console.error('Player engine load failed, falling back to classic:', e);
   _playerModule = await import('./player.js');

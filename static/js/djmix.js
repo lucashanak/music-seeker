@@ -409,6 +409,199 @@ export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', 
   return bestIdx;
 }
 
+/**
+ * Schedule a professional DJ transition with 3-band EQ, bass swap, and filter sweep.
+ *
+ * @param {AudioContext} ctx
+ * @param {object} outDeck - { element, gain, lowFilter, midFilter, highFilter, sweepFilter }
+ * @param {object} inDeck  - { element, gain, lowFilter, midFilter, highFilter, sweepFilter }
+ * @param {object|null} outData - DJ data { bpm, beat_grid, key, camelot }
+ * @param {object|null} inData  - DJ data
+ * @param {object} opts - { numBeats, tempoRange, transitionStyle, introSkip, seekable, fallbackSec, bassSwapPoint, eqKillDepth, filterResonance }
+ */
+export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, opts = {}) {
+  const numBeats = opts.numBeats || 16;
+  const tempoRange = (opts.tempoRange ?? 8) / 100;
+  const forceStyle = opts.transitionStyle || 'auto';
+  const introSkip = opts.introSkip || '0';
+  const seekable = opts.seekable !== false;
+
+  const now = ctx.currentTime;
+  const outBpm = outData?.bpm || 85;
+  const inBpm = inData?.bpm || outBpm;
+  const outCurrentTime = outDeck.element.currentTime;
+
+  /* ---- 1. Dual tempo match ---- */
+  const midBpm = (outBpm + inBpm) / 2;
+  let outRate = tempoRange > 0 ? Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / outBpm)) : 1;
+  let inRate = tempoRange > 0 ? Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / inBpm)) : 1;
+  outDeck.element.preservesPitch = true;
+  inDeck.element.preservesPitch = true;
+  outDeck.element.playbackRate = outRate;
+  inDeck.element.playbackRate = inRate;
+
+  /* ---- 2. Duration ---- */
+  const matchedBpm = outBpm * outRate;
+  const beatPeriod = 60 / matchedBpm;
+  const fallbackSec = opts.fallbackSec || 5;
+  const duration = outData?.bpm ? numBeats * beatPeriod : fallbackSec;
+
+  /* ---- 3. Beat-aligned scheduling ---- */
+  const startCtxTime = now;
+  const endTime = startCtxTime + duration;
+
+  /* ---- 4. Incoming track start position (phase-locked) ---- */
+  let inStartTime = 0;
+  if (introSkip === 'auto' && inData?.intro_end != null) {
+    inStartTime = inData.intro_end;
+  } else if (introSkip !== '0' && introSkip !== 'auto') {
+    inStartTime = parseInt(introSkip) || 0;
+  }
+  if (outData?.bpm && inData?.beat_grid && inData.beat_grid.length > 0) {
+    const outBeatPeriod = 60 / (outBpm * outRate);
+    const inBeatPeriod = 60 / (inBpm * inRate);
+    const outPhase = (outCurrentTime % outBeatPeriod) / outBeatPeriod;
+    const firstInBeat = inData.intro_end || inData.beat_grid[0] || 0;
+    const phaseOffset = outPhase * inBeatPeriod;
+    inStartTime = Math.max(inStartTime, firstInBeat - phaseOffset);
+    if (inStartTime < 0) inStartTime += inBeatPeriod;
+  }
+  if (inStartTime > 0 && seekable) {
+    if (inDeck.element.readyState >= 1) {
+      try { inDeck.element.currentTime = inStartTime; } catch {}
+    } else {
+      inDeck.element.addEventListener('loadedmetadata', () => {
+        try { inDeck.element.currentTime = inStartTime; } catch {}
+      }, { once: true });
+    }
+  }
+
+  /* ---- 5. Style auto-selection ---- */
+  let style = forceStyle;
+  if (forceStyle === 'auto') {
+    if (!outData?.camelot || !inData?.camelot) style = 'blend';
+    else {
+      const compat = getTransitionStyle(outData.camelot, inData.camelot);
+      if (compat === 'blend') style = 'eq_swap';
+      else if (compat === 'bass_swap') style = 'filter_sweep';
+      else style = 'drop_cut';
+    }
+  }
+
+  /* ---- 6. Schedule automation per style ---- */
+
+  if (style === 'eq_swap') {
+    const killDb = -(opts.eqKillDepth || 36);
+    const swapFrac = opts.bassSwapPoint || 0.5;
+    const swapBeats = Math.round(numBeats * swapFrac);
+    const swapTime = startCtxTime + swapBeats * beatPeriod;
+
+    // Cancel all previous scheduled values
+    for (const d of [outDeck, inDeck]) {
+      d.gain.gain.cancelScheduledValues(startCtxTime);
+      d.lowFilter.gain.cancelScheduledValues(startCtxTime);
+      d.midFilter.gain.cancelScheduledValues(startCtxTime);
+      d.highFilter.gain.cancelScheduledValues(startCtxTime);
+    }
+
+    // INCOMING: starts with EQ killed, gain at 0
+    inDeck.gain.gain.setValueAtTime(0, startCtxTime);
+    inDeck.lowFilter.gain.setValueAtTime(killDb, startCtxTime);
+    inDeck.midFilter.gain.setValueAtTime(killDb * 0.6, startCtxTime);
+    inDeck.highFilter.gain.setValueAtTime(killDb * 0.5, startCtxTime);
+
+    // Phase 1 (0 to swap): bring in highs, then mids, raise volume
+    inDeck.highFilter.gain.linearRampToValueAtTime(0, startCtxTime + duration * 0.3);
+    inDeck.midFilter.gain.linearRampToValueAtTime(0, swapTime);
+    inDeck.gain.gain.linearRampToValueAtTime(0.85, swapTime);
+
+    // Phase 2: HARD BASS SWAP at swapTime (instant, one beat)
+    outDeck.lowFilter.gain.setValueAtTime(0, swapTime - 0.005);
+    outDeck.lowFilter.gain.setValueAtTime(killDb, swapTime);
+    inDeck.lowFilter.gain.setValueAtTime(killDb, swapTime - 0.005);
+    inDeck.lowFilter.gain.setValueAtTime(0, swapTime);
+
+    // Phase 3 (swap to end): fade out outgoing
+    outDeck.midFilter.gain.setValueAtTime(0, swapTime);
+    outDeck.midFilter.gain.linearRampToValueAtTime(killDb * 0.6, endTime);
+    outDeck.highFilter.gain.setValueAtTime(0, swapTime);
+    outDeck.highFilter.gain.linearRampToValueAtTime(killDb * 0.5, endTime);
+    outDeck.gain.gain.setValueAtTime(1, startCtxTime);
+    outDeck.gain.gain.linearRampToValueAtTime(0, endTime);
+
+    // Incoming full by end
+    inDeck.gain.gain.linearRampToValueAtTime(1, endTime);
+
+  } else if (style === 'filter_sweep') {
+    const res = opts.filterResonance || 2.0;
+
+    // Incoming: HPF opens up (reveals track from highs to lows)
+    inDeck.sweepFilter.type = 'highpass';
+    inDeck.sweepFilter.Q.setValueAtTime(res, startCtxTime);
+    inDeck.sweepFilter.frequency.setValueAtTime(4000, startCtxTime);
+    inDeck.sweepFilter.frequency.exponentialRampToValueAtTime(20, endTime);
+
+    // Outgoing: LPF closes (removes from highs to lows)
+    outDeck.sweepFilter.type = 'lowpass';
+    outDeck.sweepFilter.Q.setValueAtTime(res, startCtxTime);
+    outDeck.sweepFilter.frequency.setValueAtTime(20000, startCtxTime);
+    outDeck.sweepFilter.frequency.exponentialRampToValueAtTime(200, endTime);
+
+    // Gain: equal-power crossfade underneath
+    const curves = makeEqualPowerCurves(256);
+    outDeck.gain.gain.setValueCurveAtTime(curves.fadeOut, startCtxTime, duration);
+    inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, duration);
+
+  } else if (style === 'drop_cut') {
+    const introDur = Math.max(2, Math.min(4 * beatPeriod, 4));
+    const cutTime = startCtxTime + introDur;
+
+    inDeck.sweepFilter.type = 'highpass';
+    inDeck.sweepFilter.frequency.setValueAtTime(2000, startCtxTime);
+    inDeck.sweepFilter.frequency.exponentialRampToValueAtTime(20, cutTime);
+    inDeck.gain.gain.setValueAtTime(0.4, startCtxTime);
+    inDeck.gain.gain.setValueAtTime(1, cutTime);
+
+    outDeck.gain.gain.setValueAtTime(1, startCtxTime);
+    outDeck.gain.gain.setValueAtTime(0, cutTime);
+
+  } else {
+    // 'blend': simple equal-power (fallback)
+    const curves = makeEqualPowerCurves(256);
+    outDeck.gain.gain.cancelScheduledValues(startCtxTime);
+    inDeck.gain.gain.cancelScheduledValues(startCtxTime);
+    outDeck.gain.gain.setValueCurveAtTime(curves.fadeOut, startCtxTime, duration);
+    inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, duration);
+  }
+
+  return { crossfadeStartTime: startCtxTime, duration, outRate, inRate, style };
+}
+
+/**
+ * Reset ALL EQ filters + sweep + gain + playbackRate after a V3 transition.
+ *
+ * @param {object} deck - { element, gain, lowFilter, midFilter, highFilter, sweepFilter }
+ */
+export function resetDeckAfterTransitionV3(deck) {
+  deck.element.playbackRate = 1.0;
+  for (const filter of [deck.lowFilter, deck.midFilter, deck.highFilter]) {
+    if (filter) {
+      filter.gain.cancelScheduledValues(0);
+      filter.gain.value = 0;
+    }
+  }
+  if (deck.sweepFilter) {
+    deck.sweepFilter.frequency.cancelScheduledValues(0);
+    deck.sweepFilter.type = 'highpass';
+    deck.sweepFilter.frequency.value = 20; // fully open
+    deck.sweepFilter.Q.value = 0.7;
+  }
+  if (deck.gain) {
+    deck.gain.gain.cancelScheduledValues(0);
+    deck.gain.gain.value = 0;
+  }
+}
+
 export function resetDeckAfterTransition(deck) {
   deck.element.playbackRate = 1.0;
 

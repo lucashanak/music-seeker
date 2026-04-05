@@ -196,7 +196,7 @@ export function init() {
   // DJ Mode toggle (only visible when crossfade engine is active)
   const djBtn = $('#fpDjMode');
   if (djBtn) {
-    const isCrossfade = localStorage.getItem('ms_player_engine') === 'crossfade';
+    const isCrossfade = ['crossfade', 'dj'].includes(localStorage.getItem('ms_player_engine'));
     djBtn.style.display = isCrossfade ? '' : 'none';
     // Sync initial state
     const curMode = localStorage.getItem('ms_dj_smart_queue') || 'off';

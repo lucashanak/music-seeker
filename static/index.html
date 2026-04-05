@@ -462,6 +462,7 @@
           <select class="setting-select" id="settingPlayerEngine">
             <option value="classic">Classic</option>
             <option value="crossfade">Crossfade (Web Audio API)</option>
+            <option value="dj">DJ Player (3-band EQ transitions)</option>
           </select>
         </div>
         <div class="setting-group" id="deviceDlnaRow" style="display:none;">
@@ -521,9 +522,10 @@
           <label class="setting-label">Transition Style</label>
           <select class="setting-select" id="settingDjTransitionStyle">
             <option value="auto" selected>Auto — choose based on musical key</option>
-            <option value="blend">Always Blend — smooth equal-power crossfade</option>
-            <option value="bass_swap">Always Bass Swap — swap bass frequencies at midpoint</option>
-            <option value="cut">Always Quick Cut — fast 2-beat switch</option>
+            <option value="eq_swap">EQ Swap — staged 3-band DJ transition with bass swap</option>
+            <option value="filter_sweep">Filter Sweep — HPF/LPF sweep transition</option>
+            <option value="blend">Blend — smooth equal-power crossfade</option>
+            <option value="drop_cut">Drop Cut — quick filter intro + hard cut</option>
           </select>
           <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Auto analyzes the Camelot wheel position of both tracks: Blend for harmonically matching keys (same key or relative major/minor), Bass Swap for nearby keys (±1-2 on the wheel), Quick Cut for clashing keys to avoid dissonance.</p>
         </div>
@@ -574,6 +576,38 @@
             <option value="20">20 tracks ahead</option>
           </select>
           <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Number of upcoming tracks to analyze for BPM, key, and beat grid. More = better Smart Queue picks but more server load. Tracks with existing tags are instant.</p>
+        </div>
+        <div class="setting-group dj-v3-only" style="display:none;">
+          <label class="setting-label">Bass Swap Point</label>
+          <select class="setting-select" id="settingDjBassSwapPoint">
+            <option value="25">25% — early swap, long blend out</option>
+            <option value="40">40% — slightly early</option>
+            <option value="50" selected>50% — midpoint (classic DJ swap)</option>
+            <option value="60">60% — slightly late</option>
+            <option value="75">75% — late swap, long blend in</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Where in the transition the bass frequencies hard-swap between tracks. Snaps to the nearest beat. Only used with EQ Swap transition style.</p>
+        </div>
+        <div class="setting-group dj-v3-only" style="display:none;">
+          <label class="setting-label">EQ Kill Depth</label>
+          <select class="setting-select" id="settingDjEqKillDepth">
+            <option value="24">-24 dB — gentle (some bleed)</option>
+            <option value="30">-30 dB — moderate</option>
+            <option value="36" selected>-36 dB — deep (near-silent)</option>
+            <option value="48">-48 dB — extreme (true kill)</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">How aggressively EQ bands are cut during EQ Swap transitions. -36 dB is effectively inaudible against the other deck.</p>
+        </div>
+        <div class="setting-group dj-v3-only" style="display:none;">
+          <label class="setting-label">Filter Resonance</label>
+          <select class="setting-select" id="settingDjFilterResonance">
+            <option value="0.5">0.5 — flat (no resonance peak)</option>
+            <option value="1">1.0 — subtle</option>
+            <option value="2" selected>2.0 — moderate (classic sweep sound)</option>
+            <option value="4">4.0 — aggressive (pronounced peak)</option>
+            <option value="8">8.0 — extreme (acid/rave sound)</option>
+          </select>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Q factor for the filter sweep transition. Higher values create a resonant peak at the cutoff frequency, adding character to the sweep.</p>
         </div>
         <button class="btn-save" id="saveDjSettings" style="margin-top:4px;">Save DJ Settings</button>
         <span class="save-status" id="djSaveStatus"></span>

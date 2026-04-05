@@ -191,13 +191,16 @@ async function _saveDeviceSettings() {
 function _toggleDjSection() {
   const engine = $('#settingPlayerEngine')?.value || localStorage.getItem('ms_player_engine') || 'classic';
   const section = $('#djModeSection');
-  if (section) section.style.display = engine === 'crossfade' ? '' : 'none';
+  if (section) section.style.display = ['crossfade', 'dj'].includes(engine) ? '' : 'none';
+  // Show DJ v3-only settings only for DJ engine
+  $$('.dj-v3-only').forEach(el => { el.style.display = engine === 'dj' ? '' : 'none'; });
 }
 
 const DJ_DEFAULTS = {
   crossfade_beats: '16', crossfade_sec: '5', intro_skip: 'auto',
   tempo_range: '8', transition_style: 'auto', smart_queue: 'off',
   outro_skip: 'auto', outro_fade: '1', prefetch_count: '3', pre_analyze: '10',
+  bass_swap_point: '50', eq_kill_depth: '36', filter_resonance: '2',
 };
 
 function _loadDjSettings() {
@@ -221,6 +224,9 @@ function _saveDjSettings() {
     outro_fade: '#settingDjOutroFade',
     prefetch_count: '#settingDjPrefetchCount',
     pre_analyze: '#settingDjPreAnalyze',
+    bass_swap_point: '#settingDjBassSwapPoint',
+    eq_kill_depth: '#settingDjEqKillDepth',
+    filter_resonance: '#settingDjFilterResonance',
   };
   for (const [key, sel] of Object.entries(map)) {
     const el = $(sel);
