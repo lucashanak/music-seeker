@@ -21,22 +21,33 @@ export function setPlayerRefs(refs) {
 import { fetchTrackBpm } from './bpm.js';
 
 let _bpmLoadTimer = null;
-/** Lazy-load BPM badges for tracks not yet in cache. */
+let _bpmLoadAbort = null;
+/** Lazy-load BPM badges — limited to nearby tracks, with delays between requests. */
 async function _loadMissingBpm(el) {
   clearTimeout(_bpmLoadTimer);
+  if (_bpmLoadAbort) _bpmLoadAbort.aborted = true;
+  const abort = { aborted: false };
+  _bpmLoadAbort = abort;
+
   _bpmLoadTimer = setTimeout(async () => {
-    const items = $$('.queue-item', el);
-    for (const qi of items) {
-      if (qi.querySelector('.qi-bpm')) continue;
-      const idx = parseInt(qi.dataset.qi);
-      const item = store.playerQueue[idx];
+    // Only load BPM for tracks near current position (±10)
+    const lo = Math.max(0, store.playerIndex - 5);
+    const hi = Math.min(store.playerQueue.length - 1, store.playerIndex + 10);
+    for (let i = lo; i <= hi; i++) {
+      if (abort.aborted) return;
+      const qi = el.querySelector(`[data-qi="${i}"]`);
+      if (!qi || qi.querySelector('.qi-bpm')) continue;
+      const item = store.playerQueue[i];
       if (!item) continue;
       let bpm = getCachedBpm(item.name, item.artist);
       if (!bpm) {
         const data = await fetchTrackBpm(item.name, item.artist).catch(() => null);
         if (data) bpm = data.bpm;
+        // Small delay between API calls to not starve prefetch
+        await new Promise(r => setTimeout(r, 200));
       }
-      if (bpm) {
+      if (abort.aborted) return;
+      if (bpm && !qi.querySelector('.qi-bpm')) {
         const rmBtn = qi.querySelector('.qi-remove');
         if (rmBtn) {
           const badge = document.createElement('span');
@@ -46,7 +57,7 @@ async function _loadMissingBpm(el) {
         }
       }
     }
-  }, 500);
+  }, 1000);
 }
 
 // ── Render Queue Into Element ──

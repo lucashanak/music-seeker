@@ -144,6 +144,8 @@ function _startCrossfade() {
     if (outroFade) { deckToStop.pause(); deckToStop.src = ''; }
     resetDeckAfterTransition(_deckDesc(deckToStop));
     if (_beatSync) { _beatSync.stop(); _beatSync = null; }
+    // Now safe to cleanup old blob URLs
+    prefetchCleanup(store.playerQueue, store.playerIndex);
     _fadingOutDeck = null;
     _crossfading = false;
     _outDjData = _inDjData;
@@ -215,6 +217,7 @@ const audio = _deckA;
 export function getAudio() { return _activeDeckEl(); }
 
 function _ab() { return window.AndroidBridge || null; }
+
 let _lastAbUpdate = 0;
 
 // Android native media action callback (notification buttons → WebView)
@@ -350,9 +353,9 @@ export function loadAndPlay() {
       fetchDjData(cleanName, cleanArtist).then(d => {
         if (d) _outDjData = d;
       }).catch(() => {});
+      // Cleanup old blob URLs (safe — no crossfade in progress)
+      prefetchCleanup(store.playerQueue, store.playerIndex);
     }
-    // Prefetch starts on 'playing' event (after current track buffers)
-    prefetchCleanup(store.playerQueue, store.playerIndex);
   }
   showPlayerBar();
   updatePlayPauseIcon(true);
