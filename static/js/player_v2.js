@@ -228,6 +228,31 @@ export function getAudio() { return _activeDeckEl(); }
 
 function _ab() { return window.AndroidBridge || null; }
 
+/** Wait until audio element has buffered enough (30s ahead or full track).
+ *  Resolves immediately for blob URLs (fully loaded). Polls every 500ms, max 15s wait. */
+function _waitForBuffer(deck) {
+  return new Promise(resolve => {
+    // Blob URLs are fully loaded — no need to wait
+    if (deck.src && deck.src.startsWith('blob:')) { resolve(); return; }
+    let checks = 0;
+    const maxChecks = 30; // 30 × 500ms = 15s max wait
+    const check = () => {
+      checks++;
+      if (checks >= maxChecks || deck.paused || deck !== _activeDeckEl()) { resolve(); return; }
+      // Check how far ahead we've buffered
+      if (deck.buffered.length > 0) {
+        const bufferedEnd = deck.buffered.end(deck.buffered.length - 1);
+        const aheadSec = bufferedEnd - deck.currentTime;
+        if (aheadSec >= 30 || bufferedEnd >= (deck.duration || Infinity) * 0.9) {
+          resolve(); return; // 30s buffered ahead or 90%+ of track
+        }
+      }
+      setTimeout(check, 500);
+    };
+    setTimeout(check, 500); // first check after 500ms
+  });
+}
+
 let _lastAbUpdate = 0;
 
 // Android native media action callback (notification buttons → WebView)
@@ -297,6 +322,8 @@ export function addToQueue(items, playNow = false) {
 // ── Load and Play Current Track ──
 export function loadAndPlay() {
   if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) return;
+  // Pause prefetch immediately — current track gets all bandwidth
+  pausePrefetch();
   // Stop any virtual rec playback — we're back in the real queue
   import('./recommendations.js').then(m => m.stopRecPlayback());
   const item = store.playerQueue[store.playerIndex];
@@ -808,11 +835,7 @@ export function init() {
     });
     deck.addEventListener('playing', () => {
       if (deck !== _activeDeckEl()) return;
-      // Delay prefetch start by 2s to let current track buffer first
-      setTimeout(() => {
-        if (deck === _activeDeckEl() && !deck.paused) resumePrefetch();
-      }, 2000);
-      // Pre-fetch DJ data for current track (beat grid for auto-crossfade timing)
+      // Fetch DJ data for current track (lightweight API call, doesn't compete)
       if (!_outDjData) {
         const item = store.playerQueue[store.playerIndex];
         if (item) {
@@ -820,8 +843,12 @@ export function init() {
             .then(d => { if (d) _outDjData = d; }).catch(() => {});
         }
       }
-      // Pre-analyze next few tracks in background for Smart Queue
-      _preAnalyzeUpcoming();
+      // Wait for current track to buffer enough before starting prefetch/pre-analyze
+      _waitForBuffer(deck).then(() => {
+        if (deck !== _activeDeckEl() || deck.paused) return;
+        resumePrefetch();
+        _preAnalyzeUpcoming();
+      });
     });
     deck.addEventListener('pause', () => {
       if (deck !== _activeDeckEl()) return;
