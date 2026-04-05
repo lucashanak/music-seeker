@@ -319,11 +319,10 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
     inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, duration);
 
   } else {
-    const quickDur = Math.min(2 * beatPeriod, duration);
-    outDeck.gain.gain.setValueAtTime(1, startCtxTime);
-    outDeck.gain.gain.linearRampToValueAtTime(0, startCtxTime + quickDur);
-    inDeck.gain.gain.setValueAtTime(0, startCtxTime);
-    inDeck.gain.gain.linearRampToValueAtTime(1, startCtxTime + quickDur);
+    // 'cut': shorter crossfade for clashing keys, but still audible (min 4s)
+    const cutDur = Math.max(4, Math.min(8 * beatPeriod, duration));
+    outDeck.gain.gain.setValueCurveAtTime(curves.fadeOut, startCtxTime, cutDur);
+    inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, cutDur);
   }
 
   return { crossfadeStartTime: startCtxTime, duration, tempoRatio: clampedRatio, style };
