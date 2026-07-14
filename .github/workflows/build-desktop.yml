@@ -203,6 +203,17 @@ jobs:
             librsvg2-dev \
             librsvg2-bin
 
+      - name: Generate icon
+        run: |
+          # tauri::generate_context! reads bundle.icon (icons/icon.png) at COMPILE time
+          # for the default window icon — required even with --no-bundle. Only icon.png
+          # is needed here (no bundler, so no .icns/.ico).
+          cd desktop/src-tauri/icons
+          rsvg-convert -w 512 -h 512 icon.svg > icon.png
+          # bundle.icon also lists icon.icns; generate_context! may stat every listed
+          # path, so satisfy it with a placeholder (never parsed as real ICNS here).
+          cp icon.png icon.icns
+
       - name: Install dependencies
         working-directory: desktop
         run: npm install
