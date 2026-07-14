@@ -189,68 +189,64 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Dev headers to COMPILE against — the shipped binary dynamically links the
+          # runtime libs (libwebkit2gtk-4.1.so.0 etc.), which the user's distro provides.
+          # Built on 22.04 (glibc 2.35) so the binary stays forward-compatible with newer
+          # rolling distros (Manjaro/Arch): a binary built against older glibc runs on
+          # newer, not vice-versa. webkit2gtk-4.1 keeps a stable .so.0 soname across the
+          # 4.1 series, so Arch's newer 4.1 build loads it fine.
           sudo apt-get update
           sudo apt-get install -y -qq \
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            librsvg2-bin \
-            patchelf \
-            libfuse2
-
-      - name: Generate icons
-        run: |
-          cd desktop/src-tauri/icons
-          for size in 32 128 256 512; do
-            rsvg-convert -w $size -h $size icon.svg > icon_${size}.png
-          done
-          cp icon_512.png icon.png
-          # bundle.icon in tauri.conf.json lists icon.icns unconditionally (macOS
-          # target) — the Linux bundler checks every listed path EXISTS before
-          # picking what it actually needs for appimage, so a placeholder (never
-          # parsed as real ICNS on this platform) satisfies that check.
-          cp icon_512.png icon.icns
+            librsvg2-bin
 
       - name: Install dependencies
         working-directory: desktop
         run: npm install
 
-      - name: Build Tauri app
+      - name: Build Tauri app (no bundle — rely on system WebKitGTK)
         working-directory: desktop
-        run: npx tauri build --bundles appimage
+        # --no-bundle skips the AppImage bundler entirely, producing just the executable
+        # that links the SYSTEM webkit2gtk at runtime (~14 MB vs an ~81 MB AppImage that
+        # bundled the whole 180 MB WebKitGTK/GTK/ICU stack). Runtime requirement on the
+        # user's machine: webkit2gtk-4.1 (Manjaro/Arch: `pacman -S webkit2gtk-4.1`).
+        run: npx tauri build --no-bundle
 
-      - name: Rename AppImage
+      - name: Collect binary
         run: |
-          cd desktop/src-tauri/target/release/bundle/appimage
-          for f in *.AppImage; do mv "$f" "MusicSeeker.AppImage"; done
+          strip desktop/src-tauri/target/release/music-seeker || true
+          cp desktop/src-tauri/target/release/music-seeker MusicSeeker-linux
+          ls -la MusicSeeker-linux
 
       - name: Compute SHA-256
-        id: sha_appimage
+        id: sha_linux
         run: |
-          SHA=$(sha256sum desktop/src-tauri/target/release/bundle/appimage/MusicSeeker.AppImage | cut -d' ' -f1)
+          SHA=$(sha256sum MusicSeeker-linux | cut -d' ' -f1)
           echo "sha256=$SHA" >> $GITHUB_OUTPUT
-          echo "AppImage SHA-256: $SHA"
+          echo "Linux binary SHA-256: $SHA"
 
-      - name: Upload AppImage artifact
+      - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: MusicSeeker-Linux
-          path: desktop/src-tauri/target/release/bundle/appimage/MusicSeeker.AppImage
+          path: MusicSeeker-linux
 
       - name: Release
         if: needs.version.outputs.should_release == 'true'
         run: |
           TAG="${{ needs.version.outputs.tag }}"
-          FILE="desktop/src-tauri/target/release/bundle/appimage/MusicSeeker.AppImage"
+          FILE="MusicSeeker-linux"
           if gh release view "$TAG" &>/dev/null; then
             EXISTING_BODY=$(gh release view "$TAG" --json body -q '.body')
             NEW_BODY="${EXISTING_BODY}
-          sha256-appimage:${{ steps.sha_appimage.outputs.sha256 }}"
+          sha256-linux:${{ steps.sha_linux.outputs.sha256 }}"
             gh release upload "$TAG" "$FILE" --clobber
             gh release edit "$TAG" --notes "$NEW_BODY"
           else
-            BODY="sha256-appimage:${{ steps.sha_appimage.outputs.sha256 }}"
+            BODY="sha256-linux:${{ steps.sha_linux.outputs.sha256 }}"
             gh release create "$TAG" "$FILE" --title "$TAG" --notes "$BODY"
           fi
         env:

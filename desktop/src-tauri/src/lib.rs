@@ -89,6 +89,20 @@ async fn install_macos_update(url: String) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK 2.42+ ships a DMABUF-based renderer that produces a BLANK window
+    // on many Linux setups — software rendering (llvmpipe/swrast), NVIDIA proprietary
+    // drivers, VMs, and some Mesa versions — because the GPU-buffer path it assumes
+    // isn't available. The webview subprocess reads this env var when it spawns (during
+    // Builder::run below), so setting it here — before the webview is created, and
+    // regardless of how the AppImage was launched (double-click, .desktop, terminal) —
+    // forces the reliable non-DMABUF path. No effect on macOS/Windows (WKWebView/WebView2).
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     let mut builder = tauri::Builder::default();
 
     #[cfg(desktop)]
