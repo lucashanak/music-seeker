@@ -1,0 +1,20 @@
+# Maintainer: Lukas Hanak <hanakl@nekrachni.cz>
+# Binary package: ships the prebuilt MusicSeeker executable that links the
+# SYSTEM webkit2gtk-4.1 at runtime (see depends). CI seds pkgver before build.
+pkgname=music-seeker
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="MusicSeeker — music discovery & DJ player desktop app"
+arch=('x86_64')
+url="https://musicseeker.hanaktech.org"
+license=('custom')
+depends=('webkit2gtk-4.1' 'gtk3')
+options=('!strip' '!debug')
+source=('music-seeker' 'music-seeker.desktop' 'music-seeker.png')
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/music-seeker"          "$pkgdir/usr/bin/music-seeker"
+  install -Dm644 "$srcdir/music-seeker.desktop"  "$pkgdir/usr/share/applications/music-seeker.desktop"
+  install -Dm644 "$srcdir/music-seeker.png"       "$pkgdir/usr/share/icons/hicolor/512x512/apps/music-seeker.png"
+}

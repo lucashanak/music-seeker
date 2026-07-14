@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=MusicSeeker
+Comment=Music discovery & DJ player
+Exec=music-seeker
+Icon=music-seeker
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=MusicSeeker

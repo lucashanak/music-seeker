@@ -263,6 +263,81 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  # Native Arch/Manjaro package (.pkg.tar.zst) built from the system-webkit binary
+  # produced by build-linux. Installs the executable + .desktop launcher + icon, so
+  # MusicSeeker shows up in the applications menu and uninstalls cleanly via
+  # `pacman -R music-seeker`. makepkg only runs on Arch, so we drive it through an
+  # archlinux:base-devel container via `docker run` (rather than a job `container:`,
+  # which trips up the JS actions' node runtime) as a non-root build user.
+  package-arch:
+    needs: [version, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: MusicSeeker-Linux
+          path: dl
+
+      - name: Assemble PKGBUILD dir
+        run: |
+          sudo apt-get update && sudo apt-get install -y -qq librsvg2-bin
+          mkdir -p pkgbuild
+          cp desktop/packaging/PKGBUILD pkgbuild/
+          cp desktop/packaging/music-seeker.desktop pkgbuild/
+          rsvg-convert -w 512 -h 512 desktop/src-tauri/icons/icon.svg > pkgbuild/music-seeker.png
+          cp dl/MusicSeeker-linux pkgbuild/music-seeker
+          chmod +x pkgbuild/music-seeker
+          # Stamp the real version into the placeholder pkgver.
+          sed -i "s/^pkgver=.*/pkgver=${{ needs.version.outputs.version }}/" pkgbuild/PKGBUILD
+
+      - name: Build package (makepkg in Arch container)
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE/pkgbuild:/pkg" archlinux:base-devel bash -c '
+            useradd -m builder &&
+            cp -r /pkg /home/builder/build &&
+            chown -R builder /home/builder/build &&
+            cd /home/builder/build &&
+            sudo -u builder makepkg -f --noconfirm --nodeps &&
+            cp *.pkg.tar.zst /pkg/
+          '
+          PKG=$(ls pkgbuild/*.pkg.tar.zst | head -1)
+          cp "$PKG" "MusicSeeker-manjaro-x86_64.pkg.tar.zst"
+          ls -la MusicSeeker-manjaro-x86_64.pkg.tar.zst
+
+      - name: Compute SHA-256
+        id: sha_pkg
+        run: |
+          SHA=$(sha256sum MusicSeeker-manjaro-x86_64.pkg.tar.zst | cut -d' ' -f1)
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+          echo "pkg SHA-256: $SHA"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicSeeker-Manjaro
+          path: MusicSeeker-manjaro-x86_64.pkg.tar.zst
+
+      - name: Release
+        if: needs.version.outputs.should_release == 'true'
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          FILE="MusicSeeker-manjaro-x86_64.pkg.tar.zst"
+          if gh release view "$TAG" &>/dev/null; then
+            EXISTING_BODY=$(gh release view "$TAG" --json body -q '.body')
+            NEW_BODY="${EXISTING_BODY}
+          sha256-pkg:${{ steps.sha_pkg.outputs.sha256 }}"
+            gh release upload "$TAG" "$FILE" --clobber
+            gh release edit "$TAG" --notes "$NEW_BODY"
+          else
+            BODY="sha256-pkg:${{ steps.sha_pkg.outputs.sha256 }}"
+            gh release create "$TAG" "$FILE" --title "$TAG" --notes "$BODY"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   build-android:
     needs: version
     runs-on: ubuntu-latest
