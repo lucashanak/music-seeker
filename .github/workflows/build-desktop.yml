@@ -287,7 +287,10 @@ jobs:
           mkdir -p pkgbuild
           cp desktop/packaging/PKGBUILD pkgbuild/
           cp desktop/packaging/music-seeker.desktop pkgbuild/
-          rsvg-convert -w 512 -h 512 desktop/src-tauri/icons/icon.svg > pkgbuild/music-seeker.png
+          cp desktop/packaging/music-seeker.install pkgbuild/
+          for sz in 32 64 128 256 512; do
+            rsvg-convert -w $sz -h $sz desktop/src-tauri/icons/icon.svg > "pkgbuild/music-seeker-${sz}.png"
+          done
           cp dl/MusicSeeker-linux pkgbuild/music-seeker
           chmod +x pkgbuild/music-seeker
           # Stamp the real version into the placeholder pkgver.

@@ -10,11 +10,21 @@ url="https://musicseeker.hanaktech.org"
 license=('custom')
 depends=('webkit2gtk-4.1' 'gtk3')
 options=('!strip' '!debug')
-source=('music-seeker' 'music-seeker.desktop' 'music-seeker.png')
-sha256sums=('SKIP' 'SKIP' 'SKIP')
+install=music-seeker.install
+source=('music-seeker'
+        'music-seeker.desktop'
+        'music-seeker-32.png'
+        'music-seeker-64.png'
+        'music-seeker-128.png'
+        'music-seeker-256.png'
+        'music-seeker-512.png')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
-  install -Dm755 "$srcdir/music-seeker"          "$pkgdir/usr/bin/music-seeker"
-  install -Dm644 "$srcdir/music-seeker.desktop"  "$pkgdir/usr/share/applications/music-seeker.desktop"
-  install -Dm644 "$srcdir/music-seeker.png"       "$pkgdir/usr/share/icons/hicolor/512x512/apps/music-seeker.png"
+  install -Dm755 "$srcdir/music-seeker"         "$pkgdir/usr/bin/music-seeker"
+  install -Dm644 "$srcdir/music-seeker.desktop" "$pkgdir/usr/share/applications/music-seeker.desktop"
+  for sz in 32 64 128 256 512; do
+    install -Dm644 "$srcdir/music-seeker-${sz}.png" \
+      "$pkgdir/usr/share/icons/hicolor/${sz}x${sz}/apps/music-seeker.png"
+  done
 }

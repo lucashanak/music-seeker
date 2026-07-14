@@ -112,7 +112,12 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            #[cfg(desktop)]
+            // macOS ONLY: this menu lives in the global top-of-screen menu bar there,
+            // which is expected. On Linux/Windows the same call renders an in-WINDOW
+            // menu bar (an ugly "copy / paste / select all / view" strip inside the
+            // app), so we don't attach it off macOS. Reload/clear-cache stay reachable
+            // via the browser's own shortcuts (F5 etc.) on those platforms.
+            #[cfg(target_os = "macos")]
             {
                 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
