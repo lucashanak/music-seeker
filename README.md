@@ -132,9 +132,17 @@ This starts MusicSeeker (`:8090`), Navidrome (`:4533`), and slskd (`:5030`).
 
 ### 4. Log in
 
-Use the admin credentials from `.env`. Create additional users in Settings.
+Open `http://localhost:8090` and log in with the `ADMIN_USER` / `ADMIN_PASS` you set in `.env`. There is no public sign-up — the admin is the first account, and you create everyone else from **Settings → Users**.
+
+> **Important:** `ADMIN_PASS` must be set **before the first startup**. The admin account is created only once, on the first launch when the data directory is still empty. Changing `ADMIN_PASS` afterwards has **no effect** — to change the admin password later, use **Settings → Users** (or delete `data/users.json` and restart to recreate the admin). If you start the stack without `ADMIN_PASS`, **no account is created and login is impossible** (you'll see a `WARNING: ADMIN_PASS not set!` line in the container logs).
 
 > **Note:** Search works out of the box with Deezer — no API keys required. Spotify credentials are only needed for personal playlists, Liked Songs, and podcasts.
+
+### Can't log in?
+
+- **"Invalid username or password" for the admin** — `ADMIN_PASS` was probably empty on first start, so no account exists, or it was changed after first start (which is ignored). Check the logs (`docker compose logs music-seeker`) for `WARNING: ADMIN_PASS not set!`. Fix: set `ADMIN_PASS` in `.env`, then `rm data/users.json` and `docker compose restart music-seeker` to recreate the admin (this only removes accounts, not your music).
+- **Was logged in, now rejected** — tokens are signed with `JWT_SECRET`. It's auto-generated and persisted to `data/jwt_secret`, so it survives restarts; existing logins only break if that file is deleted or you set a different `JWT_SECRET`.
+- **Too many login attempts** — after 5 failed tries from one IP the app returns HTTP 429 for 5 minutes. Just wait.
 
 ## Requirements
 
@@ -153,3 +161,5 @@ Use the admin credentials from `.env`. Create additional users in Settings.
 | [Architecture](docs/architecture.md) | Backend structure, frontend modules, data storage, Docker |
 | [API Reference](docs/api-reference.md) | All ~90 REST API endpoints |
 | [Native Apps](docs/native-apps.md) | macOS & Android apps — installation, features, building, auto-update |
+| [Spotify Usage](SPOTIFY_USAGE.md) | How Spotify tokens are used, what needs an account, provider fallbacks |
+| [Onkyo eISCP](docs/onkyo-eiscp.md) | eISCP protocol notes for Onkyo receiver input switching (DLNA cast) |

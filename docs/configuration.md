@@ -9,7 +9,7 @@ Set these in your `.env` file or pass directly to `docker run` / `docker-compose
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `ADMIN_USER` | Yes | `admin` | Initial admin username |
-| `ADMIN_PASS` | Yes | — | Initial admin password |
+| `ADMIN_PASS` | Yes | — | Initial admin password. Must be set **before the first startup** — the admin account is created only once, when the data dir is empty. Changing it later is ignored (change the password via Settings → Users, or delete `data/users.json` and restart). If unset, **no account is created** and login is impossible. |
 | `MUSIC_DIR` | No | `/music` | Music directory inside the container |
 | `DATA_DIR` | No | `/app/data` | Data directory for JSON storage |
 | `JWT_SECRET` | No | auto-generated | JWT signing secret (persistent file `/app/data/jwt_secret`) |

@@ -39,7 +39,7 @@
 ## Backend
 
 - **Framework**: FastAPI (Python 3.11), single process via uvicorn
-- **13 routers** with ~90 API endpoints
+- **15 routers** with ~90 API endpoints
 - **No database** — JSON file storage in `/app/data/` (users, settings, jobs, queue, favorites, subscriptions)
 - **No build step** — frontend served as static files by FastAPI
 - **Job queue** — in-memory with semaphore for concurrency control (configurable max concurrent downloads)
@@ -56,8 +56,11 @@
 | `discover.py` | `lastfm.py` | Last.fm API |
 | `favorites.py` | `favorites.py` | Search providers (release check) |
 | `podcasts.py` | `podcasts.py` | Spotify, RSS feeds |
-| `settings.py` | `settings.py`, `recognize.py` | Shazam, AcoustID |
-| `dlna.py` | `dlna.py` | UPnP/SSDP (LAN) |
+| `settings.py` | `settings.py` | — |
+| `recognize.py` | `recognize.py` | Shazam, AcoustID |
+| `dlna.py` | `dlna.py` | UPnP/SSDP (LAN), Onkyo eISCP |
+| `remote.py` | `remote.py` | — (device→device remote control, SSE) |
+| `bpm.py` | `bpm.py` | — (BPM detection for DJ mode) |
 | `admin.py` | — | Filesystem |
 | `spotify.py` | `spotify.py` | Spotify Web API |
 
