@@ -1264,91 +1264,6 @@ export function resetDeckAfterTransition(deck) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Keeps two decks beat-phase-locked during crossfade overlap. Used by player_v2.js.
- *
- * Uses a PI controller (phase-locked loop) that compares the beat-cycle
- * phase of both decks each animation frame and applies micro playbackRate
- * corrections (±0.5%) to the incoming deck. Inaudible with preservesPitch.
- *
- * NOTE: phase here is `currentTime % (60/(bpm*rate))` — a wall-clock-scaled
- * period compared against FILE-time currentTime, and it assumes a beat sits
- * at t=0 on both decks (ignores the real beat_grid offset). This is a known
- * dimensional inaccuracy, kept as-is because player_v2.js is out of scope for
- * this fix; see CrossfadeBeatSyncV3 below for the corrected FILE-time,
- * grid-anchored version used by player_v3.js.
- *
- * Usage:
- *   const sync = new CrossfadeBeatSync(outEl, inEl, outBpm, inBpm, outRate, inRate);
- *   sync.start();
- *   // ... later, when crossfade completes:
- *   sync.stop();
- */
-export class CrossfadeBeatSync {
-  constructor(outElement, inElement, outBpm, inBpm, outRate, inRate) {
-    this.out = outElement;
-    this.in = inElement;
-    // Beat periods at matched tempo
-    this.outPeriod = 60 / (outBpm * outRate);
-    this.inPeriod = 60 / (inBpm * inRate);
-    this.outBaseRate = outRate;
-    this.inBaseRate = inRate;
-    this.active = false;
-    this._raf = null;
-
-    // PI controller
-    this.kp = 0.003;
-    this.ki = 0.0002;
-    this.integral = 0;
-    this.maxCorr = 0.003; // max ±0.3% (split between both decks)
-
-    this.targetDiff = this._outPhase() - this._inPhase();
-  }
-
-  _outPhase() {
-    return (this.out.currentTime % this.outPeriod) / this.outPeriod;
-  }
-
-  _inPhase() {
-    return (this.in.currentTime % this.inPeriod) / this.inPeriod;
-  }
-
-  start() {
-    this.active = true;
-    this._tick();
-  }
-
-  stop() {
-    this.active = false;
-    if (this._raf) cancelAnimationFrame(this._raf);
-    // Restore base rates
-    this.in.playbackRate = this.inBaseRate;
-    this.out.playbackRate = this.outBaseRate;
-  }
-
-  _tick() {
-    if (!this.active) return;
-
-    // Current phase error (how far incoming has drifted from target alignment)
-    let error = (this._outPhase() - this._inPhase()) - this.targetDiff;
-    // Wrap to [-0.5, 0.5]
-    while (error > 0.5) error -= 1;
-    while (error < -0.5) error += 1;
-
-    // PI controller — split correction between both decks
-    this.integral += error;
-    this.integral = Math.max(-20, Math.min(20, this.integral));
-    let corr = this.kp * error + this.ki * this.integral;
-    corr = Math.max(-this.maxCorr, Math.min(this.maxCorr, corr));
-
-    // Incoming speeds up, outgoing slows down (or vice versa) — half each
-    this.in.playbackRate = this.inBaseRate + corr * 0.5;
-    this.out.playbackRate = this.outBaseRate - corr * 0.5;
-
-    this._raf = requestAnimationFrame(() => this._tick());
-  }
-}
-
-/**
  * Keeps two decks beat-phase-locked during crossfade overlap. Used by player_v3.js.
  *
  * Uses a PI controller (phase-locked loop) that compares the beat-cycle
@@ -1363,12 +1278,6 @@ export class CrossfadeBeatSync {
  * rates (read live from `tempoRamp` while it's still running, else the final
  * target rates) so the PLL never fights scheduleDjTransitionV3's tempo glide —
  * callers should only start this AFTER the glide completes.
- *
- * A separate class from CrossfadeBeatSync (not a signature change to it):
- * player_v2.js also instantiates CrossfadeBeatSync with the old 6-arg shape,
- * and changing that constructor in place would silently misinterpret V2's
- * positional args (grids/tempoRamp landing where rates used to be) — this
- * keeps player_v2.js byte-for-byte unaffected.
  *
  * Usage:
  *   const sync = new CrossfadeBeatSyncV3(outEl, inEl, outBpm, inBpmFolded,
