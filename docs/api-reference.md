@@ -18,7 +18,8 @@ All endpoints (except login and version) require `Authorization: Bearer <token>`
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/search?q=...&type=track&offset=0` | Search music (via configured provider) |
+| `GET` | `/api/search/all?q=...&limit_per_type=8` | Aggregated search — returns top result + songs, artists, albums, playlists (Spotify-style) |
+| `GET` | `/api/search?q=...&type=track&offset=0` | Type-specific search (track/album/artist/playlist/show/episode) |
 | `GET` | `/api/artist/:id/albums` | Get artist albums |
 | `GET` | `/api/album/:id/tracks` | Get album tracks |
 
@@ -71,15 +72,18 @@ Queue endpoints use `X-Device-ID` header for per-device isolation. Missing heade
 | `POST` | `/api/library/check` | Check if items exist in Navidrome |
 | `GET` | `/api/library/playlists` | List Navidrome playlists |
 | `GET` | `/api/library/playlist/:id` | Get playlist with tracks |
-| `POST` | `/api/library/playlist` | Create new playlist |
+| `POST` | `/api/library/playlist` | Create new playlist (with optional name and description) |
+| `PUT` | `/api/library/playlist/:id/details` | Update playlist name, description, and metadata |
 | `PUT` | `/api/library/playlist/:id/rename` | Rename playlist |
 | `PUT` | `/api/library/playlist/:id/tracks` | Add tracks by song IDs |
-| `PUT` | `/api/library/playlist/:id/reorder` | Reorder playlist tracks |
+| `PUT` | `/api/library/playlist/:id/reorder` | Reorder playlist tracks by drag-and-drop |
+| `POST` | `/api/library/playlist/:id/cover` | Set playlist cover image from URL |
+| `DELETE` | `/api/library/playlist/:id/cover` | Remove playlist cover image |
 | `POST` | `/api/library/playlist/:id/add-by-name` | Add track by name/artist |
 | `POST` | `/api/library/playlist/:id/add-and-download` | Add track (download if needed) |
 | `POST` | `/api/library/playlist/:id/remove-by-name` | Remove track by name |
 | `DELETE` | `/api/library/playlist/:id/tracks` | Remove tracks by indices |
-| `DELETE` | `/api/library/playlist/:id` | Delete playlist |
+| `DELETE` | `/api/library/playlist/:id` | Delete playlist (5-second undo window) |
 | `POST` | `/api/library/track/delete` | Delete track file from disk |
 | `POST` | `/api/library/track/check-playlists` | Check which playlists contain track |
 | `POST` | `/api/library/album/delete` | Delete album files from disk |

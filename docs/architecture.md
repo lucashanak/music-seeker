@@ -84,21 +84,19 @@
 
 | Page | Module | Description |
 |------|--------|-------------|
-| Search | `search.js` | Multi-provider search with type tabs and infinite scroll |
+| Search | `search.js` | Multi-provider search with aggregated "All" tab and per-type tabs (tracks/albums/artists/playlists/podcasts) |
 | Discover | `discover.js` | Last.fm genre tags with content filtering |
-| Library | `library.js` | Navidrome playlists with detail modal |
-| My Spotify | `spotify.js` | Playlists, Liked Songs, Albums, Artists, Podcasts |
-| My Podcasts | `podcasts.js` | Downloaded shows with episode management |
-| Favorites | `favorites.js` | Followed artists with new release badges |
-| Settings | `settings.js` | App config, user management, native app downloads |
+| Library | `library.js` | Tabbed interface: Downloaded (Navidrome playlists + Liked Songs), Spotify (read-only mirror with Playlists/Albums/Artists/Shows segmented control), Podcasts, Favorites |
+| Settings | `settings.js` | App config grouped into "Playback & Sound", "Library & Downloads", "Account & App", "Admin", user management, native app downloads |
 
 ### Shared components
 
-- **Player** (`player.js`, `fullplayer.js`, `queue.js`) — mini bar, full player, queue sidebar
-- **Download modal** (`downloads.js`) — method/format selection, downloads panel
+- **Player** (`player.js`, `fullplayer.js`, `queue.js`) — mini bar with essentials (play/pause, like, queue), full player with grouped action row (DJ / track / output), queue sidebar with drag-to-reorder
+- **Download modal** (`downloads.js`) — primary actions (Play Now, Add to Queue, Radio) separated from library download (Method + Format picker)
+- **Playlist modals** (`playlists.js`) — inline playlist creation with name/description, cover image URL, and undo on delete
 - **Recommendations** (`recommendations.js`) — queue sidebar panel
-- **Gestures** (`gestures.js`) — swipe handling for player, queue panels
-- **Router** (`router.js`) — SPA navigation with history API
+- **Gestures** (`gestures.js`) — swipe handling for player, queue panels, touch-optimized queue reorder
+- **Router** (`router.js`) — SPA navigation with history API, support for Library tabs (Downloaded / Spotify / Podcasts / Favorites)
 
 ## Native Apps (Tauri)
 

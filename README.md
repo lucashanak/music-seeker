@@ -4,31 +4,37 @@ A self-hosted web app for searching, downloading, and playing music. Think Jelly
 
 Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps for macOS and Android.
 
-![Search results](screenshots/search-tracks.png)
+![Search results](screenshots/search-results.png)
 
 ## Features
 
 ### Search & Discovery
-- **Multi-provider search** — Deezer (default, no API key), YouTube Music, or Spotify with automatic fallback
-- **Search types** — tracks, albums, artists, playlists, podcasts
+- **Aggregated search** — unified "All" tab with top result + songs, artists, albums, playlists in one query (Spotify-style)
+- **Per-type search** — dedicated tabs for tracks, albums, artists, playlists, podcasts
+- **Multi-provider** — Deezer (default, no API key), YouTube Music, or Spotify with automatic fallback
+- **Case-insensitive, diacritics-aware** — search "beyonce" to find "Beyoncé"
 - **Discover** — genre-based browsing via Last.fm tags with infinite scroll
 - **Artist detail** — discography, radio, follow, bulk download
 
-### Downloads
-- **yt-dlp** — YouTube audio in FLAC/MP3 with embedded metadata and album art
-- **Soulseek (slskd)** — P2P downloads, auto-selects best quality
-- **Lidarr** — torrent-based with artist monitoring
+### Downloads & Playback
+- **Smart playback** — Play Now, Add to Queue, or Radio from any track
+- **Download modal redesign** — clear separation of playback (Play Now / Add to Queue / Radio) vs. library download (Method + Format)
+- **Download methods**:
+  - **yt-dlp** (Fastest) — YouTube audio in FLAC/MP3 with embedded metadata and album art
+  - **Soulseek (slskd)** (Best quality) — P2P downloads, auto-selects best quality
+  - **Lidarr** (Runs in background) — torrent-based with artist monitoring
 - **Smart downloads** — skips tracks already in your Navidrome library
 - **Job management** — real-time progress, retry, cancel, history
 
-### Player
+### Player & Mobile
 - **Multi-source streaming** — local file > Navidrome > YouTube proxy (4h URL cache)
-- **Full-screen player** — album art, seek bar, shuffle, repeat (off/all/one)
-- **Queue** — drag & drop reorder, per-user persistent, save as Navidrome playlist
+- **Full-screen player** — album art, seek bar, shuffle, repeat (off/all/one), grouped action row (DJ / track / output)
+- **Queue management** — drag & drop reorder, per-user persistent, save as Navidrome playlist, always visible on touch
 - **Playlist Mode** — queue linked to Navidrome playlist with auto-sync
 - **Multi-device** — separate queue and play progress per device, with device naming
 - **Output modes** — Default (local + cast), Local Only, DLNA Only (auto-connects on play)
 - **Source badge** — shows LOCAL / FLAC / YT on mini and full player
+- **Mobile optimizations** — mini-player shows essentials only (play/pause, like, queue), full player has all controls
 - **Swipe gestures** — expand player, next/prev track, tap to play/pause
 - **Keyboard shortcuts** — Space (play/pause), arrows (skip, volume)
 
@@ -42,10 +48,20 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 - **Browse** — playlists, Liked Songs, saved albums, followed artists, podcasts
 - **Download & sync** — download Spotify playlists to Navidrome
 
-### Library & Navidrome
-- **Playlist management** — create, rename, duplicate, merge, delete, reorder
-- **Library detection** — "In Library" badge with fuzzy matching
+### Library
+- **Organized tabs** — Downloaded (your Navidrome playlists + Liked Songs), Spotify (read-only mirror), Podcasts, Favorites
+- **Spotify tab** — Playlists, Albums, Artists, Shows segmented control for easy browsing
+- **Quick search** — "In Library" badge with fuzzy matching on all search results
+
+### Playlist Management (Spotify-style)
+- **Inline creation** — create playlists from "Add to playlist" with name + description
+- **Cover images** — set playlist cover from URL
+- **Drag-to-reorder** — reorder tracks within playlists
+- **Undo on delete** — 5-second toast to recover deleted playlists
+- **Themed modals** — no browser prompts for better UX
 - **Track/album deletion** — with confirmation showing affected playlists
+
+### Library & Recognition
 - **Song recognition** — Shazam + AcoustID fingerprinting via microphone
 
 ### Favorites & New Releases
@@ -69,30 +85,33 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 - **Auto-update** — checks for new versions, shows update banner in Settings
 - [Full native apps documentation](docs/native-apps.md)
 
-### User Management
-- **JWT auth** — admin and user roles
+### Settings
+- **Organized groups** — "Playback & Sound", "Library & Downloads", "Account & App", "Admin" (admin-only)
+- **User management** — JWT auth with admin and user roles
 - **Per-user permissions** — restrict formats (MP3/FLAC), methods (yt-dlp/slskd/Lidarr), storage quotas
-- **Per-user folders** — downloads go to `/music/{username}/` with disk usage tracking
 - **Device management** — register, name, and configure devices per user
+- **Per-user folders** — downloads go to `/music/{username}/` with disk usage tracking
 
-### UI
+### Navigation & UI
+- **Consolidated nav** — 4 top-level items (Search / Discover / Library / Settings) + Downloads button + user/logout
+- **Mobile nav** — bottom tab bar with Search / Discover / Library / Downloads / Settings, plus "Playing" pill
 - **Dark theme** — Spotify-inspired with lime green accent
-- **Responsive** — desktop top nav, mobile bottom tab bar
+- **Responsive** — desktop top nav, mobile bottom tab bar with safe-area insets
 - **No build step** — single HTML file, vanilla JS modules
 
 ## Screenshots
 
 | Search Results | Download Modal | Discover |
 |----------------|----------------|----------|
-| ![Search](screenshots/search-tracks.png) | ![Modal](screenshots/download-modal.png) | ![Discover](screenshots/discover.png) |
+| ![Search](screenshots/search-results.png) | ![Modal](screenshots/download-modal.png) | ![Discover](screenshots/discover.png) |
 
-| Full Player (Desktop) | My Spotify Library | Mobile |
-|-----------------------|-------------------|--------|
-| ![Player](screenshots/full-player.png) | ![Spotify](screenshots/my-spotify.png) | ![Mobile](screenshots/mobile.png) |
+| Library | Full Player (Desktop) | Mobile |
+|---------|----------------------|--------|
+| ![Library](screenshots/library.png) | ![Player](screenshots/full-player.png) | ![Mobile](screenshots/mobile.png) |
 
-| Login | Podcasts | Settings |
-|-------|----------|----------|
-| ![Login](screenshots/login.png) | ![Podcasts](screenshots/podcasts.png) | ![Settings](screenshots/settings.png) |
+| My Spotify | Login | Podcasts | Settings |
+|-----------|-------|----------|----------|
+| ![Spotify](screenshots/my-spotify.png) | ![Login](screenshots/login.png) | ![Podcasts](screenshots/podcasts.png) | ![Settings](screenshots/settings.png) |
 
 ## Quick Start
 

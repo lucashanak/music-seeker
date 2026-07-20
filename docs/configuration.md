@@ -87,8 +87,8 @@ Each user can configure:
 
 | Setting | Description |
 |---------|-------------|
-| Spotify OAuth | Per-user Spotify authorization (Settings > Spotify Account) |
-| Hide Spotify | Hide My Spotify tab from navigation |
+| Spotify OAuth | Per-user Spotify authorization (Settings > Account & App) |
+| Hide Spotify | Hide Spotify tab in Library from navigation |
 | Allowed formats | MP3, FLAC (admin-configurable per user) |
 | Allowed methods | yt-dlp, slskd, Lidarr (admin-configurable per user) |
 | Storage quota | Max disk usage in GB, 0 = unlimited (admin-configurable) |

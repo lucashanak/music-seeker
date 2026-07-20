@@ -12,7 +12,7 @@ Search works without Spotify (Deezer is the default). Spotify credentials are ne
 
 1. Create an app at [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
 2. Set Redirect URI to `https://your-domain/api/spotify/callback`
-3. In MusicSeeker Settings, enter Client ID and Client Secret
+3. In MusicSeeker Settings → Account & App, enter Client ID and Client Secret
 4. Click "Authorize with Spotify" and follow the OAuth flow
 5. Per-user tokens are stored automatically
 
@@ -69,7 +69,7 @@ docker compose up -d slskd
 
 ### 4. Configure in MusicSeeker
 
-Go to Settings and paste your slskd API key.
+Go to Settings → Library & Downloads and paste your slskd API key.
 
 ## Navidrome
 
@@ -87,7 +87,7 @@ Open `http://localhost:4533` and create an admin account.
 
 ### 3. Configure in MusicSeeker
 
-In Settings, enter the Navidrome URL, username, and password.
+In Settings → Library & Downloads, enter the Navidrome URL, username, and password.
 
 **Important**: MusicSeeker and Navidrome must share the same music volume. Both containers must mount the same host directory to `/music`.
 
@@ -111,7 +111,7 @@ For torrent-based downloads with artist monitoring.
 MusicSeeker auto-discovers DLNA renderers on your LAN via SSDP.
 
 - Renderers appear in the cast menu in the player bar
-- For renderers that don't respond to SSDP, configure the description URL manually in Settings
+- For renderers that don't respond to SSDP, configure the description URL manually in Settings → Playback & Sound
 - The server URL for stream metadata is auto-detected, or set `DLNA_SERVER_URL` if behind a proxy
 
 ## YAMS Integration
