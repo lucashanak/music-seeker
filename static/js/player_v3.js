@@ -8,7 +8,7 @@ import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, abortStale, keyFor as prefetchKey, resumePrefetch, streamQuality } from './prefetch.js';
-import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSync, IS_WEBKIT, webkitCrossfadeDuration } from './djmix.js';
+import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration } from './djmix.js';
 import { getDjData } from './bpm.js';
 import * as cast from './cast.js';
 
@@ -28,7 +28,8 @@ let _crossfading = false;
 let _crossfadeTimer = null;
 let _fadingOutDeck = null;
 let _rateReturnTimer = null;
-let _tempoRamp = null; // outgoing deck tempo ramp handle (cancellable on rapid skip)
+let _tempoRamp = null; // dual-deck tempo glide handle (cancellable on rapid skip)
+let _beatSyncStartTimer = null; // delayed PLL start (fires once the glide completes)
 function _cancelTempoRamp() {
   if (_tempoRamp) {
     _tempoRamp.cancelled = true;
@@ -43,6 +44,8 @@ function _cancelTempoRamp() {
 function _teardownCrossfade() {
   clearTimeout(_crossfadeTimer);
   clearInterval(_rateReturnTimer);
+  clearTimeout(_beatSyncStartTimer);
+  _beatSyncStartTimer = null;
   _cancelTempoRamp();
   if (_beatSync) { _beatSync.stop(); _beatSync = null; }
 }
@@ -87,6 +90,22 @@ let _analyzeGen = 0;
 // DJ settings from localStorage (read fresh each call)
 function _djSetting(key, def) { return localStorage.getItem(`ms_dj_${key}`) || def; }
 function _crossfadeDur() { return parseInt(_djSetting('crossfade_sec', '5')) || 5; }
+
+// One-time migration (2026-07): outro_skip default changed 'auto' → '0' (auto outro
+// skip cut track endings 5-13s early — now opt-in). A stored 'auto' almost certainly
+// came from the old default being persisted by settings-save, not a deliberate choice,
+// so reset it once; the marker lets a user who explicitly re-picks 'auto' keep it.
+try {
+  // Marker is set UNCONDITIONALLY on first post-deploy load — not just when 'auto'
+  // was found — otherwise a user who later deliberately picks 'auto' would get it
+  // silently reset on their next reload (marker would still be missing).
+  if (!localStorage.getItem('ms_dj_outro_skip_migr')) {
+    if (localStorage.getItem('ms_dj_outro_skip') === 'auto') {
+      localStorage.setItem('ms_dj_outro_skip', '0');
+    }
+    localStorage.setItem('ms_dj_outro_skip_migr', '1');
+  }
+} catch {}
 
 function _createDeckNodes() {
   const low = _ctx.createBiquadFilter();
@@ -239,6 +258,12 @@ function _finalizeCrossfadeOnPause() {
 function _startCrossfade(seekable = true) {
   if (!_ctx) return;
 
+  // Bug #4: a still-running rate-return from the PREVIOUS fade would otherwise keep
+  // writing to the now-outgoing (audible) deck for up to 500ms into this new fade,
+  // snapping its tempo back toward 1.0 mid-blend. Clear unconditionally, not just on
+  // the completion path — a fade can start again well before the last one settled.
+  clearInterval(_rateReturnTimer);
+
   // If already crossfading, kill the fading-out deck immediately
   if (_crossfading && _fadingOutDeck) {
     resetDeckAfterTransitionV3(_deckDesc(_fadingOutDeck));
@@ -278,12 +303,39 @@ function _startCrossfade(seekable = true) {
   // Use seekable flag passed from loadAndPlay (cached blob = seekable)
   const inSeekable = seekable;
 
+  // Fade-length cap: the grid-derived trigger lead is often ~1 bar SHORTER than the
+  // full numBeats fade (downbeat alignment picks a bar START <numBeats before the
+  // end), and loadAndPlay adds latency on top — so a fixed 16-beat fade routinely
+  // overran the outgoing file's end and the deck died via `ended` at ~20% gain
+  // (audible clip of the track's last seconds; measured on 82/145 library tracks).
+  // Cap the fade so the outgoing gain reaches 0 AT its effective end. Mirrors the
+  // timeupdate trigger's outro logic (outro_skip default '0' — see migration above).
+  let fadeCapSec = 0;
+  {
+    const oDur = _fadingOutDeck.duration;
+    if (oDur && isFinite(oDur) && oDur > 0) {
+      let eff = oDur;
+      const oSkip = _djSetting('outro_skip', '0');
+      if (oSkip === 'auto' && transOutData?.outro_start
+          && transOutData.outro_start > oDur * 0.85 && transOutData.outro_start < oDur) {
+        eff = transOutData.outro_start;
+      } else if (oSkip !== '0' && oSkip !== 'auto') {
+        eff = oDur - (parseInt(oSkip) || 0);
+      }
+      const remaining = eff - _fadingOutDeck.currentTime;
+      // ≤0.5s remaining = the ended-blend/edge path — leave uncapped so the existing
+      // "ease the next track in over a full fade" behavior is preserved.
+      if (remaining > 0.5) fadeCapSec = remaining;
+    }
+  }
+
   // Use DJ mix engine for beat-synced, key-aware transition
   const result = scheduleDjTransitionV3(_ctx, outDesc, inDesc, transOutData, transInData, {
     numBeats, tempoRange, transitionStyle: transStyle,
     introSkip: inSeekable ? introSkip : '0',  // no seek on non-cached streams
     seekable: inSeekable,
     fallbackSec: _crossfadeDur(),
+    fadeCapSec,
     bassSwapPoint: parseInt(_djSetting('bass_swap_point', '50')) / 100,
     eqKillDepth: parseInt(_djSetting('eq_kill_depth', '36')),
     filterResonance: parseFloat(_djSetting('filter_resonance', '2')),
@@ -295,15 +347,35 @@ function _startCrossfade(seekable = true) {
   const beatDelay = (result.crossfadeStartTime - _ctx.currentTime) * 1000;
   const timerDur = dur * 1000 + Math.max(0, beatDelay) + 200;
 
-  // Start real-time beat drift correction during the crossfade overlap.
-  // WebKit path never stretches tempo, so there's nothing to phase-lock — skip the PLL.
-  if (_beatSync) _beatSync.stop();
-  if (!IS_WEBKIT && transOutData?.bpm && transInData?.bpm) {
-    _beatSync = new CrossfadeBeatSync(
-      _fadingOutDeck, _activeDeckEl(),
-      transOutData.bpm, transInData.bpm, result.outRate, result.inRate
-    );
-    _beatSync.start();
+  // Real-time beat drift correction (PLL) starts only AFTER the tempo glide finishes.
+  // Starting it immediately (old behavior) meant it registered its target phase and
+  // began writing playbackRate every frame WHILE the glide's own rAF loop was also
+  // writing it every frame — whichever ran later in a given frame won, silently
+  // turning the glide into dead code. Delaying the PLL until the glide's `done` flag
+  // (via this timer) removes that fight. Only worth starting when an actual tempo
+  // match happened (result.tempoMatched) and both bpms exist — WebKit never stretches
+  // tempo, so it has nothing to phase-lock either.
+  if (_beatSync) { _beatSync.stop(); _beatSync = null; }
+  clearTimeout(_beatSyncStartTimer);
+  _beatSyncStartTimer = null;
+  const glideMs = (result.glideDur || 0) * 1000;
+  const pllOutDeck = _fadingOutDeck;
+  const pllInDeck = _activeDeckEl();
+  if (!IS_WEBKIT && result.tempoMatched && transOutData?.bpm && transInData?.bpm) {
+    _beatSyncStartTimer = setTimeout(() => {
+      _beatSyncStartTimer = null;
+      // Guard: a rapid skip could have torn this crossfade down (or started a new
+      // one on these same decks) before the glide finished — only start if this
+      // exact transition is still the one in progress.
+      if (!_crossfading || pllOutDeck !== _fadingOutDeck || pllInDeck !== _activeDeckEl()) return;
+      _beatSync = new CrossfadeBeatSyncV3(
+        pllOutDeck, pllInDeck,
+        transOutData.bpm, result.inBpmFolded,
+        transOutData.beat_grid || null, transInData.beat_grid || null,
+        result.outRate, result.inRate, result._tempoRamp
+      );
+      _beatSync.start();
+    }, glideMs + 50);
   }
 
   // After crossfade completes, clean up old deck
@@ -351,7 +423,13 @@ function _startCrossfade(seekable = true) {
       let step = 0;
       _rateReturnTimer = setInterval(() => {
         step++;
-        if (step >= steps || newDeck !== _activeDeckEl()) {
+        if (newDeck !== _activeDeckEl()) {
+          // A new transition already swapped the active deck out from under this
+          // return — that transition owns this deck's rate now. Just stop; do NOT
+          // snap it to 1.0, or we'd yank it out of whatever tempo the new fade
+          // (glide or PLL) just placed it at.
+          clearInterval(_rateReturnTimer);
+        } else if (step >= steps) {
           newDeck.playbackRate = 1.0;
           clearInterval(_rateReturnTimer);
         } else {
@@ -363,6 +441,8 @@ function _startCrossfade(seekable = true) {
       }, 500);
     }
   }, timerDur);
+
+  return result;
 }
 
 /** Pre-analyze upcoming tracks, predict Smart Queue pick, prefetch it.
@@ -805,9 +885,15 @@ async function _loadAndPlayImpl() {
         // _startCrossfade's rapid-skip handler clears _fadingOutDeck.src, and during
         // a rapid skip _fadingOutDeck IS the inactive deck we're about to load.
         // If we set src first, the rapid-skip handler would clear it, causing silence.
-        _startCrossfade(true); // cached blob = seekable — also swaps _activeDeck
+        const xfResult = _startCrossfade(true); // cached blob = seekable — also swaps _activeDeck
         const nextDeck = _activeDeckEl(); // after swap, the NEW active deck is the one to load
         _setDeckSrc(nextDeck, src);
+        // _setDeckSrc() calls load(), which resets playbackRate to 1 — that clobbers the
+        // glide rate scheduleDjTransitionV3 just set on this (silent, gain-0) deck. Reapply
+        // it once here; the glide's own rAF loop (if tempo-matched) overwrites it again next
+        // frame anyway, so this only matters for the instant between load() and that tick.
+        // Guarded to a finite value: the bail-out/webkit case has inBase===1 (a no-op).
+        if (Number.isFinite(xfResult?._tempoRamp?.inBase)) nextDeck.playbackRate = xfResult._tempoRamp.inBase;
         nextDeck.play().catch(() => {});
       } else {
         // Uncached live stream: load on the inactive deck and wait for it to buffer a
@@ -1684,9 +1770,13 @@ export function init() {
       if (!_outDjData && deck.currentTime < dur - _crossfadeDur() - 5) {
         // DJ data not loaded yet and we're far from end — skip the check this tick
       } else {
-        // Outro skip: use detected outro_start or manual setting as effective end
+        // Outro skip: use detected outro_start or manual setting as effective end.
+        // Default is '0' (OFF, 2026-07): with 'auto' every ~7th library track lost
+        // 5-13s of its ending (outro_start trims up to 15% via the 0.85 gate) and
+        // the blend started 15-22s before the real end — heard as "the transition
+        // happens before the song is over". Auto outro skip is now strictly opt-in.
         let effectiveEnd = dur;
-        const outroSkip = _djSetting('outro_skip', 'auto');
+        const outroSkip = _djSetting('outro_skip', '0');
         if (outroSkip === 'auto' && _outDjData && _outDjData.outro_start
             && _outDjData.outro_start > dur * 0.85
             && _outDjData.outro_start < dur) { // must be deep in the last ~15% of THIS track

@@ -217,6 +217,34 @@ export function findCrossfadeStartDownbeat(downbeats, beforeTime, numBars = 4) {
 }
 
 /**
+ * Binary-search a periodic beat grid for the last beat AT OR BEFORE `t`.
+ * Unlike findNearestBeat (nearest neighbour, may be after `t`), this always
+ * returns a beat <= t, extrapolating one period earlier when `t` precedes the
+ * grid's first entry (grids are periodic, so that's a safe assumption).
+ *
+ * @param {number[]} beatGrid - Sorted array of beat times (seconds, FILE time)
+ * @param {number}   t        - Reference time (seconds, FILE time)
+ * @param {number}   period   - Beat period (seconds) to extrapolate with when
+ *                              `t` falls outside the grid's covered range.
+ * @returns {number} Beat time <= t
+ */
+function _lastBeatAtOrBefore(beatGrid, t, period) {
+  if (!beatGrid || beatGrid.length === 0) return t - (t % period);
+  if (t < beatGrid[0]) return beatGrid[0] - period;
+
+  let lo = 0;
+  let hi = beatGrid.length - 1;
+  if (t >= beatGrid[hi]) return beatGrid[hi];
+
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (beatGrid[mid] <= t) lo = mid;
+    else hi = mid;
+  }
+  return beatGrid[lo];
+}
+
+/**
  * Calculate the start offset for the incoming track so its first beat
  * aligns with the outgoing track's beat grid during crossfade.
  *
@@ -798,10 +826,19 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   const forceStyle = opts.transitionStyle || 'auto';
   const introSkip = opts.introSkip || '0';
   const seekable = opts.seekable !== false;
+  // Fade cap (seconds until the outgoing track's effective end, computed by the
+  // caller): the fade must not OVERRUN the outgoing file — the deck would die via
+  // `ended` mid-fade at ~20% gain (audible clip). Floor 3s keeps a minimal blend;
+  // 0/absent = uncapped (ended-blend path, or caller had no duration).
+  const fadeCap = (Number.isFinite(opts.fadeCapSec) && opts.fadeCapSec > 0)
+    ? Math.max(3, opts.fadeCapSec) : Infinity;
 
   const now = ctx.currentTime;
-  const outBpm = outData?.bpm || 85;
-  const inBpm = inData?.bpm || outBpm;
+  // Raw BPMs, no made-up fallback — matching against a fabricated 85 BPM (the old
+  // `|| 85` default) pointlessly rate-shifted tracks against a number nobody chose.
+  // Downstream tempo-matching (step 1) treats a missing bpm as "don't match at all".
+  const outBpmRaw = outData?.bpm;
+  const inBpmRaw = inData?.bpm;
   const outCurrentTime = outDeck.element.currentTime;
 
   /* ---- WebKit-only simple crossfade path ----
@@ -820,9 +857,9 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     // Uses the shared webkitCrossfadeDuration helper so player_v3's trigger lead
     // time matches this fade length exactly.
     const wkFallbackSec = opts.fallbackSec || 5;
-    const wkDuration = outData?.bpm
-      ? webkitCrossfadeDuration(outBpm, numBeats)
-      : Math.max(3, Math.min(10, wkFallbackSec));
+    const wkDuration = Math.min(fadeCap, outData?.bpm
+      ? webkitCrossfadeDuration(outBpmRaw, numBeats)
+      : Math.max(3, Math.min(10, wkFallbackSec)));
 
     // Neutralize EQ + sweep on both decks so leftover kills don't color the sound.
     for (const d of [outDeck, inDeck]) {
@@ -857,57 +894,161 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     };
   }
 
-  /* ---- 1. Dual tempo match (gradual ramp on outgoing deck) ---- */
-  const midBpm = (outBpm + inBpm) / 2;
-  let outRate = tempoRange > 0 ? Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / outBpm)) : 1;
-  let inRate = tempoRange > 0 ? Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / inBpm)) : 1;
+  /* ---- 1. Octave folding + bail-out tempo match ----
+   * No tempo match at all when either bpm is missing (no fabricated default —
+   * see the outBpmRaw/inBpmRaw comment above). Octave folding treats a 2:1 tempo
+   * relationship as a legitimate beat match (e.g. house at 128 vs half-time hip-hop
+   * at 64) — folded ONLY for matching purposes; inBpmRaw itself is never mutated,
+   * so downstream duration/beat-grid math still uses the real bpm. If even the
+   * folded ratio can't fit inside +/-tempoRange, the clamp would truncate and the
+   * tempos would never actually meet — bail out entirely rather than half-match:
+   * a partial shift is pure harm (beats mismatched for the whole blend, plus a
+   * long post-fade rate-return drift with nothing gained). */
+  let outRate = 1, inRate = 1, tempoMatched = false;
+  let inBpmFolded = inBpmRaw;
+  const outBpm = outBpmRaw; // convenience alias used throughout below (raw, no fallback)
+  const inBpm = inBpmRaw;
+  if (tempoRange > 0 && Number.isFinite(outBpm) && Number.isFinite(inBpm) && outBpm > 0 && inBpm > 0) {
+    const ratio = inBpm / outBpm;
+    if (ratio > 1.5) inBpmFolded = inBpm / 2;
+    else if (ratio < 1 / 1.5) inBpmFolded = inBpm * 2;
+    else inBpmFolded = inBpm;
+
+    const midBpm = (outBpm + inBpmFolded) / 2;
+    const outRatio = midBpm / outBpm;
+    const inRatio = midBpm / inBpmFolded;
+    const lo = 1 - tempoRange, hi = 1 + tempoRange;
+    if (outRatio >= lo && outRatio <= hi && inRatio >= lo && inRatio <= hi) {
+      outRate = outRatio;
+      inRate = inRatio;
+      tempoMatched = true;
+    }
+  }
+
+  /* ---- 2. Duration (based on the outgoing track's own tempo, independent of
+   *         whether a tempo match happened — the transition still needs a beat
+   *         count to structure its EQ/filter automation around). ---- */
+  // beatPeriod must stay FINITE even when the outgoing bpm is missing: it structures
+  // the eq_swap/drop_cut automation times (swapTime/introDur), and a NaN there makes
+  // AudioParam.setValueAtTime throw mid-transition (deck already swapped → stuck
+  // player). Tempo MATCHING never uses this default (bail-out above); 85 is only the
+  // automation-structure fallback the old code used.
+  const matchedBpm = (Number.isFinite(outBpm) && outBpm > 0 ? outBpm : 85) * outRate;
+  const beatPeriod = 60 / matchedBpm;
+  const fallbackSec = opts.fallbackSec || 5;
+  // fadeCap: never fade longer than the outgoing track has left (see top of function).
+  const duration = Math.min(fadeCap, outData?.bpm ? numBeats * beatPeriod : fallbackSec);
+
+  /* ---- 3. Locked dual-deck tempo glide ----
+   * The OUTGOING deck is audible at fade start — snapping it straight to outRate
+   * (the old behavior) is what produced the tempo jump at the START of the blend.
+   * Instead it glides from its CURRENT rate. The incoming deck starts silent
+   * (gain 0) tempo-matched to the outgoing's CURRENT tempo (r_in0), then both
+   * glide linearly and simultaneously to their target rates over glideDur seconds.
+   * Because both endpoints satisfy outBpm*rOut == inBpmFolded*rIn (by construction)
+   * and both rates move linearly in t, the two tracks' shared tempo is locked at
+   * every point in between — not just the two ends — which removes the jump at
+   * BOTH the start (outgoing deck) and the end (once the outgoing deck's gain
+   * reaches 0, its tempo already matches, so nothing audibly changes at the
+   * handoff either).
+   *
+   * This replaces the old 2-second rAF ramp that only moved the OUTGOING deck:
+   * that ramp was dead code whenever both BPMs were known, because the PLL
+   * (registered afterward, see CrossfadeBeatSyncV3 below) wrote playbackRate every
+   * frame too and always won (later registration = last writer each frame).
+   *
+   * The glide loop is the ONLY writer of playbackRate while it runs. player_v3
+   * now delays starting the PLL until after the glide completes (glideDur), so
+   * the two never fight over the same AudioElement.playbackRate.
+   */
   outDeck.element.preservesPitch = true;
   inDeck.element.preservesPitch = true;
-  // Incoming starts at target rate immediately (gain=0, inaudible)
-  inDeck.element.playbackRate = inRate;
-  // Outgoing ramps gradually via requestAnimationFrame (smoother than setInterval).
-  // Return a cancellable HANDLE, not a raw rAF id: the tick self-reschedules, so a
-  // raw id goes stale after one frame and the caller could never cancel the loop.
-  // The `cancelled` flag lets a stale loop self-terminate on rapid skip.
-  const _tempoRamp = { id: null, cancelled: false };
-  if (outRate !== 1.0 && Math.abs(outDeck.element.playbackRate - outRate) > 0.001) {
-    const curRate = outDeck.element.playbackRate;
+
+  const startOutRate = outDeck.element.playbackRate || 1;
+  let inRate0 = inRate;
+  if (tempoMatched) {
+    // Tempo-matched to the outgoing's CURRENT (not yet ramped) tempo. The clamp is
+    // DERIVED from tempoRange, not hardcoded: tempoMatched guarantees
+    // outBpm/inBpmFolded = inRate/outRate ∈ [(1-r)/(1+r), (1+r)/(1-r)], so these
+    // bounds (scaled by startOutRate) are a provable no-op for ANY tempoRange —
+    // a pure safety net that cannot break the t=0 tempo-lock equality the glide
+    // relies on. Absolute [0.7, 1.4] cap guards against garbage inputs only.
+    const devLo = (1 - tempoRange) / (1 + tempoRange);
+    const devHi = (1 + tempoRange) / (1 - tempoRange);
+    inRate0 = Math.max(Math.max(0.7, startOutRate * devLo),
+      Math.min(Math.min(1.4, startOutRate * devHi), (outBpm * startOutRate) / inBpmFolded));
+  }
+  inDeck.element.playbackRate = inRate0; // silent (gain 0) — no audible jump
+
+  // Cancellable HANDLE (same shape player_v3 already expects): the tick
+  // self-reschedules, so a raw rAF id goes stale after one frame and the caller
+  // could never cancel the loop. `cancelled` lets a stale loop self-terminate on
+  // rapid skip. `outBase`/`inBase` are the LIVE current rates (updated each
+  // frame) so CrossfadeBeatSyncV3 can apply its corrections on top of a moving
+  // target instead of fighting it; `done` flags glide completion.
+  const _tempoRamp = { id: null, cancelled: false, outBase: startOutRate, inBase: inRate0, done: !tempoMatched };
+  let glideDur = 0;
+  if (tempoMatched) {
+    glideDur = Math.max(1, Math.min(4, duration * 0.4));
     const rampStart = performance.now();
-    const rampDur = 2000; // 2 seconds
     const tick = () => {
       if (_tempoRamp.cancelled) return;
-      const elapsed = performance.now() - rampStart;
-      const t = Math.min(1, elapsed / rampDur);
-      outDeck.element.playbackRate = curRate + (outRate - curRate) * t;
-      if (t < 1) _tempoRamp.id = requestAnimationFrame(tick);
-      else _tempoRamp.id = null;
+      const elapsed = (performance.now() - rampStart) / 1000;
+      const t = Math.min(1, elapsed / glideDur);
+      const curOut = startOutRate + (outRate - startOutRate) * t;
+      const curIn = inRate0 + (inRate - inRate0) * t;
+      outDeck.element.playbackRate = curOut;
+      inDeck.element.playbackRate = curIn;
+      _tempoRamp.outBase = curOut;
+      _tempoRamp.inBase = curIn;
+      if (t < 1) { _tempoRamp.id = requestAnimationFrame(tick); }
+      else { _tempoRamp.id = null; _tempoRamp.done = true; }
     };
     _tempoRamp.id = requestAnimationFrame(tick);
   } else {
-    outDeck.element.playbackRate = outRate;
+    // No tempo match (bail-out or missing bpm): force rate 1 on both decks —
+    // nothing to glide, no PLL will be started (see player_v3).
+    outDeck.element.playbackRate = 1;
+    inDeck.element.playbackRate = 1;
+    _tempoRamp.outBase = 1;
+    _tempoRamp.inBase = 1;
   }
 
-  /* ---- 2. Duration ---- */
-  const matchedBpm = outBpm * outRate;
-  const beatPeriod = 60 / matchedBpm;
-  const fallbackSec = opts.fallbackSec || 5;
-  const duration = outData?.bpm ? numBeats * beatPeriod : fallbackSec;
-
-  /* ---- 3. Beat-aligned scheduling ---- */
+  /* ---- 4. Beat-aligned scheduling ---- */
   const startCtxTime = now;
   const endTime = startCtxTime + duration;
 
-  /* ---- 4. Incoming track start position (phase-locked) ---- */
+  /* ---- 5. Incoming track start position (phase-locked) ----
+   * FILE-time periods throughout: currentTime and beat_grid entries are both
+   * FILE time (not wall-clock), so periods must NOT be rate-scaled — that was
+   * the dimensional bug (periods computed as 60/(bpm*rate), a wall-clock-scaled
+   * quantity, then combined with raw file-time currentTime). */
   let inStartTime = 0;
   if (introSkip === 'auto' && inData?.intro_end != null) {
     inStartTime = inData.intro_end;
   } else if (introSkip !== '0' && introSkip !== 'auto') {
     inStartTime = parseInt(introSkip) || 0;
   }
-  if (outData?.bpm && inData?.beat_grid && inData.beat_grid.length > 0) {
-    const outBeatPeriod = 60 / (outBpm * outRate);
-    const inBeatPeriod = 60 / (inBpm * inRate);
-    const outPhase = (outCurrentTime % outBeatPeriod) / outBeatPeriod;
+  if (Number.isFinite(outBpm) && outBpm > 0 && inData?.beat_grid && inData.beat_grid.length > 0) {
+    const P_out = 60 / outBpm;
+    const inBpmFoldedValid = Number.isFinite(inBpmFolded) && inBpmFolded > 0;
+    const P_in = inBpmFoldedValid ? 60 / inBpmFolded : P_out;
+
+    // Outgoing beat phase from the ACTUAL grid (not an assumed beat-at-t=0):
+    // last grid beat <= outCurrentTime, then the next beat is one period later.
+    const outGrid = outData?.beat_grid;
+    const lastOutBeat = (outGrid && outGrid.length > 0)
+      ? _lastBeatAtOrBefore(outGrid, outCurrentTime, P_out)
+      : outCurrentTime - (outCurrentTime % P_out); // no grid: fall back to beat-at-t=0
+    const timeToNextOutBeatFile = (lastOutBeat + P_out) - outCurrentTime;
+    // Convert to wall-clock via the outgoing deck's CURRENT rate at fade start
+    // (the glide hasn't moved it yet — using the eventual target rate here would
+    // be wrong for the very interval the seek is computed over).
+    const timeToNextOutBeatWall = timeToNextOutBeatFile / startOutRate;
+    // The incoming deck must reach ITS next beat in that same wall-clock
+    // interval, traveling at its own (glide-start) rate r_in0.
+    const timeToNextInBeatFile = timeToNextOutBeatWall * inRate0;
+
     // Bar/phrase-align the incoming deck: when downbeat data exists, anchor on the
     // first incoming DOWNBEAT so the new track's bar 1 lands on the outgoing bar.
     //
@@ -917,24 +1058,23 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     // downbeat near the START of the track: keeps the SAME beat/bar phase (beat-match
     // intact) but starts near 0 instead of mid-track.
     const haveDownbeats = inData.downbeats && inData.downbeats.length > 0;
-    const inBpmValid = Number.isFinite(inBpm) && inBpm > 0;
-    let firstInBeat;
-    if (haveDownbeats && inBpmValid) {
+    if (haveDownbeats && inBpmFoldedValid) {
       const beatsPerBar = inData.time_signature || 4;
-      const barPeriod = inBeatPeriod * beatsPerBar;
+      // FILE bar period — no rate scaling (P_in is already file-time).
+      const barPeriod = P_in * beatsPerBar;
       // First-bar downbeat with the same phase as the grid, in [0, barPeriod).
       const firstBarStart = inData.downbeats[0] - Math.floor(inData.downbeats[0] / barPeriod) * barPeriod;
-      firstInBeat = firstBarStart;
-      const phaseOffset = outPhase * inBeatPeriod;
-      inStartTime = Math.max(inStartTime, firstInBeat - phaseOffset);
-      if (inStartTime < 0) inStartTime += inBeatPeriod;
+      // Land the incoming deck's NEXT beat (timeToNextInBeatFile away, in its own
+      // file time) on firstBarStart.
+      inStartTime = Math.max(inStartTime, firstBarStart - timeToNextInBeatFile);
+      if (inStartTime < 0) inStartTime += P_in;
       inStartTime = Math.max(inStartTime, 0);
       // SAFETY CLAMP: never seek past the first two bars (inStartTime < barPeriod
       // already after the mod reduction, so this only guards against edge cases).
       inStartTime = Math.min(inStartTime, barPeriod * 2);
     } else {
-      // Downbeats missing or BPM invalid: preserve any intro-skip already set,
-      // but never allow a garbage negative seek.
+      // Downbeats missing or folded BPM invalid: preserve any intro-skip already
+      // set, but never allow a garbage negative seek.
       inStartTime = Math.max(inStartTime, 0);
     }
   }
@@ -982,7 +1122,10 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     const killDb = -(opts.eqKillDepth || 36);
     const swapFrac = opts.bassSwapPoint || 0.5;
     const swapBeats = Math.round(numBeats * swapFrac);
-    const swapTime = startCtxTime + swapBeats * beatPeriod;
+    // Clamp to the (possibly fadeCap-shortened) duration — an uncapped swapBeats
+    // time could land PAST endTime, leaving the incoming bass/mids killed after
+    // the blend completed and making the gain timeline non-monotonic.
+    const swapTime = startCtxTime + Math.min(swapBeats * beatPeriod, duration * 0.6);
 
     // OUTGOING: hold current state, explicit initial values (#5 fix: use actual gain, not assumed 1.0)
     const outGainNow = outDeck.gain.gain.value;
@@ -1041,7 +1184,9 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, duration);
 
   } else if (style === 'drop_cut') {
-    const introDur = Math.max(2, Math.min(4 * beatPeriod, 4));
+    // Also clamped to the capped duration: player_v3's completion timer fires at
+    // ~duration+0.2s, so a cutTime beyond that would get truncated mid-ramp (click).
+    const introDur = Math.max(2, Math.min(4 * beatPeriod, 4, duration));
     const cutTime = startCtxTime + introDur;
 
     inDeck.sweepFilter.type = 'highpass';
@@ -1065,7 +1210,11 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, duration);
   }
 
-  return { crossfadeStartTime: startCtxTime, duration, outRate, inRate, style, _tempoRamp };
+  return {
+    crossfadeStartTime: startCtxTime, duration, outRate, inRate, style, _tempoRamp,
+    // Additive fields for the PLL (started later, post-glide, by player_v3):
+    inBpmFolded, glideDur, tempoMatched,
+  };
 }
 
 /**
@@ -1115,14 +1264,21 @@ export function resetDeckAfterTransition(deck) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Keeps two decks beat-phase-locked during crossfade overlap.
+ * Keeps two decks beat-phase-locked during crossfade overlap. Used by player_v2.js.
  *
  * Uses a PI controller (phase-locked loop) that compares the beat-cycle
  * phase of both decks each animation frame and applies micro playbackRate
  * corrections (±0.5%) to the incoming deck. Inaudible with preservesPitch.
  *
+ * NOTE: phase here is `currentTime % (60/(bpm*rate))` — a wall-clock-scaled
+ * period compared against FILE-time currentTime, and it assumes a beat sits
+ * at t=0 on both decks (ignores the real beat_grid offset). This is a known
+ * dimensional inaccuracy, kept as-is because player_v2.js is out of scope for
+ * this fix; see CrossfadeBeatSyncV3 below for the corrected FILE-time,
+ * grid-anchored version used by player_v3.js.
+ *
  * Usage:
- *   const sync = new CrossfadeBeatSync(outEl, inEl, outBpm, inBpm, tempoRatio);
+ *   const sync = new CrossfadeBeatSync(outEl, inEl, outBpm, inBpm, outRate, inRate);
  *   sync.start();
  *   // ... later, when crossfade completes:
  *   sync.stop();
@@ -1187,6 +1343,133 @@ export class CrossfadeBeatSync {
     // Incoming speeds up, outgoing slows down (or vice versa) — half each
     this.in.playbackRate = this.inBaseRate + corr * 0.5;
     this.out.playbackRate = this.outBaseRate - corr * 0.5;
+
+    this._raf = requestAnimationFrame(() => this._tick());
+  }
+}
+
+/**
+ * Keeps two decks beat-phase-locked during crossfade overlap. Used by player_v3.js.
+ *
+ * Uses a PI controller (phase-locked loop) that compares the beat-cycle
+ * phase of both decks each animation frame and applies micro playbackRate
+ * corrections (±0.5%) to the incoming deck. Inaudible with preservesPitch.
+ *
+ * Phase is computed in FILE time, anchored to an actual beat_grid entry
+ * (grids are periodic, so any entry works as the anchor — grid[0] is used).
+ * Periods are FILE-time periods (60/bpm, NOT rate-scaled) since currentTime
+ * and beat_grid are both file time; scaling by rate here was the old
+ * dimensional bug. Corrections are applied on top of the CURRENT glide base
+ * rates (read live from `tempoRamp` while it's still running, else the final
+ * target rates) so the PLL never fights scheduleDjTransitionV3's tempo glide —
+ * callers should only start this AFTER the glide completes.
+ *
+ * A separate class from CrossfadeBeatSync (not a signature change to it):
+ * player_v2.js also instantiates CrossfadeBeatSync with the old 6-arg shape,
+ * and changing that constructor in place would silently misinterpret V2's
+ * positional args (grids/tempoRamp landing where rates used to be) — this
+ * keeps player_v2.js byte-for-byte unaffected.
+ *
+ * Usage:
+ *   const sync = new CrossfadeBeatSyncV3(outEl, inEl, outBpm, inBpmFolded,
+ *                                         outGrid, inGrid, outRate, inRate, tempoRamp);
+ *   sync.start();
+ *   // ... later, when crossfade completes:
+ *   sync.stop();
+ */
+export class CrossfadeBeatSyncV3 {
+  /**
+   * @param {HTMLMediaElement} outElement
+   * @param {HTMLMediaElement} inElement
+   * @param {number} outBpm       - raw outgoing BPM (FILE time)
+   * @param {number} inBpmFolded  - octave-folded incoming BPM (FILE time), matched to outBpm
+   * @param {number[]|null} outGrid - outgoing beat_grid (FILE-time positions), or null
+   * @param {number[]|null} inGrid  - incoming beat_grid (FILE-time positions), or null
+   * @param {number} outRate - target (post-glide) outgoing playbackRate
+   * @param {number} inRate  - target (post-glide) incoming playbackRate
+   * @param {object|null} tempoRamp - the glide handle from scheduleDjTransitionV3;
+   *   while `!tempoRamp.done`, corrections ride its live outBase/inBase instead
+   *   of the final target rates.
+   */
+  constructor(outElement, inElement, outBpm, inBpmFolded, outGrid, inGrid, outRate, inRate, tempoRamp = null) {
+    this.out = outElement;
+    this.in = inElement;
+    // FILE-time beat periods (no rate scaling — see class doc comment).
+    this.outPeriod = 60 / outBpm;
+    this.inPeriod = 60 / inBpmFolded;
+    // Grid anchors: any grid beat works since grids are periodic at the period
+    // above. Fall back to 0 (assumes a beat at t=0) when no grid is available.
+    this.outAnchor = (outGrid && outGrid.length > 0) ? outGrid[0] : 0;
+    this.inAnchor = (inGrid && inGrid.length > 0) ? inGrid[0] : 0;
+    this.targetOutRate = outRate;
+    this.targetInRate = inRate;
+    this.tempoRamp = tempoRamp;
+    this.active = false;
+    this._raf = null;
+
+    // PI controller
+    this.kp = 0.003;
+    this.ki = 0.0002;
+    this.integral = 0;
+    this.maxCorr = 0.003; // max ±0.3% (split between both decks)
+
+    this.targetDiff = this._outPhase() - this._inPhase();
+  }
+
+  _outPhase() {
+    const p = ((this.out.currentTime - this.outAnchor) % this.outPeriod + this.outPeriod) % this.outPeriod;
+    return p / this.outPeriod;
+  }
+
+  _inPhase() {
+    const p = ((this.in.currentTime - this.inAnchor) % this.inPeriod + this.inPeriod) % this.inPeriod;
+    return p / this.inPeriod;
+  }
+
+  // Current base rates: while the glide handle is still running, ride its live
+  // values so corrections stack on a moving target instead of fighting it.
+  _baseRates() {
+    if (this.tempoRamp && !this.tempoRamp.done) {
+      return { out: this.tempoRamp.outBase, in: this.tempoRamp.inBase };
+    }
+    return { out: this.targetOutRate, in: this.targetInRate };
+  }
+
+  start() {
+    this.active = true;
+    this._tick();
+  }
+
+  stop() {
+    this.active = false;
+    if (this._raf) cancelAnimationFrame(this._raf);
+    // Restore base rates (matters only if the glide had somehow already
+    // finished and this PLL was the sole rate writer).
+    const base = this._baseRates();
+    this.out.playbackRate = base.out;
+    this.in.playbackRate = base.in;
+  }
+
+  _tick() {
+    if (!this.active) return;
+
+    // Current phase error (how far incoming has drifted from target alignment)
+    let error = (this._outPhase() - this._inPhase()) - this.targetDiff;
+    // Wrap to [-0.5, 0.5]
+    while (error > 0.5) error -= 1;
+    while (error < -0.5) error += 1;
+
+    // PI controller — split correction between both decks
+    this.integral += error;
+    this.integral = Math.max(-20, Math.min(20, this.integral));
+    let corr = this.kp * error + this.ki * this.integral;
+    corr = Math.max(-this.maxCorr, Math.min(this.maxCorr, corr));
+
+    // Incoming speeds up, outgoing slows down (or vice versa) — half each,
+    // relative to the CURRENT base rates (live glide values or final targets).
+    const base = this._baseRates();
+    this.in.playbackRate = base.in + corr * 0.5;
+    this.out.playbackRate = base.out - corr * 0.5;
 
     this._raf = requestAnimationFrame(() => this._tick());
   }
