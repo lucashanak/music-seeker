@@ -7,7 +7,7 @@ import secrets
 import time
 from pathlib import Path
 
-from fastapi import Request, HTTPException
+from fastapi import Request, Response, HTTPException
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 USERS_FILE = DATA_DIR / "users.json"
@@ -26,7 +26,8 @@ def _get_jwt_secret():
     return secret
 
 JWT_SECRET = _get_jwt_secret()
-TOKEN_EXPIRY = 7 * 24 * 3600  # 7 days
+TOKEN_EXPIRY = 30 * 24 * 3600  # 30 days — combined with sliding renewal (see
+                               # get_current_user) an active session never expires.
 STREAM_TOKEN_EXPIRY = 6 * 3600  # 6 hours — stream-scoped tokens used in <audio>/cast URLs
 
 # Usernames become filesystem paths (per-user queue files) — restrict to a safe set
@@ -176,7 +177,7 @@ def login(username: str, password: str) -> str | None:
     return _create_token(username, user.get("is_admin", False))
 
 
-def get_current_user(request: Request) -> dict:
+def get_current_user(request: Request, response: Response = None) -> dict:
     """Extract and validate user from Authorization header."""
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
@@ -198,6 +199,20 @@ def get_current_user(request: Request) -> dict:
     user_data = users.get(payload["sub"])
     if user_data is None:
         raise HTTPException(401, "User no longer exists")
+
+    # Sliding renewal: once a token is past the halfway point of its lifetime, mint
+    # a fresh one and hand it back via a response header. The frontend swaps it in
+    # (see api.js), so any active session keeps rolling forward and never reaches the
+    # hard 30-day expiry. FastAPI injects `response` when this runs as a route
+    # dependency; require_admin calls this directly (response=None) and simply skips
+    # renewal, which is fine since read endpoints refresh the token continuously.
+    if response is not None:
+        exp = payload.get("exp", 0)
+        if exp - time.time() < TOKEN_EXPIRY / 2:
+            response.headers["X-Refresh-Token"] = _create_token(
+                payload["sub"], user_data.get("is_admin", False))
+            response.headers["Access-Control-Expose-Headers"] = "X-Refresh-Token"
+
     perms = _user_perms(user_data)
     return {"username": payload["sub"], "is_admin": user_data.get("is_admin", False), **perms}
 

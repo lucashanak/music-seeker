@@ -24,7 +24,9 @@ export async function checkVersion() {
     store.spotifyUser = d.spotify_user !== false;
     const stored = localStorage.getItem('ms_version');
     if (stored && stored !== d.version) {
-      localStorage.removeItem('ms_token');
+      // Reload to pick up new static assets, but KEEP the session token — the
+      // server JWT secret persists across deploys, so the token stays valid and
+      // the user stays logged in (persistent login).
       localStorage.setItem('ms_version', d.version);
       location.reload();
       return;

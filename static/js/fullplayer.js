@@ -355,11 +355,12 @@ export function init() {
   const playerShuffle = $('#playerShuffle');
   if (playerShuffle) playerShuffle.addEventListener('click', toggleShuffle);
 
-  // DJ Mode toggle (only visible when crossfade engine is active)
+  // Legacy DJ-mode cycle button (#fpDjMode). The DJ engine now uses the quick-control
+  // panel (djpanel.js) for Smart Queue and the 'crossfade' engine was removed, so this
+  // button stays hidden; djpanel.refreshDjPanelVisibility() also enforces this.
   const djBtn = $('#fpDjMode');
   if (djBtn) {
-    const isCrossfade = ['crossfade', 'dj'].includes(localStorage.getItem('ms_player_engine'));
-    djBtn.style.display = isCrossfade ? '' : 'none';
+    djBtn.style.display = 'none';
     // Sync initial state
     const curMode = localStorage.getItem('ms_dj_smart_queue') || 'off';
     djBtn.classList.toggle('active', curMode !== 'off');

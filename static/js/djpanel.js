@@ -186,22 +186,18 @@ function openSettingsDjSection() {
 }
 
 // Show or hide buttons based on the active engine. Safe to call anytime.
-// FIX 2: in the DJ engine the new panel's Smart Queue select supersedes the
-// #fpDjMode cycle button (both write ms_dj_smart_queue). Hide the cycle button
-// when engine === 'dj' to eliminate the desync; keep it for 'crossfade'.
-// Panel button is only shown for 'dj'; crossfade keeps the original cycle button.
+// The DJ engine's quick-control panel owns Smart Queue (ms_dj_smart_queue), so the
+// legacy #fpDjMode cycle button is always hidden now — it only ever showed for the
+// removed 'crossfade' engine.
 export function refreshDjPanelVisibility() {
   const engine = localStorage.getItem('ms_player_engine') || 'classic';
   const isDj = engine === 'dj';
-  const isCf = engine === 'crossfade';
 
   const panelBtn = $('#fpDjPanelBtn');
   if (panelBtn) panelBtn.style.display = isDj ? '' : 'none';
 
-  // #fpDjMode: visible only for crossfade engine (original behaviour was cf+dj,
-  // but for dj we now hide it since the panel owns smart_queue).
   const cycleBtn = $('#fpDjMode');
-  if (cycleBtn) cycleBtn.style.display = isCf ? '' : 'none';
+  if (cycleBtn) cycleBtn.style.display = 'none';
 
   if (!isDj && _isOpen) closeDjPanel();
 }

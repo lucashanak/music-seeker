@@ -15,9 +15,16 @@ const _pinned = new Set();      // keys that must never be evicted
 const _preloadItems = [];       // [{ key, item }] of the preload target
 function _prefetchCount() { return parseInt(localStorage.getItem('ms_dj_prefetch_count')) || 3; }
 
-/** Stream quality gate. Default 'standard' → server transcodes local FLAC → 320k MP3
- *  (smaller blob, faster prefetch). 'lossless' → server serves raw FLAC (audiophile). */
-export function streamQuality() { return localStorage.getItem('ms_dj_quality') || 'standard'; }
+/** Stream quality gate (engine-agnostic; set via Settings → Streaming Quality).
+ *  Default 'standard' → server transcodes local FLAC → 320k MP3 (smaller blob,
+ *  faster streaming/prefetch). 'lossless' → server serves raw FLAC (audiophile).
+ *  Falls back to the legacy ms_dj_quality key for any value stored before the
+ *  toggle was made engine-agnostic. */
+export function streamQuality() {
+  return localStorage.getItem('ms_stream_quality')
+    || localStorage.getItem('ms_dj_quality')
+    || 'standard';
+}
 
 let _paused = false;
 export function pausePrefetch() { _paused = true; }

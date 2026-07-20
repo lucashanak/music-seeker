@@ -6,7 +6,7 @@ import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
 import { syncFullPlayer, syncMuteUI } from './fullplayer.js';
-import { getCachedUrl, waitForCache, prefetchUpcoming, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch } from './prefetch.js';
+import { getCachedUrl, waitForCache, prefetchUpcoming, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch, streamQuality } from './prefetch.js';
 import * as cast from './cast.js';
 
 const audio = $('#audioElement');
@@ -149,7 +149,7 @@ export async function loadAndPlay() {
       audio.src = cached;
     } else {
       const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: (store.streamToken || store.authToken) });
-      audio.src = `/api/player/stream?${params}`;
+      audio.src = `/api/player/stream?${params}&quality=${streamQuality()}`;
     }
     audio.load();
     audio.play().catch(() => {});
@@ -364,7 +364,7 @@ export function playRecTrack(item) {
       audio.src = cached;
     } else {
       const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: (store.streamToken || store.authToken) });
-      audio.src = `/api/player/stream?${params}`;
+      audio.src = `/api/player/stream?${params}&quality=${streamQuality()}`;
     }
     audio.load();
     audio.play().catch(() => {});
@@ -499,7 +499,7 @@ export async function loadQueueState() {
         $('#playerArtist').textContent = item.artist || '';
         // Pre-set audio source so play button works immediately
         const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: (store.streamToken || store.authToken) });
-        audio.src = `/api/player/stream?${params}`;
+        audio.src = `/api/player/stream?${params}&quality=${streamQuality()}`;
         audio.preload = 'none';
         if (data.position_seconds > 0) {
           const restoreSrc = audio.src;

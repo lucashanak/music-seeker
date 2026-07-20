@@ -13,6 +13,14 @@ export function authHeaders() {
 export async function apiFetch(url, opts = {}) {
   opts.headers = { ...authHeaders(), ...(opts.headers || {}) };
   const res = await fetch(url, opts);
+  // Sliding session renewal: the server hands back a fresh token via this header
+  // once the current one is past half its lifetime. Swap it in so an active
+  // session rolls forward indefinitely and never hits the hard expiry.
+  const refreshed = res.headers.get('X-Refresh-Token');
+  if (refreshed && refreshed !== store.authToken) {
+    store.authToken = refreshed;
+    try { localStorage.setItem('ms_token', refreshed); } catch {}
+  }
   if (res.status === 401) {
     if (store.authToken) {
       // Dispatch event instead of calling logout() directly to avoid circular imports

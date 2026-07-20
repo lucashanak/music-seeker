@@ -116,13 +116,29 @@ async function _loadDeviceSettings() {
     if (nameEl) nameEl.value = store.deviceName;
     if (modeEl) modeEl.value = store.deviceOutputMode;
     if (dlnaUrlEl) dlnaUrlEl.value = store.deviceDlnaRendererUrl;
-    // Player engine (stored in localStorage, per-device)
+    // Player engine (stored in localStorage, per-device). The 'crossfade' engine
+    // was removed — normalize any lingering value so the dropdown isn't left blank.
     const engineEl = $('#settingPlayerEngine');
     if (engineEl) {
-      engineEl.value = localStorage.getItem('ms_player_engine') || 'classic';
+      let eng = localStorage.getItem('ms_player_engine') || 'classic';
+      if (eng === 'crossfade') { eng = 'classic'; localStorage.setItem('ms_player_engine', 'classic'); }
+      engineEl.value = eng;
       if (!engineEl.dataset.bound) {
         engineEl.dataset.bound = '1';
         engineEl.addEventListener('change', _applyEngineChange);
+      }
+    }
+    // Streaming quality (all engines; read by prefetch.streamQuality()).
+    const sqEl = $('#settingStreamQuality');
+    if (sqEl) {
+      sqEl.value = localStorage.getItem('ms_stream_quality')
+        || localStorage.getItem('ms_dj_quality') || 'standard';
+      if (!sqEl.dataset.bound) {
+        sqEl.dataset.bound = '1';
+        sqEl.addEventListener('change', () => {
+          localStorage.setItem('ms_stream_quality', sqEl.value);
+          showToast('Streaming quality: ' + (sqEl.value === 'lossless' ? 'Lossless (FLAC)' : 'MP3 320k'));
+        });
       }
     }
     _toggleDjSection();
@@ -197,7 +213,8 @@ async function _applyEngineChange() {
 
 function _toggleDjSection() {
   const engine = $('#settingPlayerEngine')?.value || localStorage.getItem('ms_player_engine') || 'classic';
-  const isCf = engine === 'crossfade' || engine === 'dj';
+  // The 'crossfade' engine was removed; DJ is the only engine with mix settings now.
+  const isCf = engine === 'dj';
   // Engine selector lives inside #djModeSection now, so the section is always shown.
   $$('.dj-cf-only').forEach(el => { el.style.display = isCf ? '' : 'none'; });
   $$('.dj-v3-only').forEach(el => { el.style.display = engine === 'dj' ? '' : 'none'; });
@@ -231,7 +248,7 @@ const DJ_CONFIG = {
   crossfade_sec:      { sel: '#settingDjCrossfadeSec',      def: '5',  badge: '#valDjCrossfadeSec',  fmt: v => v + 's' },
   transition_style:   { sel: '#settingDjTransitionStyle',   def: 'auto' },
   intro_skip:         { sel: '#settingDjIntroSkip',         def: 'auto' },
-  outro_skip:         { sel: '#settingDjOutroSkip',         def: 'auto' },
+  outro_skip:         { sel: '#settingDjOutroSkip',         def: '0' }, // auto cut endings 5-13s early — opt-in since 2026-07
   outro_fade:         { sel: '#settingDjOutroFade',         def: '1', toggle: true },
   // Tempo flow (cf+dj, advanced) — selection knobs read by djmix with `dj_` prefix
   tempo_range:        { sel: '#settingDjTempoRange',        def: '8' },
