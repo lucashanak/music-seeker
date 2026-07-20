@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import unicodedata
 import logging
 import defusedxml.ElementTree as ET
 import httpx
@@ -623,8 +624,68 @@ async def resolve(name: str, artist: str, item_type: str = "track", provider: st
 
 
 def _normalize(name: str) -> str:
-    """Normalize artist/album name for comparison."""
-    return re.sub(r'\s+', ' ', name.strip().lower())
+    """Normalize artist/album name for comparison: lowercase, fold diacritics, collapse whitespace.
+
+    Latin accents fold to ASCII (José->jose). For fully non-Latin names (Cyrillic/CJK/…)
+    the ASCII fold would wipe the string to "" and make everything compare-equal, so we
+    keep the lowercased original in that case instead of collapsing to empty.
+    """
+    s = name.strip().lower()
+    folded = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = folded or s
+    return re.sub(r'\s+', ' ', s).strip()
+
+
+def _pick_top_result(query: str, tracks: list[dict], artists: list[dict],
+                     albums: list[dict], playlists: list[dict]) -> dict | None:
+    """Pick the single best 'top result' across all result types (Spotify-style)."""
+    norm = _normalize(query)
+    # (1) exact artist name match
+    for a in artists:
+        if _normalize(a.get("name", "")) == norm:
+            return a
+    # (2) exact track/album name match (prefer track)
+    for t in tracks:
+        if _normalize(t.get("name", "")) == norm:
+            return t
+    for al in albums:
+        if _normalize(al.get("name", "")) == norm:
+            return al
+    # (3)-(6) first available, tracks first
+    if tracks:
+        return tracks[0]
+    if artists:
+        return artists[0]
+    if albums:
+        return albums[0]
+    if playlists:
+        return playlists[0]
+    # (7)
+    return None
+
+
+async def search_all(query: str, provider: str = "deezer", fallback: str = "",
+                     limit_per_type: int = 8) -> dict:
+    """Run track/artist/album/playlist searches concurrently and aggregate (Spotify-style)."""
+    results = await asyncio.gather(
+        search(query, "track", limit_per_type, provider=provider, fallback=fallback),
+        search(query, "artist", limit_per_type, provider=provider, fallback=fallback),
+        search(query, "album", limit_per_type, provider=provider, fallback=fallback),
+        search(query, "playlist", limit_per_type, provider=provider, fallback=fallback),
+        return_exceptions=True,
+    )
+    tracks, artists, albums, playlists = [
+        r if isinstance(r, list) else [] for r in results
+    ]
+    top = _pick_top_result(query, tracks, artists, albums, playlists)
+    return {
+        "query": query,
+        "top": top,
+        "tracks": tracks,
+        "artists": artists,
+        "albums": albums,
+        "playlists": playlists,
+    }
 
 
 async def find_artist_by_name(name: str, provider: str = "deezer") -> dict | None:

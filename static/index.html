@@ -193,7 +193,8 @@
     </div>
     <div class="mic-status" id="micStatus"></div>
     <div class="type-toggle">
-      <button class="type-btn active" data-type="track">Tracks</button>
+      <button class="type-btn active" data-type="all">All</button>
+      <button class="type-btn" data-type="track">Tracks</button>
       <button class="type-btn" data-type="album">Albums</button>
       <button class="type-btn" data-type="artist">Artists</button>
       <button class="type-btn" data-type="playlist">Playlists</button>
@@ -478,10 +479,18 @@
           <label class="setting-label">Player Engine</label>
           <select class="setting-select" id="settingPlayerEngine">
             <option value="classic">Classic</option>
-            <option value="crossfade">Crossfade (Web Audio API)</option>
             <option value="dj">DJ Player (3-band EQ transitions)</option>
           </select>
           <p class="setting-help">DJ adds EQ/filter transitions; changing reloads the app.</p>
+        </div>
+        <!-- ── Streaming Quality (all engines) ── -->
+        <div class="setting-group">
+          <label class="setting-label">Streaming Quality</label>
+          <select class="setting-select" id="settingStreamQuality">
+            <option value="standard">MP3 320k — smaller, faster</option>
+            <option value="lossless">Lossless — original FLAC</option>
+          </select>
+          <p class="setting-help">MP3 streams faster and uses less data. Lossless serves the original file (larger, best for audiophile/DLNA).</p>
         </div>
         <!-- ── Prefetch (Classic engine only) — moved from This Device ── -->
         <div class="setting-group classic-only" style="display:none;">

@@ -23,6 +23,17 @@ async def search(
     return {"results": results, "query": q, "type": search_type}
 
 
+@router.get("/search/all")
+async def search_all(
+    q: str = Query(..., min_length=1),
+    limit_per_type: int = Query(8, ge=1, le=20),
+    user: dict = Depends(auth.get_current_user),
+):
+    provider = app_settings._settings.get("search_provider", "deezer")
+    fallback = app_settings._settings.get("search_fallback", "")
+    return await search_providers.search_all(q, provider=provider, fallback=fallback, limit_per_type=limit_per_type)
+
+
 @router.get("/artist/{artist_id}/albums")
 async def get_artist_albums(artist_id: str, user: dict = Depends(auth.get_current_user)):
     provider = app_settings._settings.get("search_provider", "deezer")

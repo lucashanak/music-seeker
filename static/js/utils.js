@@ -13,6 +13,16 @@ export function esc(s) {
   return d.innerHTML;
 }
 
+// Escape for use inside an HTML attribute value (also handles quotes, which esc() does not).
+export function escAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 // ── Time / Duration Formatting ──
 export function formatDuration(ms) {
   const m = Math.floor(ms / 60000);

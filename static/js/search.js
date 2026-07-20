@@ -1,7 +1,7 @@
 // search.js — doSearch, renderResults, checkLibrary, renderCards, infinite scroll, card helpers
 
 import { store } from './store.js';
-import { $, $$, esc, formatDuration } from './utils.js';
+import { $, $$, esc, escAttr, formatDuration } from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { loadPlaylistDetail, loadShowDetail, loadArtistDetail, loadAlbumDetail } from './spotify.js';
@@ -38,26 +38,38 @@ export function cardSubHtml(item) {
   const album = item.album || '';
   const type = item.type || 'track';
   if (type === 'track' && artist) {
-    let html = `<span class="clickable" data-search-type="artist" data-search-q="${esc(artist)}">${esc(artist)}</span>`;
-    if (album) html += ` · <span class="clickable" data-search-type="album" data-search-q="${esc(album)}">${esc(album)}</span>`;
+    let html = `<span class="clickable" data-search-type="artist" data-search-q="${escAttr(artist)}">${esc(artist)}</span>`;
+    if (album) html += ` · <span class="clickable" data-search-type="album" data-search-q="${escAttr(album)}">${esc(album)}</span>`;
     return html;
   }
   if ((type === 'album' || type === 'episode') && artist) {
-    return `<span class="clickable" data-search-type="artist" data-search-q="${esc(artist)}">${esc(artist)}</span>`;
+    return `<span class="clickable" data-search-type="artist" data-search-q="${escAttr(artist)}">${esc(artist)}</span>`;
   }
   return esc(artist);
 }
 
-// ── Render Results ──
-export function renderResults(items, container, fromPage) {
-  const el = $(container);
-  if (!items.length) {
-    el.innerHTML = '<div class="empty-state"><p>No results found</p></div>';
-    return;
+// ── Route a card/hero click to the right detail view (or download modal) ──
+function _routeCardClick(item, fromPage) {
+  if (item.type === 'playlist' && item.id) {
+    loadPlaylistDetail(item.id, item.url, fromPage);
+  } else if (item.type === 'show' && item.id) {
+    loadShowDetail(item.id, item.url, fromPage, item.feed_url);
+  } else if (item.type === 'artist' && item.id) {
+    loadArtistDetail(item.id, fromPage);
+  } else if (item.type === 'album' && item.id) {
+    loadAlbumDetail(item, fromPage);
+  } else {
+    openModal(item);
   }
-  el.innerHTML = items.map(item => `
-    <div class="card" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-      ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+}
+
+// ── Build a single result card element (markup + click handler) ──
+export function buildCardElement(item, fromPage) {
+  const artistCls = (item.type === 'artist') ? ' artist-card' : '';
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `
+    <div class="card${artistCls}" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
+      ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="card-body">
         <div class="card-title">${esc(item.name)}</div>
         <div class="card-sub">${cardSubHtml(item)}</div>
@@ -69,30 +81,31 @@ export function renderResults(items, container, fromPage) {
         </div>
       </div>
     </div>
-  `).join('');
-
-  $$('.card', el).forEach(card => {
-    card.addEventListener('click', (e) => {
-      if (wasLongPress()) return;
-      if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-fav-btn')) return;
-      let item;
-      try { item = JSON.parse(card.dataset.item); } catch { return; }
-      if (item.type === 'playlist' && item.id) {
-        loadPlaylistDetail(item.id, item.url, fromPage);
-      } else if (item.type === 'show' && item.id) {
-        loadShowDetail(item.id, item.url, fromPage, item.feed_url);
-      } else if (item.type === 'artist' && item.id) {
-        loadArtistDetail(item.id, fromPage);
-      } else if (item.type === 'album' && item.id) {
-        loadAlbumDetail(item, fromPage);
-      } else {
-        openModal(item);
-      }
-    });
+  `;
+  const card = wrap.firstElementChild;
+  card.addEventListener('click', (e) => {
+    if (wasLongPress()) return;
+    if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-fav-btn')) return;
+    let it;
+    try { it = JSON.parse(card.dataset.item); } catch { return; }
+    _routeCardClick(it, fromPage);
   });
+  return card;
+}
+
+// ── Render Results ──
+export function renderResults(items, container, fromPage) {
+  const el = $(container);
+  if (!items.length) {
+    el.innerHTML = '<div class="empty-state"><p>No results found</p></div>';
+    return;
+  }
+  const cards = items.map(item => buildCardElement(item, fromPage));
+  el.innerHTML = '';
+  cards.forEach(card => el.appendChild(card));
   _attachCardContextMenu(el);
-  addCardKebabs($$('.card', el));
-  checkLibrary(items, el);
+  addCardKebabs(cards);
+  checkLibrary(items, el, cards);
 }
 
 function _attachCardContextMenu(el) {
@@ -187,7 +200,7 @@ export function restoreSearch() {
     if (saved && saved.q) {
       $('#searchInput').value = saved.q;
       $('#searchClear').style.display = 'block';
-      store.searchType = saved.type || 'track';
+      store.searchType = saved.type || 'all';
       $$('.type-btn[data-type]').forEach(b => b.classList.toggle('active', b.dataset.type === store.searchType));
       doSearch();
     }
@@ -302,12 +315,18 @@ function _handleSearchKeydown(e) {
 
 // ── Do Search ──
 export async function doSearch(append) {
+  if (store.searchType === 'all') {
+    store.searchHasMore = false;
+    await doSearchAll();
+    return;
+  }
   const q = $('#searchInput').value.trim();
   if (!q) { $('#searchResults').innerHTML = ''; saveSearchState(); return; }
   if (!append) {
     store.searchOffset = 0;
     store.searchHasMore = true;
     store.searchQuery = q;
+    $('#searchResults').classList.add('grid');
     $('#searchResults').innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   }
   store.searchLoading = true;
@@ -319,42 +338,8 @@ export async function doSearch(append) {
       renderResults(data.results, '#searchResults', 'search');
     } else {
       const grid = $('#searchResults');
-      const fragment = document.createElement('div');
-      fragment.innerHTML = data.results.map(item => `
-        <div class="card" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-          ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${item.image || ''}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
-          <div class="card-body">
-            <div class="card-title">${esc(item.name)}</div>
-            <div class="card-sub">${cardSubHtml(item)}</div>
-            <div class="card-meta">
-              ${item.year ? `<span>${item.year}</span>` : ''}
-              ${item.total_tracks ? `<span>${item.total_tracks} ${item.type === 'show' ? 'episodes' : 'tracks'}</span>` : ''}
-              ${item.release_date ? `<span>${item.release_date}</span>` : ''}
-              ${item.duration_ms ? `<span>${formatDuration(item.duration_ms)}</span>` : ''}
-            </div>
-          </div>
-        </div>
-      `).join('');
-      const newCards = Array.from(fragment.children);
-      newCards.forEach(card => {
-        card.addEventListener('click', (e) => {
-          if (wasLongPress()) return;
-          if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-fav-btn')) return;
-          const item = JSON.parse(card.dataset.item);
-          if (item.type === 'playlist' && item.id) {
-            loadPlaylistDetail(item.id, item.url, 'search');
-          } else if (item.type === 'show' && item.id) {
-            loadShowDetail(item.id, item.url, 'search', item.feed_url);
-          } else if (item.type === 'artist' && item.id) {
-            loadArtistDetail(item.id, 'search');
-          } else if (item.type === 'album' && item.id) {
-            loadAlbumDetail(item, 'search');
-          } else {
-            openModal(item);
-          }
-        });
-        grid.appendChild(card);
-      });
+      const newCards = data.results.map(item => buildCardElement(item, 'search'));
+      newCards.forEach(card => grid.appendChild(card));
       addCardKebabs(newCards);
       checkLibrary(data.results, grid, newCards);
     }
@@ -366,6 +351,177 @@ export async function doSearch(append) {
     }
   } catch (e) {
     if (!append) $('#searchResults').innerHTML = `<div class="empty-state"><p>Search failed: ${e.message}</p></div>`;
+  }
+  store.searchLoading = false;
+  $('#searchLoadMore').style.display = 'none';
+}
+
+// ── Top-result hero card (large, Spotify-style) ──
+const _TOP_TYPE_LABEL = { track: 'Song', album: 'Album', artist: 'Artist', playlist: 'Playlist', show: 'Podcast', episode: 'Episode' };
+
+function buildTopResultCard(item, fromPage) {
+  const type = item.type || 'track';
+  const artistCls = (type === 'artist') ? ' artist-card' : '';
+  const label = _TOP_TYPE_LABEL[type] || esc(type);
+  const sub = (item.artist && type !== 'artist') ? `${label} · ${esc(item.artist)}` : label;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `
+    <div class="card top-result-card${artistCls}" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
+      ${cardPlayBtn(item)}${cardFavBtn(item)}<img class="top-result-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      <div class="top-result-name">${esc(item.name)}</div>
+      <div class="top-result-type">${sub}</div>
+    </div>
+  `;
+  const card = wrap.firstElementChild;
+  card.addEventListener('click', (e) => {
+    if (wasLongPress()) return;
+    if (e.target.closest('.card-play-btn') || e.target.closest('.card-fav-btn')) return;
+    let it;
+    try { it = JSON.parse(card.dataset.item); } catch { return; }
+    _routeCardClick(it, fromPage);
+  });
+  return card;
+}
+
+// ── Compact song rows (list, not cards) — reuse card-play delegation + kebab/heart ──
+// sink (optional): { items: [], cards: [] } accumulators so the caller can run a
+// library-check over these rows (they carry `.card` but live outside the grid).
+export function renderSongRows(tracks, sink) {
+  const list = document.createElement('div');
+  list.className = 'song-list';
+  tracks.forEach(item => {
+    // `.card` class lets the event-delegated .card-play-btn handler (player_v3.js)
+    // find this row via btn.closest('.card'); CSS re-styles it as a flat row.
+    const row = document.createElement('div');
+    row.className = 'song-row card';
+    row.dataset.item = JSON.stringify(item);
+    row.innerHTML = `
+      <img class="song-thumb" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      <div class="song-info">
+        <div class="song-title">${esc(item.name)}</div>
+        <div class="song-artist">${cardSubHtml(item)}</div>
+      </div>
+      <span class="song-duration">${item.duration_ms ? formatDuration(item.duration_ms) : ''}</span>
+      ${cardPlayBtn(item)}
+    `;
+    row.appendChild(makeKebabButton(() => {
+      try { const it = JSON.parse(row.dataset.item); return { item: it, type: it.type || 'track', context: { inLibrary: !!it.inLibrary } }; } catch { return null; }
+    }));
+    row.appendChild(makeHeartButton(item));
+    row.addEventListener('click', (e) => {
+      if (wasLongPress()) return;
+      if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.kebab-btn') || e.target.closest('.like-btn')) return;
+      let it;
+      try { it = JSON.parse(row.dataset.item); } catch { return; }
+      openModal(it);
+    });
+    list.appendChild(row);
+    if (sink) { sink.items.push(item); sink.cards.push(row); }
+  });
+  attachContextMenu(list, {
+    selector: '.song-row[data-item]',
+    getItem: (targetEl) => {
+      try {
+        const item = JSON.parse(targetEl.dataset.item);
+        return { item, type: item.type || 'track', context: { inLibrary: !!item.inLibrary } };
+      } catch { return null; }
+    },
+  });
+  return list;
+}
+
+// ── All-mode aggregated search (Spotify-style sections) ──
+async function doSearchAll() {
+  const q = $('#searchInput').value.trim();
+  const resultsEl = $('#searchResults');
+  if (!q) { resultsEl.innerHTML = ''; saveSearchState(); return; }
+  store.searchQuery = q;
+  store.searchHasMore = false;
+  store.searchLoading = true;
+  $('#searchLoadMore').style.display = 'none';
+  resultsEl.classList.add('grid');
+  resultsEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  try {
+    const data = await apiJson('/api/search/all?q=' + encodeURIComponent(q) + '&limit_per_type=8');
+    const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+    const artists = Array.isArray(data.artists) ? data.artists : [];
+    const albums = Array.isArray(data.albums) ? data.albums : [];
+    const playlists = Array.isArray(data.playlists) ? data.playlists : [];
+
+    resultsEl.classList.remove('grid');
+    const frag = document.createDocumentFragment();
+    const allItems = [];
+    const allCards = [];
+
+    // 1) Top-result hero + Songs panel
+    if (data.top) {
+      const row = document.createElement('div');
+      row.className = 'top-result-row';
+      const topCard = buildTopResultCard(data.top, 'search');
+      row.appendChild(topCard);
+      allItems.push(data.top);
+      allCards.push(topCard);
+
+      // Songs panel only when there are tracks (avoids an empty "Songs" header).
+      if (tracks.length) {
+        const panel = document.createElement('div');
+        panel.className = 'top-songs-panel';
+        const ph = document.createElement('div');
+        ph.className = 'search-section-header';
+        ph.innerHTML = '<h3>Songs</h3><button class="section-showall" data-showall="track">Show all</button>';
+        panel.appendChild(ph);
+        panel.appendChild(renderSongRows(tracks.slice(0, 6), { items: allItems, cards: allCards }));
+        row.appendChild(panel);
+      }
+      frag.appendChild(row);
+    }
+
+    // 2-4) Artists / Albums / Playlists sections
+    const _section = (title, type, items) => {
+      if (!items.length) return;
+      const section = document.createElement('div');
+      section.className = 'search-section';
+      const header = document.createElement('div');
+      header.className = 'search-section-header';
+      header.innerHTML = `<h3>${esc(title)}</h3><button class="section-showall" data-showall="${type}">Show all</button>`;
+      section.appendChild(header);
+      const grid = document.createElement('div');
+      grid.className = 'grid';
+      const slice = items.slice(0, 6);
+      const cards = slice.map(it => buildCardElement(it, 'search'));
+      cards.forEach(c => grid.appendChild(c));
+      addCardKebabs(cards);
+      _attachCardContextMenu(grid);
+      section.appendChild(grid);
+      frag.appendChild(section);
+      slice.forEach(it => allItems.push(it));
+      cards.forEach(c => allCards.push(c));
+    };
+    _section('Artists', 'artist', artists);
+    _section('Albums', 'album', albums);
+    _section('Playlists', 'playlist', playlists);
+
+    if (!data.top && !tracks.length && !artists.length && !albums.length && !playlists.length) {
+      resultsEl.innerHTML = '<div class="empty-state"><p>No results found</p></div>';
+    } else {
+      resultsEl.innerHTML = '';
+      resultsEl.appendChild(frag);
+      $$('.section-showall', resultsEl).forEach(btn => {
+        btn.addEventListener('click', () => {
+          const type = btn.dataset.showall;
+          store.searchType = type;
+          $$('.type-btn[data-type]').forEach(b => b.classList.toggle('active', b.dataset.type === type));
+          doSearch();
+        });
+      });
+      if (allItems.length) checkLibrary(allItems, resultsEl, allCards);
+    }
+    saveSearchState();
+    addRecentSearch(q);
+    _setKbdActive(-1);
+  } catch (e) {
+    resultsEl.classList.remove('grid');
+    resultsEl.innerHTML = `<div class="empty-state"><p>Search failed: ${esc(e.message)}</p></div>`;
   }
   store.searchLoading = false;
   $('#searchLoadMore').style.display = 'none';

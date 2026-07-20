@@ -20,7 +20,7 @@ export const store = {
 
   // ── Page / UI State ──
   currentPage: 'search',
-  searchType: 'track',
+  searchType: 'all',
   searchTimeout: null,
   modalItem: null,
   selectedMethod: 'yt-dlp',
