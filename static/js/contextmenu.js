@@ -509,11 +509,11 @@ export async function _addToNavidromePlaylist(item) {
   }
 }
 
-async function _addAlbumToNavidromePlaylist(album) {
+// Run the picker + batch add-and-download flow for a pre-loaded track list.
+// Shared by the card context menu (album) and the album/playlist detail heroes.
+export async function addTracksToNavidromePlaylist(tracks) {
   try {
-    showToast('Loading album…');
-    const tracks = await _fetchAlbumTracks(album);
-    if (!tracks.length) { showToast('No tracks found'); return; }
+    if (!tracks || !tracks.length) { showToast('No tracks found'); return; }
     const data = await apiJson('/api/library/playlists');
     const playlists = data.playlists || [];
     if (!playlists.length) { showToast('No Navidrome playlists'); return; }
@@ -526,6 +526,17 @@ async function _addAlbumToNavidromePlaylist(album) {
       });
     }
     showToast(`Added ${payload.length} tracks to ${picked.map(p => p.name).join(', ')}`);
+  } catch (e) {
+    showToast(e.message || 'Failed to add to playlist');
+  }
+}
+
+async function _addAlbumToNavidromePlaylist(album) {
+  try {
+    showToast('Loading album…');
+    const tracks = await _fetchAlbumTracks(album);
+    if (!tracks.length) { showToast('No tracks found'); return; }
+    await addTracksToNavidromePlaylist(tracks);
   } catch (e) {
     showToast(e.message || 'Failed to add album to playlist');
   }

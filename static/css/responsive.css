@@ -135,3 +135,9 @@
 @media (min-width: 641px) {
   .bottom-nav { display: none; }
 }
+
+/* Touch devices have no hover: reveal card controls permanently so the
+   quick-add "+", download/radio/play and the drag handle are discoverable. */
+@media (hover: none) {
+  .card-play-btn, .card-dl-btn, .card-radio-btn, .card-addpl-btn, .card-fav-btn, .card-drag-handle { opacity: 1 !important; transform: none !important; }
+}

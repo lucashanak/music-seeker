@@ -48,6 +48,25 @@
 }
 .sp-tab:hover { background: var(--bg-card); color: var(--text); }
 .sp-tab.active { background: var(--accent); color: #000; }
+
+/* Muted one-line subtitle under a page/sub-view heading. */
+.page-subtitle {
+  font-size: 13px; color: var(--text-muted); margin: -12px 0 20px;
+}
+
+/* Secondary sub-navigation: nested inside a page that already has peer nav
+   (e.g. Spotify sub-view inside the Library tabs). Reads as sub-nav, not peer
+   nav — no pill background, smaller, underline-on-active instead of filled. */
+.sp-tabs--sub { gap: 4px; }
+.sp-tabs--sub .sp-tab {
+  padding: 6px 12px; border-radius: 0; font-size: 13px; font-weight: 500;
+  background: none; color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+}
+.sp-tabs--sub .sp-tab:hover { background: none; color: var(--text); }
+.sp-tabs--sub .sp-tab.active {
+  background: none; color: var(--text); border-bottom-color: var(--accent);
+}
 .sp-section-title {
   font-size: 13px; font-weight: 600; color: var(--text-muted);
   text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px;

@@ -6,7 +6,7 @@ import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { renderResults, checkLibrary } from './search.js';
 import { switchPage } from './router.js';
-import { attachContextMenu, wasLongPress } from './contextmenu.js';
+import { attachContextMenu, wasLongPress, addTracksToNavidromePlaylist } from './contextmenu.js';
 import { getPlayerModule } from './player_active.js';
 import { hydrateBpmByName, addBpmBadges, initTempoFilter } from './bpm.js';
 
@@ -458,6 +458,9 @@ export function init() {
     const mod = await getPlayerModule();
     mod.addToQueue(tracks);
   });
+  $('#addAlbumToPlaylist').addEventListener('click', () => {
+    addTracksToNavidromePlaylist(store.currentAlbumTracks || []);
+  });
   $('#downloadAlbum').addEventListener('click', () => {
     if (!store.currentAlbum) return;
     openModal({ ...store.currentAlbum, type: 'album' });
@@ -517,6 +520,9 @@ export function init() {
     if (tracks.length) {
       getPlayerModule().then(m => m.addToQueue(tracks));
     }
+  });
+  $('#addPlaylistToPlaylist').addEventListener('click', () => {
+    addTracksToNavidromePlaylist(getPlaylistTracksForPlayer());
   });
 }
 

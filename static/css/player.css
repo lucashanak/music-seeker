@@ -179,12 +179,6 @@ body.player-active .player-bar { display: flex; }
 .queue-item.qi-drag-over { border-top: 2px solid var(--accent); margin-top: -2px; }
 
 /* ── Kebab (⋯) button base ── */
-/* Base size/appearance so kebabs in queue rows (and anywhere without a scoped
-   rule) get a proper touch target instead of a default UA button. Scoped rules
-   (search.css song-list, card positioning) override position/context as needed. */
-.kebab-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: none; border: none; border-radius: 50%; color: var(--text-muted); flex-shrink: 0; cursor: pointer; }
-.kebab-btn:hover { background: rgba(255,255,255,.08); color: var(--text); }
-
 /* ── Recommendations ── */
 .recs-section { padding: 0 4px 12px; }
 .recs-list { display: flex; flex-direction: column; gap: 4px; }
