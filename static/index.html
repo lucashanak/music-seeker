@@ -353,12 +353,14 @@
       <img id="libDetailImg" class="playlist-hero-img" src="">
       <div class="playlist-hero-info">
         <h2 id="libDetailName"></h2>
+        <p id="libDetailDesc" class="playlist-hero-desc" style="display:none;"></p>
         <p id="libDetailCount"></p>
       </div>
       <div class="playlist-hero-actions">
         <button class="btn-download btn-hero-primary" id="playLibPlaylist">&#9654; Play All</button>
         <button class="btn-download btn-hero-secondary" id="queueLibPlaylist">+ Add All</button>
-        <button class="btn-download btn-hero-secondary" id="renameLibPlaylist">Rename</button>
+        <button class="btn-download btn-hero-secondary" id="renameLibPlaylist">Edit</button>
+        <button class="btn-download btn-hero-secondary" id="coverLibPlaylist">Change cover</button>
         <button class="btn-download btn-hero-secondary" id="duplicateLibPlaylist">Duplicate</button>
         <button class="btn-download btn-hero-secondary" id="mergeLibPlaylist">Merge</button>
         <button class="btn-download btn-hero-danger" id="deleteLibPlaylist">Delete</button>
@@ -382,13 +384,17 @@
   <!-- ── Sub-view: Spotify (moved from former "My Spotify" page) ── -->
   <div id="pagePlaylists" style="display:none">
   <div id="spotifyLibrary">
-    <h2 class="page-title">My Spotify Library</h2>
-    <p class="page-subtitle">Read-only — browse and download from your Spotify account.</p>
-    <div class="sp-tabs sp-tabs--sub">
-      <button class="sp-tab active" data-sp-tab="playlists">Playlists</button>
-      <button class="sp-tab" data-sp-tab="albums">Albums</button>
-      <button class="sp-tab" data-sp-tab="artists">Artists</button>
-      <button class="sp-tab" data-sp-tab="podcasts">Shows</button>
+    <div class="sp-header">
+      <div>
+        <h2 class="page-title">My Spotify Library</h2>
+        <p class="page-subtitle">Read-only — browse and download from your Spotify account.</p>
+      </div>
+      <div class="sp-tabs sp-tabs--sub">
+        <button class="sp-tab active" data-sp-tab="playlists">Playlists</button>
+        <button class="sp-tab" data-sp-tab="albums">Albums</button>
+        <button class="sp-tab" data-sp-tab="artists">Artists</button>
+        <button class="sp-tab" data-sp-tab="podcasts">Shows</button>
+      </div>
     </div>
     <div id="spPlaylists" class="sp-section">
       <div id="playlistsGrid" class="grid"></div>
@@ -479,6 +485,8 @@
 <main id="pageSettings" style="display:none">
   <h2 class="page-title">Settings</h2>
   <div class="settings-form">
+    <div class="settings-group">
+    <div class="settings-group-label">Playback &amp; Sound</div>
     <details class="setting-section" id="djModeSection">
       <summary class="setting-section-title"><svg class="setting-section-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg><span class="setting-section-label">Playback</span></summary>
       <div class="setting-section-body">
@@ -815,7 +823,10 @@
 
       </div>
     </details>
+    </div><!-- /settings-group: Playback & Sound -->
 
+    <div class="settings-group">
+    <div class="settings-group-label">Library &amp; Downloads</div>
     <details class="setting-section">
       <summary class="setting-section-title"><svg class="setting-section-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg><span class="setting-section-label">This Device</span></summary>
       <div class="setting-section-body">
@@ -980,8 +991,11 @@
         </div>
       </div>
     </details>
+    </div><!-- /settings-group: Library & Downloads -->
   </div>
 
+  <div class="settings-group">
+  <div class="settings-group-label">Account &amp; App</div>
   <details class="setting-section" id="spotifySection">
     <summary class="setting-section-title"><svg class="setting-section-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14.5c2.5-1 5.5-1 8 .5M7.5 11c3-1.2 6.5-1 9.5 1M7 8c3.5-1.2 8-.8 11 1.5"/></svg><span class="setting-section-label">Account</span></summary>
     <div class="setting-section-body">
@@ -1070,7 +1084,10 @@
       </p>
     </div>
   </details>
+  </div><!-- /settings-group: Account & App -->
 
+  <div class="settings-group settings-group--admin">
+  <div class="settings-group-label">Admin</div>
   <details class="setting-section" id="usersSection" style="display:none;">
     <summary class="setting-section-title"><svg class="setting-section-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg><span class="setting-section-label">User Management</span></summary>
     <div class="setting-section-body">
@@ -1105,6 +1122,7 @@
       <button class="btn-save" id="refreshDiskUsage" style="margin-top:8px;">Refresh</button>
     </div>
   </details>
+  </div><!-- /settings-group: Admin -->
 </main>
 
 </div><!-- /appContainer -->
@@ -1123,32 +1141,41 @@
     <div id="modalLibraryNotice" style="display:none;">
       Already in your library
     </div>
-    <div class="modal-section">
-      <div class="modal-label">Method</div>
-      <div class="option-group" id="methodGroup">
-        <button class="option-btn selected" data-value="yt-dlp">yt-dlp<small>Fastest</small></button>
-        <button class="option-btn" data-value="slskd">Soulseek<small>Best quality</small></button>
-        <button class="option-btn" data-value="lidarr">Lidarr<small>Runs in background</small></button>
+
+    <!-- Primary intent: listen now -->
+    <button class="modal-btn-primary" id="modalPlay">&#9654; Play Now</button>
+
+    <!-- Secondary quick actions: queue + tangential controls -->
+    <div class="modal-quick-row">
+      <button class="modal-btn-outline" id="modalAddQueue" style="flex:1;">+ Add to Queue</button>
+      <button class="modal-chip" id="modalRadio" title="Start a radio based on this">&#x1f4fb; Radio</button>
+      <button class="modal-chip" id="modalFavToggle" title="Follow this artist">&#x2661; Follow</button>
+    </div>
+
+    <div class="modal-divider"><span>Download to library</span></div>
+
+    <!-- Download intent: method/format only ever apply here -->
+    <div class="modal-download-panel">
+      <div class="modal-section" id="methodSection">
+        <div class="modal-label">Method</div>
+        <div class="option-group" id="methodGroup">
+          <button class="option-btn selected" data-value="yt-dlp">yt-dlp<small>Fastest</small></button>
+          <button class="option-btn" data-value="slskd">Soulseek<small>Best quality</small></button>
+          <button class="option-btn" data-value="lidarr">Lidarr<small>Runs in background</small></button>
+        </div>
+        <div class="modal-hint" id="modalMethodHint"></div>
       </div>
-      <div class="modal-hint" id="modalMethodHint"></div>
-    </div>
-    <div class="modal-section" id="formatSection">
-      <div class="modal-label">Format</div>
-      <div class="option-group" id="formatGroup">
-        <button class="option-btn selected" data-value="flac">FLAC</button>
-        <button class="option-btn" data-value="mp3">MP3 320k</button>
+      <div class="modal-section" id="formatSection">
+        <div class="modal-label">Format</div>
+        <div class="option-group" id="formatGroup">
+          <button class="option-btn selected" data-value="flac">FLAC</button>
+          <button class="option-btn" data-value="mp3">MP3 320k</button>
+        </div>
       </div>
+      <button class="modal-btn-outline modal-btn-download-cta" id="modalDownload">Download</button>
     </div>
-    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-      <button class="btn-download" id="modalPlay" style="background:var(--accent);color:#000;flex:1;">&#9654; Play</button>
-      <button class="btn-download modal-secondary" id="modalAddQueue" style="flex:1;">+ Add</button>
-      <button class="btn-download modal-secondary" id="modalDownload" style="flex:1;">Download</button>
-    </div>
-    <div style="display:flex; gap:8px; margin-top:8px;">
-      <button class="modal-chip" id="modalRadio">&#x1f4fb; Radio</button>
-      <button class="modal-chip" id="modalFavToggle">&#x2661; Follow</button>
-    </div>
-    <button class="btn-download" id="modalDeleteTrack" style="display:none;background:var(--red);color:#fff;width:100%;margin-top:8px;">Delete from Library</button>
+
+    <button class="btn-download" id="modalDeleteTrack" style="display:none;background:var(--red);color:#fff;width:100%;margin-top:16px;">Delete from Library</button>
     <label id="modalAutoDownload" class="modal-auto-dl" style="display:none;">
       <input type="checkbox" id="modalAutoDownloadCb">
       <span>Auto-download new releases</span>
@@ -1227,18 +1254,26 @@
       <button class="fp-mode-btn" id="fpRepeat" title="Repeat off"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg><span class="fp-repeat-badge" id="fpRepeatBadge"></span></button>
     </div>
     <div class="fp-actions">
-      <button class="fp-mode-btn" id="fpDjMode" title="DJ Mode" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/></svg></button>
-      <button class="fp-mode-btn" id="fpDjPanelBtn" title="DJ controls" aria-haspopup="dialog" aria-expanded="false" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
-      <button class="like-btn" id="fpLike" title="Add to Liked Songs"></button>
-      <button id="fpDevicesBtn" title="Remote devices"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></button>
-      <button id="fpCastBtn" title="Cast to speaker"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 16.1A5 5 0 015.9 20M2 12.05A9 9 0 019.95 20M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg></button>
-      <button id="fpAddToPlaylist" title="Add to playlist"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
-      <button id="fpRemoveFromPlaylist" title="Remove from playlist" style="display:none;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
-      <button id="fpDownload" title="Download"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
-      <div class="fp-vol-wrap">
-        <button id="fpMute" title="Mute" style="background:none;border:none;color:inherit;cursor:pointer;padding:0;display:flex;align-items:center;"><svg id="fpMuteIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg></button>
-        <input type="range" class="fp-vol" id="fpVolume" min="0" max="100" value="100">
-      </div>
+      <span class="fp-actions-group" id="fpActionsGroupDj">
+        <button class="fp-mode-btn" id="fpDjMode" title="DJ Mode" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/></svg></button>
+        <button class="fp-mode-btn" id="fpDjPanelBtn" title="DJ controls" aria-haspopup="dialog" aria-expanded="false" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
+      </span>
+      <span class="fp-actions-divider"></span>
+      <span class="fp-actions-group">
+        <button class="like-btn" id="fpLike" title="Add to Liked Songs"></button>
+        <button id="fpAddToPlaylist" title="Add to playlist"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
+        <button id="fpRemoveFromPlaylist" title="Remove from playlist" style="display:none;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
+        <button id="fpDownload" title="Download"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+      </span>
+      <span class="fp-actions-divider"></span>
+      <span class="fp-actions-group">
+        <button id="fpDevicesBtn" title="Remote devices"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></button>
+        <button id="fpCastBtn" title="Cast to speaker"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 16.1A5 5 0 015.9 20M2 12.05A9 9 0 019.95 20M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg></button>
+        <div class="fp-vol-wrap">
+          <button id="fpMute" title="Mute" style="background:none;border:none;color:inherit;cursor:pointer;padding:0;display:flex;align-items:center;"><svg id="fpMuteIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg></button>
+          <input type="range" class="fp-vol" id="fpVolume" min="0" max="100" value="100">
+        </div>
+      </span>
     </div>
     <div class="fp-cast-vol" id="fpCastVol" style="display:none;">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 16.1A5 5 0 015.9 20M2 12.05A9 9 0 019.95 20M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>

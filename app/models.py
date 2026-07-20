@@ -96,6 +96,16 @@ class AddToQueueRequest(BaseModel):
 
 class CreatePlaylistRequest(BaseModel):
     name: str
+    description: str | None = None
+
+
+class PlaylistDetailsRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class PlaylistCoverRequest(BaseModel):
+    image_url: str
 
 
 class AddTracksByIdRequest(BaseModel):

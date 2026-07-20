@@ -31,6 +31,35 @@
   padding: 0 20px 18px;
 }
 
+/* Groups settings sections into labeled categories (Playback & Sound,
+   Library & Downloads, Account & App, Admin) so ~11 flat accordions read as
+   a structured page instead of one undifferentiated list. Pure presentation
+   — sections keep their own IDs/JS untouched inside each group. */
+.settings-group { margin-bottom: 28px; }
+.settings-group:last-child { margin-bottom: 0; }
+.settings-group-label {
+  font-size: 11px; font-weight: 700; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 1.2px;
+  padding-top: 16px; margin-bottom: 12px;
+  border-top: 1px solid var(--border);
+}
+.settings-group:first-child .settings-group-label {
+  padding-top: 0; border-top: none;
+}
+.settings-group .setting-section:last-child { margin-bottom: 0; }
+
+/* Admin group: auth.js toggles #usersSection/#diskUsageSection display via
+   inline style for non-admins. Both are set together from the same
+   is_admin check, so hide the group label + separator whenever the first
+   one is hidden — otherwise non-admins see a bare "Admin" heading with
+   nothing under it. Matches both the literal markup default
+   ("display:none;") and the CSSOM-serialized form JS produces
+   ("display: none;"). */
+.settings-group--admin:has(#usersSection[style*="display:none"]),
+.settings-group--admin:has(#usersSection[style*="display: none"]) {
+  display: none;
+}
+
 .setting-group {
   margin-bottom: 16px;
 }

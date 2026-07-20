@@ -37,8 +37,10 @@ export function openModal(item) {
     store.selectedFormat = allowedFormats.includes(defFormat) ? defFormat : allowedFormats[0];
   }
   updateOptionGroups();
-  // Hide method/format for podcasts (always yt-dlp + mp3)
-  $$('.modal-section', $('#downloadModal')).forEach((s, i) => { if (i < 2) s.style.display = isPodcast ? 'none' : ''; });
+  // Hide the whole download-options panel for podcasts (always yt-dlp + mp3).
+  // Format's own visibility (yt-dlp only) is otherwise owned by updateOptionGroups().
+  $('#methodSection').style.display = isPodcast ? 'none' : '';
+  if (isPodcast) $('#formatSection').style.display = 'none';
   $('#modalLibraryNotice').style.display = item.inLibrary ? '' : 'none';
   const dlBtn = $('#modalDownload');
   if (item.inLibrary) {

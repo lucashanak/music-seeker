@@ -80,9 +80,29 @@ body.player-active .player-bar { display: flex; }
 .fp-mode-btn svg { width: 20px; height: 20px; }
 .fp-repeat-badge { position: absolute; top: 2px; right: 2px; font-size: 8px; font-weight: 700; color: var(--accent); display: none; }
 .fp-mode-btn.active .fp-repeat-badge { display: block; }
-.fp-actions { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 0 32px 24px; flex-shrink: 0; width: 100%; }
+.fp-actions { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 0 32px 24px; flex-shrink: 0; width: 100%; }
 .fp-actions button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
 .fp-actions button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+
+/* Clusters: DJ controls / track actions / output — separated by thin
+   dividers instead of one flat row of 8-9 icons. */
+.fp-actions-group { display: flex; align-items: center; gap: 16px; }
+.fp-actions-divider { width: 1px; height: 20px; background: var(--border); flex-shrink: 0; }
+
+/* The DJ cluster (#fpDjPanelBtn) is only shown while the DJ engine is
+   active; djpanel.js toggles it via inline style. When it's hidden, collapse
+   the whole group and its trailing divider instead of leaving a dangling
+   separator with nothing to its left. Matches both the pre-JS literal
+   "display:none;" from markup and the post-JS CSSOM-serialized
+   "display: none;" form. */
+.fp-actions-group:has(#fpDjPanelBtn[style*="display:none"]),
+.fp-actions-group:has(#fpDjPanelBtn[style*="display: none"]) {
+  display: none;
+}
+.fp-actions-group:has(#fpDjPanelBtn[style*="display:none"]) + .fp-actions-divider,
+.fp-actions-group:has(#fpDjPanelBtn[style*="display: none"]) + .fp-actions-divider {
+  display: none;
+}
 .fp-vol-wrap { display: flex; align-items: center; gap: 6px; flex: 1; max-width: 200px; }
 .fp-vol-wrap svg { width: 18px; height: 18px; color: var(--text-muted); flex-shrink: 0; }
 .fp-vol { flex: 1; height: 4px; accent-color: var(--accent); cursor: pointer; }

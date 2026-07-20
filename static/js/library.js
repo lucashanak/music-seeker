@@ -1,7 +1,7 @@
 // library.js — Navidrome library playlists management
 
 import { store } from './store.js';
-import { $, $$, esc, showToast, historyBack, showPlaylistPicker, showInputModal } from './utils.js';
+import { $, $$, esc, escAttr, showToast, historyBack, showPlaylistPicker, showInputModal, showPlaylistFormModal, showConfirmModal } from './utils.js';
 import { apiJson } from './api.js';
 import { renderResults } from './search.js';
 import { fetchPlaylistBpm, addBpmBadges, createBpmFilter, addScanButton } from './bpm.js';
@@ -100,6 +100,7 @@ function _setLibDetailCount() {
 }
 let currentLibPlaylistId = null;
 let currentLibPlaylistName = '';
+let currentLibPlaylistDesc = '';
 let currentLibPlaylistTracks = [];
 
 // ── Multi-select state for playlist detail tracks ──
@@ -140,7 +141,7 @@ function renderLibraryGrid(playlists, grid) {
   }
   grid.innerHTML = playlists.map((pl, i) => `
     <div class="card lib-card" data-lib-idx="${i}">
-      ${pl.image ? `<img class="card-img" src="${pl.image}" alt="" loading="lazy">` : `<div class="card-img" style="background:linear-gradient(135deg,var(--accent),#1a1a2e);display:flex;align-items:center;justify-content:center;font-size:28px;color:var(--text);">&#9835;</div>`}
+      ${pl.image ? `<img class="card-img" src="${escAttr(pl.image)}" alt="" loading="lazy">` : `<div class="card-img" style="background:linear-gradient(135deg,var(--accent),#1a1a2e);display:flex;align-items:center;justify-content:center;font-size:28px;color:var(--text);">&#9835;</div>`}
       <div class="card-body">
         <div class="card-title">${esc(pl.name)}</div>
         <div class="card-sub">${pl.songCount} tracks${pl.duration ? ' · ' + _fmtTotal(pl.duration) : ''}</div>
@@ -212,16 +213,44 @@ async function _renameLibraryPlaylist(pl) {
   }
 }
 
+// Undoable playlist deletes: the actual DELETE fires only after a 5s window
+// elapses without the user tapping "Undo". Keyed by id so Undo can cancel it.
+const _pendingPlaylistDeletes = new Map(); // id -> timeout handle
+
+function _schedulePlaylistDelete(id, name, onRestore) {
+  if (_pendingPlaylistDeletes.has(id)) return; // already pending
+  const timer = setTimeout(async () => {
+    _pendingPlaylistDeletes.delete(id);
+    try {
+      await apiJson(`/api/library/playlist/${id}`, { method: 'DELETE' });
+    } catch (e) {
+      showToast('Delete failed');
+      if (onRestore) onRestore();
+    }
+  }, 5000);
+  _pendingPlaylistDeletes.set(id, timer);
+  showToast(`Deleted "${name}"`, false, {
+    actionLabel: 'Undo',
+    duration: 5000,
+    onAction: () => {
+      const t = _pendingPlaylistDeletes.get(id);
+      if (t) { clearTimeout(t); _pendingPlaylistDeletes.delete(id); }
+      if (onRestore) onRestore();
+      showToast('Restored');
+    },
+  });
+}
+
 async function _deleteLibraryPlaylist(pl) {
-  if (!confirm(`Delete playlist "${pl.name}"?`)) return;
-  try {
-    await apiJson(`/api/library/playlist/${pl.id}`, { method: 'DELETE' });
-    libraryCache = null;
-    loadLibrary();
-    showToast('Deleted');
-  } catch (e) {
-    showToast('Delete failed');
+  const ok = await showConfirmModal('Delete playlist?', `"${pl.name}" will be deleted.`, { okLabel: 'Delete' });
+  if (!ok) return;
+  // Optimistically drop the card; the DELETE fires after the undo window.
+  if (Array.isArray(libraryCache)) {
+    libraryCache = libraryCache.filter(p => p.id !== pl.id);
+    const grid = $('#libraryGrid');
+    if (grid) renderLibraryGrid(libraryCache, grid);
   }
+  _schedulePlaylistDelete(pl.id, pl.name, () => { libraryCache = null; loadLibrary(); });
 }
 
 // ── Playlist Detail ──
@@ -236,7 +265,13 @@ async function loadLibraryDetail(id) {
     const data = await apiJson(`/api/library/playlist/${id}`);
     currentLibPlaylistTracks = data.tracks || [];
     currentLibPlaylistName = data.name || '';
+    currentLibPlaylistDesc = data.description || '';
     $('#libDetailName').textContent = data.name || '';
+    const descEl = $('#libDetailDesc');
+    if (descEl) {
+      descEl.textContent = currentLibPlaylistDesc;
+      descEl.style.display = currentLibPlaylistDesc ? '' : 'none';
+    }
     $('#libDetailImg').src = data.image || '';
     if (!data.image) {
       $('#libDetailImg').style.background = 'linear-gradient(135deg,var(--accent),#1a1a2e)';
@@ -451,12 +486,13 @@ async function _deleteTrackFromLibrary(item) {
       method: 'POST',
       body: { name: item.name || '', artist: item.artist || '' },
     });
-    let msg = `Delete "${item.artist} - ${item.name}" from library?`;
+    let msg = 'This removes it from the library permanently.';
     if (check.in_playlists && check.in_playlists.length) {
       msg += `\n\nThis track is in ${check.in_playlists.length} playlist(s):\n` +
         check.in_playlists.map(p => `• ${p.name}`).join('\n');
     }
-    if (!confirm(msg)) return;
+    const ok = await showConfirmModal(`Delete "${item.artist} - ${item.name}"?`, msg, { okLabel: 'Delete' });
+    if (!ok) return;
     await apiJson('/api/library/track/delete', {
       method: 'POST',
       body: { name: item.name || '', artist: item.artist || '' },
@@ -581,7 +617,8 @@ function _buildMultiSelectMenu(playlistId, playlistName) {
       {
         label: `Remove ${count} from "${playlistName}"`, icon: '&times;',
         onClick: async () => {
-          if (!confirm(`Remove ${count} tracks from "${playlistName}"?`)) return;
+          const ok = await showConfirmModal('Remove tracks?', `Remove ${count} tracks from "${playlistName}"?`, { okLabel: 'Remove', danger: false });
+          if (!ok) return;
           try {
             // Sort descending to avoid index shift
             const indices = [..._selectSet].sort((a, b) => b - a);
@@ -596,7 +633,8 @@ function _buildMultiSelectMenu(playlistId, playlistName) {
       {
         label: `Delete ${count} from library`, icon: '&#128465;', danger: true,
         onClick: async () => {
-          if (!confirm(`Delete ${count} tracks from library? This cannot be undone.`)) return;
+          const ok = await showConfirmModal('Delete tracks?', `Delete ${count} tracks from library? This cannot be undone.`, { okLabel: 'Delete' });
+          if (!ok) return;
           let deleted = 0;
           for (const item of selectedItems) {
             try {
@@ -826,39 +864,69 @@ export function init() {
   const delBtn = $('#deleteLibPlaylist');
   if (delBtn) delBtn.addEventListener('click', async () => {
     if (!currentLibPlaylistId) return;
-    if (!confirm('Delete this playlist from Navidrome?')) return;
-    try {
-      await apiJson(`/api/library/playlist/${currentLibPlaylistId}`, { method: 'DELETE' });
-      showToast('Playlist deleted');
-      libraryCache = null;
-      closeLibraryDetail();
+    const id = currentLibPlaylistId;
+    const name = currentLibPlaylistName;
+    const ok = await showConfirmModal('Delete playlist?', `"${name}" will be deleted.`, { okLabel: 'Delete' });
+    if (!ok) return;
+    // Leave the detail view and optimistically drop the card; DELETE fires after
+    // the undo window (undo re-loads the library from the server).
+    closeLibraryDetail();
+    if (Array.isArray(libraryCache)) {
+      libraryCache = libraryCache.filter(p => p.id !== id);
+      const grid = $('#libraryGrid');
+      if (grid) renderLibraryGrid(libraryCache, grid);
+    } else {
       loadLibrary();
-    } catch (e) {
-      showToast('Failed to delete playlist');
     }
+    _schedulePlaylistDelete(id, name, () => { libraryCache = null; loadLibrary(); });
   });
 
-  // Rename Playlist
+  // Edit Playlist details (name + description)
   const renameBtn = $('#renameLibPlaylist');
   if (renameBtn) renameBtn.addEventListener('click', async () => {
     if (!currentLibPlaylistId) return;
-    const name = await showInputModal('Rename playlist', currentLibPlaylistName, { okLabel: 'Rename' });
-    if (!name || name === currentLibPlaylistName) return;
+    const result = await showPlaylistFormModal({
+      title: 'Edit playlist',
+      name: currentLibPlaylistName,
+      description: currentLibPlaylistDesc,
+      okLabel: 'Save',
+    });
+    if (!result) return;
+    if (result.name === currentLibPlaylistName && result.description === currentLibPlaylistDesc) return;
     try {
-      await apiJson(`/api/library/playlist/${currentLibPlaylistId}/rename`, {
+      await apiJson(`/api/library/playlist/${currentLibPlaylistId}/details`, {
         method: 'PUT',
-        body: { name },
+        body: { name: result.name, description: result.description },
       });
-      currentLibPlaylistName = name;
-      $('#libDetailName').textContent = name;
       if (store.playlistMode && store.playlistMode.id === currentLibPlaylistId) {
-        store.playlistMode.name = name;
+        store.playlistMode.name = result.name;
       }
       libraryCache = null;
+      loadLibraryDetail(currentLibPlaylistId);
       loadLibrary();
-      showToast('Playlist renamed');
+      showToast('Playlist updated');
     } catch (e) {
-      showToast('Failed to rename');
+      showToast('Failed to update');
+    }
+  });
+
+  // Change / remove cover
+  const coverBtn = $('#coverLibPlaylist');
+  if (coverBtn) coverBtn.addEventListener('click', async () => {
+    if (!currentLibPlaylistId) return;
+    const url = await showInputModal('Change cover', '', { okLabel: 'Set cover', placeholder: 'Paste an image URL' });
+    if (!url) return;
+    try {
+      await apiJson(`/api/library/playlist/${currentLibPlaylistId}/cover`, {
+        method: 'POST',
+        body: { image_url: url },
+      });
+      libraryCache = null;
+      loadLibraryDetail(currentLibPlaylistId);
+      loadLibrary();
+      showToast('Cover updated');
+    } catch (e) {
+      showToast('Failed to set cover');
     }
   });
 
@@ -935,7 +1003,8 @@ export function init() {
   const bulkRemove = $('#libBulkRemove');
   if (bulkRemove) bulkRemove.addEventListener('click', async () => {
     if (!_selectSet.size || !currentLibPlaylistId) return;
-    if (!confirm(`Remove ${_selectSet.size} tracks from playlist?`)) return;
+    const ok = await showConfirmModal('Remove tracks?', `Remove ${_selectSet.size} tracks from playlist?`, { okLabel: 'Remove', danger: false });
+    if (!ok) return;
     try {
       // Remove by indices (descending to avoid shift)
       const indices = [..._selectSet].sort((a, b) => b - a);
@@ -982,10 +1051,10 @@ export function init() {
   // New Playlist
   const newBtn = $('#newLibPlaylist');
   if (newBtn) newBtn.addEventListener('click', async () => {
-    const name = await showInputModal('New playlist', '', { okLabel: 'Create', placeholder: 'Playlist name' });
-    if (!name) return;
+    const result = await showPlaylistFormModal({ title: 'New playlist', okLabel: 'Create' });
+    if (!result) return;
     try {
-      const created = await apiJson('/api/library/playlist', { method: 'POST', body: { name } });
+      const created = await apiJson('/api/library/playlist', { method: 'POST', body: { name: result.name, description: result.description } });
       showToast('Playlist created');
       libraryCache = null;
       if (created && created.id) loadLibraryDetail(created.id);

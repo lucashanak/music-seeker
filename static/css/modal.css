@@ -42,19 +42,65 @@
    disappears for Soulseek/Lidarr — those hints don't mention quality). */
 .modal-hint { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
 
-/* Medium secondary action (Add/Download row) — reuses bg-elevated look
-   previously inlined on these buttons. */
-.modal-secondary { background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); }
+/* ── Action hierarchy ──
+   Three dedicated classes, no shared base with overlapping properties, so
+   there is no source-order/specificity fight between "primary" and
+   "secondary" look (the old bug: .btn-download + .modal-secondary on the
+   same element both set background/color at equal specificity, and
+   .btn-download — defined later in the file — silently won every time,
+   making Add/Download render identical to Play). */
+
+/* Primary — the one filled, unmissable action: Play. */
+.modal-btn-primary {
+  width: 100%; padding: 16px; background: var(--accent); color: #000;
+  border: none; border-radius: 12px; font-size: 15px; font-weight: 700;
+  cursor: pointer; transition: all var(--transition); font-family: inherit;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.modal-btn-primary:hover { box-shadow: var(--shadow-glow); transform: translateY(-1px); }
+.modal-btn-primary:active { transform: translateY(0); }
+.modal-btn-primary:disabled { opacity: .4; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* Secondary — outlined, clearly lower-weight than Play: Add to Queue, Download. */
+.modal-btn-outline {
+  padding: 13px 16px; background: transparent; color: var(--text);
+  border: 2px solid var(--border); border-radius: 12px; font-size: 14px;
+  font-weight: 600; cursor: pointer; transition: all var(--transition);
+  font-family: inherit;
+}
+.modal-btn-outline:hover { border-color: var(--border-hover); background: var(--bg-input); }
+.modal-btn-outline:disabled { opacity: .4; cursor: not-allowed; }
+.modal-btn-download-cta { width: 100%; margin-top: 16px; }
+
+/* Row holding Add to Queue + the demoted Radio/Follow chips. */
+.modal-quick-row { display: flex; gap: 8px; align-items: stretch; margin-top: 10px; }
 
 /* Small, lighter "chip" style for demoted secondary actions (Radio/Follow),
-   visually distinct from the primary Play and the medium Add/Download row. */
+   visually distinct from the primary Play and the medium Add to Queue button. */
 .modal-chip {
-  flex: 1; padding: 9px 8px; text-align: center; background: transparent;
+  flex: 0 0 auto; padding: 9px 12px; text-align: center; background: transparent;
   border: 1px solid var(--border); border-radius: 20px;
   color: var(--text-muted); cursor: pointer; font-size: 12px; font-weight: 500;
   font-family: inherit; transition: all var(--transition);
 }
 .modal-chip:hover { border-color: var(--border-hover); color: var(--text); }
+
+/* Labeled divider that visually ties Method/Format to Download and separates
+   them from the listen/queue actions above. */
+.modal-divider { display: flex; align-items: center; gap: 10px; margin: 20px 0 16px; }
+.modal-divider::before, .modal-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.modal-divider span {
+  font-size: 11px; color: var(--text-dim); text-transform: uppercase;
+  letter-spacing: 1.2px; font-weight: 600; white-space: nowrap;
+}
+
+/* Groups Method + Format + Download into one visually distinct panel so it
+   reads as "these options only affect Download". */
+.modal-download-panel {
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 14px; padding: 16px;
+}
+.modal-download-panel .modal-section:last-of-type { margin-bottom: 0; }
 
 .btn-download {
   width: 100%; padding: 15px; background: var(--accent); color: #000;

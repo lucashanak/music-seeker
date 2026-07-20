@@ -307,6 +307,7 @@ async def get_playlists() -> list[dict]:
             {
                 "id": p["id"],
                 "name": p.get("name", ""),
+                "description": p.get("comment", ""),
                 "songCount": p.get("songCount", 0),
                 "duration": p.get("duration", 0),
                 "changed": p.get("changed", ""),  # ISO mtime — used by gc_temp_playlists recency sort
@@ -356,6 +357,7 @@ async def get_playlist(playlist_id: str) -> dict | None:
         return {
             "id": pl.get("id", ""),
             "name": pl.get("name", ""),
+            "description": pl.get("comment", ""),
             "songCount": pl.get("songCount", 0),
             "image": f"/api/library/cover/{pl['coverArt']}" if pl.get("coverArt") else "",
             "tracks": tracks,
@@ -405,15 +407,33 @@ async def remove_track_by_name(playlist_id: str, name: str, artist: str, index: 
     return False
 
 
-async def rename_playlist(playlist_id: str, name: str) -> bool:
-    """Rename a Navidrome playlist."""
-    if not NAVIDROME_PASSWORD or not name:
+async def update_playlist_details(playlist_id: str, name: str | None = None,
+                                   comment: str | None = None) -> bool:
+    """Update a playlist's name and/or comment (description) via Subsonic
+    updatePlaylist. Passing an empty string clears the field; None leaves it
+    unchanged. Returns False if nothing was provided to change."""
+    if not NAVIDROME_PASSWORD:
+        return False
+    extra = {"playlistId": playlist_id}
+    if name is not None:
+        extra["name"] = name
+    if comment is not None:
+        extra["comment"] = comment
+    # Nothing to change (only playlistId present)
+    if len(extra) == 1:
         return False
     async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
-        resp = await client.get("/rest/updatePlaylist", params=_params(playlistId=playlist_id, name=name))
+        resp = await client.get("/rest/updatePlaylist", params=_params(**extra))
         resp.raise_for_status()
         sr = resp.json().get("subsonic-response", {})
         return sr.get("status") == "ok"
+
+
+async def rename_playlist(playlist_id: str, name: str) -> bool:
+    """Rename a Navidrome playlist."""
+    if not name:
+        return False
+    return await update_playlist_details(playlist_id, name=name)
 
 
 async def reorder_playlist(playlist_id: str, song_ids: list[str]) -> bool:
@@ -492,8 +512,12 @@ def is_temp_playlist_name(name: str) -> bool:
     return any((name or "").startswith(p) for p in TEMP_PREFIXES)
 
 
-async def create_playlist_and_get_id(name: str) -> str | None:
-    """Create an empty playlist; return the new ID, or None on failure."""
+async def create_playlist_and_get_id(name: str, description: str | None = None) -> str | None:
+    """Create an empty playlist; return the new ID, or None on failure.
+
+    Subsonic's createPlaylist has no `comment` param, so an optional description
+    is applied via a follow-up updatePlaylist call (best-effort — a failed
+    description update does not fail the create)."""
     if not NAVIDROME_PASSWORD:
         return None
     async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=15) as client:
@@ -502,7 +526,10 @@ async def create_playlist_and_get_id(name: str) -> str | None:
         sr = resp.json().get("subsonic-response", {})
         if sr.get("status") != "ok":
             return None
-        return sr.get("playlist", {}).get("id")
+        new_id = sr.get("playlist", {}).get("id")
+    if new_id and description is not None:
+        await update_playlist_details(new_id, comment=description)
+    return new_id
 
 
 async def get_or_create_temp_playlist(target_name: str) -> dict | None:

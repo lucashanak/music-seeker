@@ -54,18 +54,33 @@
   font-size: 13px; color: var(--text-muted); margin: -12px 0 20px;
 }
 
-/* Secondary sub-navigation: nested inside a page that already has peer nav
-   (e.g. Spotify sub-view inside the Library tabs). Reads as sub-nav, not peer
-   nav — no pill background, smaller, underline-on-active instead of filled. */
-.sp-tabs--sub { gap: 4px; }
-.sp-tabs--sub .sp-tab {
-  padding: 6px 12px; border-radius: 0; font-size: 13px; font-weight: 500;
-  background: none; color: var(--text-muted);
-  border-bottom: 2px solid transparent;
+/* Header row for a sub-view that pairs a title with its own secondary nav
+   (e.g. Spotify sub-view inside the Library tabs). Keeps the sub-tabs
+   visually anchored to *this* section's heading instead of reading as a
+   second full-width tab bar stacked under the top-level Library tabs. */
+.sp-header {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 20px;
 }
-.sp-tabs--sub .sp-tab:hover { background: none; color: var(--text); }
+.sp-header .page-title { margin-bottom: 2px; }
+.sp-header .page-subtitle { margin: 0; }
+
+/* Secondary sub-navigation: nested inside a page that already has peer nav.
+   Rendered as a compact segmented pill control (own pill "track" background,
+   small selected pill inside) so it reads unmistakably as sub-nav, not a
+   second row of primary tabs. */
+.sp-tabs--sub {
+  gap: 2px; margin-bottom: 0; flex-shrink: 0;
+  padding: 3px; background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.sp-tabs--sub .sp-tab {
+  padding: 5px 14px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: none; color: var(--text-muted); border-bottom: none;
+}
+.sp-tabs--sub .sp-tab:hover { background: var(--bg-card); color: var(--text); }
 .sp-tabs--sub .sp-tab.active {
-  background: none; color: var(--text); border-bottom-color: var(--accent);
+  background: var(--accent); color: #000; border-bottom: none;
 }
 .sp-section-title {
   font-size: 13px; font-weight: 600; color: var(--text-muted);
@@ -85,6 +100,7 @@
 .playlist-hero-info { flex: 1; min-width: 0; }
 .playlist-hero-info h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
 .playlist-hero-info p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+.playlist-hero-desc { white-space: pre-line; line-height: 1.4; }
 .playlist-hero-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; flex-shrink: 0; }
 
 /* Shared hero action button classes (replace per-button inline styles). */

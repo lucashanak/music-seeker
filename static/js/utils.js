@@ -49,7 +49,11 @@ export function formatSize(bytes) {
 }
 
 // ── Toast Notification ──
-export function showToast(msg, isError = false) {
+// Optional opts: { actionLabel, onAction, duration } — when actionLabel + onAction
+// are given, render an inline action button (e.g. "Undo") and keep the toast up
+// for `duration` ms (default 2000). Clicking the action fires onAction and hides.
+export function showToast(msg, isError = false, opts = {}) {
+  const { actionLabel, onAction, duration } = opts;
   let toast = $('#toastMsg');
   if (!toast) {
     toast = document.createElement('div');
@@ -69,10 +73,29 @@ export function showToast(msg, isError = false) {
     toast.style.color = 'var(--text)';
     toast.style.border = '1px solid var(--border)';
   }
-  toast.textContent = msg;
-  toast.style.opacity = '1';
   clearTimeout(toast._timer);
-  toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 2000);
+  if (actionLabel && typeof onAction === 'function') {
+    toast.textContent = '';
+    toast.style.display = 'flex';
+    toast.style.alignItems = 'center';
+    const span = document.createElement('span');
+    span.textContent = msg;
+    const btn = document.createElement('button');
+    btn.textContent = actionLabel;
+    btn.style.cssText = 'margin-left:16px;background:none;border:none;color:var(--accent);font-weight:600;font-size:13px;cursor:pointer;padding:0;';
+    btn.addEventListener('click', () => {
+      clearTimeout(toast._timer);
+      toast.style.opacity = '0';
+      onAction();
+    });
+    toast.appendChild(span);
+    toast.appendChild(btn);
+  } else {
+    toast.style.display = '';
+    toast.textContent = msg;
+  }
+  toast.style.opacity = '1';
+  toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, duration || 2000);
 }
 
 // ── Browser Notifications ──
@@ -233,5 +256,80 @@ export function showInputModal(title, defaultValue = '', { okLabel = 'OK', place
     modal.querySelector('.input-modal-cancel').addEventListener('click', () => done(null));
     overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
     setTimeout(() => { input.focus(); input.select(); }, 30);
+  });
+}
+
+// Richer playlist form modal: name input + description textarea. Resolves to
+// { name, description } (description may be ""), or null on cancel / empty name.
+// Enter in the name field submits; the textarea keeps normal newline behavior.
+export function showPlaylistFormModal({ title = 'Playlist', name = '', description = '', okLabel = 'Save' } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay open';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);';
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:var(--bg-card);border-radius:16px;padding:20px;min-width:280px;max-width:420px;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.5);';
+    modal.innerHTML = `
+      <div style="font-size:15px;font-weight:600;margin-bottom:14px;">${esc(title)}</div>
+      <input type="text" class="pl-form-name" placeholder="Playlist name" style="padding:11px 12px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);border-radius:10px;font-size:14px;outline:none;">
+      <textarea class="pl-form-desc" rows="3" placeholder="Description (optional)" style="margin-top:10px;padding:11px 12px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);border-radius:10px;font-size:14px;outline:none;resize:vertical;font-family:inherit;"></textarea>
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button class="pl-form-ok" style="flex:1;padding:10px;border:none;background:var(--accent);color:#000;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;">${esc(okLabel)}</button>
+        <button class="pl-form-cancel" style="flex:1;padding:10px;border:1px solid var(--border);background:none;color:var(--text-muted);border-radius:10px;cursor:pointer;font-size:13px;">Cancel</button>
+      </div>`;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    const nameEl = modal.querySelector('.pl-form-name');
+    const descEl = modal.querySelector('.pl-form-desc');
+    nameEl.value = name || '';
+    descEl.value = description || '';
+    const done = (val) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(val); };
+    const submit = () => {
+      const n = nameEl.value.trim();
+      if (!n) { nameEl.focus(); return; } // name is required — keep the modal open
+      done({ name: n, description: descEl.value.trim() });
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      else if (e.key === 'Enter' && e.target === nameEl) { e.preventDefault(); submit(); }
+    };
+    document.addEventListener('keydown', onKey);
+    modal.querySelector('.pl-form-ok').addEventListener('click', submit);
+    modal.querySelector('.pl-form-cancel').addEventListener('click', () => done(null));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+    setTimeout(() => { nameEl.focus(); nameEl.select(); }, 30);
+  });
+}
+
+// Confirmation modal — replaces window.confirm(). Resolves true (OK) / false
+// (cancel/escape/backdrop). The OK button uses the danger (red) style by default.
+export function showConfirmModal(title, message = '', { okLabel = 'Delete', danger = true } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay open';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);';
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:var(--bg-card);border-radius:16px;padding:20px;min-width:280px;max-width:420px;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.5);';
+    const okBg = danger ? 'var(--red)' : 'var(--accent)';
+    const okColor = danger ? '#fff' : '#000';
+    modal.innerHTML = `
+      <div style="font-size:15px;font-weight:600;margin-bottom:${message ? '10px' : '14px'};">${esc(title)}</div>
+      ${message ? `<div style="font-size:13px;color:var(--text-muted);line-height:1.5;white-space:pre-line;">${esc(message)}</div>` : ''}
+      <div style="display:flex;gap:8px;margin-top:16px;">
+        <button class="confirm-ok" style="flex:1;padding:10px;border:none;background:${okBg};color:${okColor};border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;">${esc(okLabel)}</button>
+        <button class="confirm-cancel" style="flex:1;padding:10px;border:1px solid var(--border);background:none;color:var(--text-muted);border-radius:10px;cursor:pointer;font-size:13px;">Cancel</button>
+      </div>`;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    const done = (val) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(val); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); done(false); }
+      else if (e.key === 'Enter') { e.preventDefault(); done(true); }
+    };
+    document.addEventListener('keydown', onKey);
+    modal.querySelector('.confirm-ok').addEventListener('click', () => done(true));
+    modal.querySelector('.confirm-cancel').addEventListener('click', () => done(false));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(false); });
+    setTimeout(() => { modal.querySelector('.confirm-ok').focus(); }, 30);
   });
 }

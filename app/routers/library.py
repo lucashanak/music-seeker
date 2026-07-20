@@ -8,7 +8,7 @@ import time
 
 from pydantic import BaseModel
 
-from app.models import CreatePlaylistRequest, AddTracksByIdRequest, RemoveTracksRequest, AddTrackByNameRequest, DeleteAlbumRequest, LikeRequest
+from app.models import CreatePlaylistRequest, PlaylistDetailsRequest, PlaylistCoverRequest, AddTracksByIdRequest, RemoveTracksRequest, AddTrackByNameRequest, DeleteAlbumRequest, LikeRequest
 from app.services import auth, library, downloader, player
 from app.services.jobs import create_job
 from app.dependencies import _get_device_id
@@ -30,6 +30,32 @@ router = APIRouter(prefix="/api/library", tags=["library"])
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 LIKES_FILE = os.path.join(DATA_DIR, "likes.json")
 _likes_lock = threading.Lock()
+
+# ── App-side playlist cover overrides (Subsonic can't store an arbitrary cover
+# URL, so we persist {playlist_id: image_url} here and merge it into responses) ──
+PLAYLIST_COVERS_FILE = os.path.join(DATA_DIR, "playlist_covers.json")
+_covers_lock = threading.Lock()
+
+
+def _load_playlist_covers() -> dict:
+    """Load the cover override map: {playlist_id: image_url}."""
+    if os.path.exists(PLAYLIST_COVERS_FILE):
+        try:
+            with open(PLAYLIST_COVERS_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_playlist_covers(data: dict):
+    # Atomic write (same pattern as likes.json): temp file + os.replace so a
+    # crash mid-dump can't truncate and wipe all overrides.
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = PLAYLIST_COVERS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, PLAYLIST_COVERS_FILE)
 
 
 def _like_key(req: LikeRequest) -> str:
@@ -96,6 +122,13 @@ async def get_playlists(user: dict = Depends(auth.get_current_user)):
     playlists = await library.get_playlists()
     # Hide internal temp playlists (Up Next + Radio) from the library UI
     playlists = [p for p in playlists if not library.is_temp_playlist_name(p.get("name", ""))]
+    # Apply app-side cover overrides (override wins over track-derived art)
+    with _covers_lock:
+        covers = _load_playlist_covers()
+    for p in playlists:
+        override = covers.get(str(p.get("id", "")))
+        if override:
+            p["image"] = override
     return {"playlists": playlists}
 
 
@@ -131,12 +164,17 @@ async def get_playlist(playlist_id: str, user: dict = Depends(auth.get_current_u
     pl = await library.get_playlist(playlist_id)
     if not pl:
         raise HTTPException(404, "Playlist not found")
+    # Apply app-side cover override (override wins over track-derived art)
+    with _covers_lock:
+        override = _load_playlist_covers().get(str(playlist_id))
+    if override:
+        pl["image"] = override
     return pl
 
 
 @router.post("/playlist")
 async def create_playlist(req: CreatePlaylistRequest, user: dict = Depends(auth.get_current_user)):
-    new_id = await library.create_playlist_and_get_id(req.name)
+    new_id = await library.create_playlist_and_get_id(req.name, req.description)
     if not new_id:
         raise HTTPException(500, "Failed to create playlist")
     return {"status": "created", "id": new_id}
@@ -179,11 +217,47 @@ async def remove_tracks_from_playlist(playlist_id: str, req: RemoveTracksRequest
 
 @router.put("/playlist/{playlist_id}/rename")
 async def rename_playlist(playlist_id: str, req: CreatePlaylistRequest, user: dict = Depends(auth.get_current_user)):
-    """Rename a playlist."""
-    ok = await library.rename_playlist(playlist_id, req.name)
+    """Rename a playlist (also updates description when provided)."""
+    ok = await library.update_playlist_details(playlist_id, name=req.name, comment=req.description)
     if not ok:
         raise HTTPException(500, "Failed to rename playlist")
     return {"status": "ok"}
+
+
+@router.put("/playlist/{playlist_id}/details")
+async def update_playlist_details(playlist_id: str, req: PlaylistDetailsRequest, user: dict = Depends(auth.get_current_user)):
+    """Update a playlist's name and/or description (Subsonic name/comment)."""
+    if req.name is None and req.description is None:
+        raise HTTPException(400, "Provide name and/or description")
+    ok = await library.update_playlist_details(playlist_id, name=req.name, comment=req.description)
+    if not ok:
+        raise HTTPException(500, "Failed to update playlist details")
+    return {"status": "ok"}
+
+
+@router.post("/playlist/{playlist_id}/cover")
+async def set_playlist_cover(playlist_id: str, req: PlaylistCoverRequest, user: dict = Depends(auth.get_current_user)):
+    """Set an app-side cover image override (a URL) for a playlist."""
+    if not req.image_url:
+        raise HTTPException(400, "image_url is required")
+    if not req.image_url.startswith(("http://", "https://")):
+        raise HTTPException(400, "image_url must be an http(s) URL")
+    with _covers_lock:
+        covers = _load_playlist_covers()
+        covers[str(playlist_id)] = req.image_url
+        _save_playlist_covers(covers)
+    return {"status": "ok", "image": req.image_url}
+
+
+@router.delete("/playlist/{playlist_id}/cover")
+async def delete_playlist_cover(playlist_id: str, user: dict = Depends(auth.get_current_user)):
+    """Clear an app-side cover image override for a playlist."""
+    with _covers_lock:
+        covers = _load_playlist_covers()
+        existed = covers.pop(str(playlist_id), None) is not None
+        if existed:
+            _save_playlist_covers(covers)
+    return {"status": "ok", "cleared": existed}
 
 
 @router.put("/playlist/{playlist_id}/reorder")
