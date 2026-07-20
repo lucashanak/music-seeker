@@ -121,10 +121,12 @@
   <button class="nav-btn active" data-page="search">Search</button>
   <button class="nav-btn" data-page="discover">Discover</button>
   <button class="nav-btn" data-page="library">Library</button>
-  <button class="nav-btn" data-page="playlists">My Spotify</button>
-  <button class="nav-btn" data-page="podcasts">My Podcasts</button>
-  <button class="nav-btn" data-page="favorites">Favorites</button>
   <button class="nav-btn" data-page="settings">Settings</button>
+  <!-- Legacy hidden stub: "My Spotify" is now the Library → Spotify sub-tab.
+       Kept in the DOM (force-hidden via .nav-legacy-hidden in nav.css) so the
+       existing settings.js / auth.js hide_spotify handlers that target
+       .nav-btn[data-page="playlists"] keep working without a null reference. -->
+  <button class="nav-btn nav-legacy-hidden" data-page="playlists" aria-hidden="true" tabindex="-1">My Spotify</button>
   <div class="nav-spacer"></div>
   <button class="downloads-btn" id="downloadsToggle">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -151,17 +153,10 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
     Library
   </button>
-  <button class="bnav-btn" data-page="playlists">
+  <!-- Legacy hidden stub (see desktop nav note): Spotify is now Library → Spotify. -->
+  <button class="bnav-btn nav-legacy-hidden" data-page="playlists" aria-hidden="true" tabindex="-1">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
     Spotify
-  </button>
-  <button class="bnav-btn" data-page="podcasts">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-    Podcasts
-  </button>
-  <button class="bnav-btn" data-page="favorites">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
-    Favorites
   </button>
   <button class="bnav-btn" data-page="downloads" id="bnavDownloads">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -261,9 +256,9 @@
         <p id="albumDetailCount"></p>
       </div>
       <div class="playlist-hero-actions">
-        <button class="btn-download" id="playAlbum" style="width:auto; padding:12px 28px; background:var(--accent); color:#000;">&#9654; Play All</button>
-        <button class="btn-download" id="shuffleAlbum" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">&#128256; Shuffle</button>
-        <button class="btn-download" id="queueAlbum" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">+ Add All</button>
+        <button class="btn-download btn-hero-primary" id="playAlbum">&#9654; Play All</button>
+        <button class="btn-download btn-hero-secondary" id="shuffleAlbum">&#128256; Shuffle</button>
+        <button class="btn-download btn-hero-secondary" id="queueAlbum">+ Add All</button>
         <button class="btn-download" id="downloadAlbum" style="width:auto; padding:12px 28px;">Download All</button>
       </div>
     </div>
@@ -310,8 +305,17 @@
   </div>
 </main>
 
-<!-- ── Library Page (Navidrome) ── -->
+<!-- ── Library Page (consolidated: Downloaded / Spotify / Podcasts / Favorites) ── -->
 <main id="pageLibrary" style="display:none">
+  <div class="sp-tabs" id="libraryTabs">
+    <button class="sp-tab active" data-lib-tab="downloaded">Downloaded</button>
+    <button class="sp-tab" data-lib-tab="spotify">Spotify</button>
+    <button class="sp-tab" data-lib-tab="podcasts">Podcasts</button>
+    <button class="sp-tab" data-lib-tab="favorites">Favorites</button>
+  </div>
+
+  <!-- ── Sub-view: Downloaded (Navidrome library) ── -->
+  <div id="libTabDownloaded">
   <div id="libraryList">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
       <h2 class="page-title" style="margin:0;">My Library</h2>
@@ -335,8 +339,8 @@
         <p id="likedDetailCount"></p>
       </div>
       <div class="playlist-hero-actions">
-        <button class="btn-download" id="playLikedSongs" style="width:auto; padding:12px 28px; background:var(--accent); color:#000;">&#9654; Play All</button>
-        <button class="btn-download" id="shuffleLikedSongs" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">&#128256; Shuffle</button>
+        <button class="btn-download btn-hero-primary" id="playLikedSongs">&#9654; Play All</button>
+        <button class="btn-download btn-hero-secondary" id="shuffleLikedSongs">&#128256; Shuffle</button>
       </div>
     </div>
     <div id="likedSongsTracks" class="grid"></div>
@@ -350,12 +354,12 @@
         <p id="libDetailCount"></p>
       </div>
       <div class="playlist-hero-actions">
-        <button class="btn-download" id="playLibPlaylist" style="width:auto; padding:12px 28px; background:var(--accent); color:#000;">&#9654; Play All</button>
-        <button class="btn-download" id="queueLibPlaylist" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">+ Add All</button>
-        <button class="btn-download" id="renameLibPlaylist" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">Rename</button>
-        <button class="btn-download" id="duplicateLibPlaylist" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">Duplicate</button>
-        <button class="btn-download" id="mergeLibPlaylist" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">Merge</button>
-        <button class="btn-download" id="deleteLibPlaylist" style="width:auto; padding:12px 28px; background:#ef4444; color:#fff;">Delete</button>
+        <button class="btn-download btn-hero-primary" id="playLibPlaylist">&#9654; Play All</button>
+        <button class="btn-download btn-hero-secondary" id="queueLibPlaylist">+ Add All</button>
+        <button class="btn-download btn-hero-secondary" id="renameLibPlaylist">Rename</button>
+        <button class="btn-download btn-hero-secondary" id="duplicateLibPlaylist">Duplicate</button>
+        <button class="btn-download btn-hero-secondary" id="mergeLibPlaylist">Merge</button>
+        <button class="btn-download btn-hero-danger" id="deleteLibPlaylist">Delete</button>
       </div>
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
@@ -371,10 +375,10 @@
     </div>
     <div id="libraryTracks" class="grid"></div>
   </div>
-</main>
+  </div><!-- /libTabDownloaded -->
 
-<!-- ── Playlists Page ── -->
-<main id="pagePlaylists" style="display:none">
+  <!-- ── Sub-view: Spotify (moved from former "My Spotify" page) ── -->
+  <div id="pagePlaylists" style="display:none">
   <div id="spotifyLibrary">
     <h2 class="page-title">My Spotify Library</h2>
     <div class="sp-tabs">
@@ -405,9 +409,9 @@
         <p id="plDetailCount"></p>
       </div>
       <div class="playlist-hero-actions">
-        <button class="btn-download" id="playPlaylist" style="width:auto; padding:12px 28px; background:var(--accent); color:#000;">&#9654; Play All</button>
-        <button class="btn-download" id="shufflePlaylist" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">&#128256; Shuffle</button>
-        <button class="btn-download" id="queuePlaylist" style="width:auto; padding:12px 28px; background:var(--bg-elevated); color:var(--text); border:1px solid var(--border);">+ Add All</button>
+        <button class="btn-download btn-hero-primary" id="playPlaylist">&#9654; Play All</button>
+        <button class="btn-download btn-hero-secondary" id="shufflePlaylist">&#128256; Shuffle</button>
+        <button class="btn-download btn-hero-secondary" id="queuePlaylist">+ Add All</button>
         <button class="btn-download" id="downloadPlaylist" style="width:auto; padding:12px 28px;">Download All</button>
         <label style="font-size: 12px; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; gap: 6px;">
           <input type="checkbox" id="createPlaylistCheck" checked style="width: 14px; height: 14px; accent-color: var(--accent);">
@@ -417,10 +421,10 @@
     </div>
     <div id="playlistTracks" class="grid"></div>
   </div>
-</main>
+  </div><!-- /pagePlaylists sub-view -->
 
-<!-- ── Podcasts Page ── -->
-<main id="pagePodcasts" style="display:none">
+  <!-- ── Sub-view: Podcasts (moved from former "My Podcasts" page) ── -->
+  <div id="pagePodcasts" style="display:none">
   <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
     <h2 class="page-title" style="margin:0;">My Podcasts</h2>
     <div style="display:flex;align-items:center;gap:10px;">
@@ -452,10 +456,10 @@
       <button id="podcastBulkDelete" class="btn-delete-show">Delete Selected</button>
     </div>
   </div>
-</main>
+  </div><!-- /pagePodcasts sub-view -->
 
-<!-- ── Favorites Page ── -->
-<main id="pageFavorites" style="display:none">
+  <!-- ── Sub-view: Favorites (moved from former "Favorites" page) ── -->
+  <div id="pageFavorites" style="display:none">
   <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
     <h2 class="page-title" style="margin:0;">Favorites</h2>
     <button id="checkReleasesBtn" class="btn-check-new" title="Check for new releases now">Check Now</button>
@@ -464,7 +468,8 @@
   <div id="favoritesEmpty" class="empty-state" style="display:none;">
     <p>No favorite artists yet. Click the heart icon on any artist to follow them.</p>
   </div>
-</main>
+  </div><!-- /pageFavorites sub-view -->
+</main><!-- /pageLibrary -->
 
 <!-- ── Settings Page ── -->
 <main id="pageSettings" style="display:none">
@@ -1121,6 +1126,7 @@
         <button class="option-btn" data-value="slskd">Soulseek<small>P2P, lossless</small></button>
         <button class="option-btn" data-value="lidarr">Lidarr<small>Torrent, monitors</small></button>
       </div>
+      <div class="modal-hint" id="modalMethodHint"></div>
     </div>
     <div class="modal-section" id="formatSection">
       <div class="modal-label">Format</div>
@@ -1131,14 +1137,14 @@
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="btn-download" id="modalPlay" style="background:var(--accent);color:#000;flex:1;">&#9654; Play</button>
-      <button class="btn-download" id="modalAddQueue" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);flex:1;">+ Add</button>
-      <button class="btn-download" id="modalDownload" style="flex:1;">Download</button>
+      <button class="btn-download modal-secondary" id="modalAddQueue" style="flex:1;">+ Add</button>
+      <button class="btn-download modal-secondary" id="modalDownload" style="flex:1;">Download</button>
     </div>
     <div style="display:flex; gap:8px; margin-top:8px;">
-      <button class="btn-download" id="modalRadio" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);flex:1;">&#x1f4fb; Radio</button>
-      <button class="btn-download" id="modalFavToggle" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);flex:1;">&#x2661; Follow</button>
+      <button class="modal-chip" id="modalRadio">&#x1f4fb; Radio</button>
+      <button class="modal-chip" id="modalFavToggle">&#x2661; Follow</button>
     </div>
-    <button class="btn-download" id="modalDeleteTrack" style="display:none;background:#ef4444;color:#fff;width:100%;margin-top:8px;">Delete from Library</button>
+    <button class="btn-download" id="modalDeleteTrack" style="display:none;background:var(--red);color:#fff;width:100%;margin-top:8px;">Delete from Library</button>
     <label id="modalAutoDownload" class="modal-auto-dl" style="display:none;">
       <input type="checkbox" id="modalAutoDownloadCb">
       <span>Auto-download new releases</span>
@@ -1169,7 +1175,7 @@
     <button class="like-btn" id="playerLike" title="Add to Liked Songs"></button>
     <button id="playerDevicesBtn" title="Remote devices"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></button>
     <button id="playerCastBtn" title="Cast to speaker"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 16.1A5 5 0 015.9 20M2 12.05A9 9 0 019.95 20M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg></button>
-    <button id="playerQueueBtn" title="Playlist"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
+    <button id="playerQueueBtn" title="Queue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
     <button class="player-mode-btn" id="playerShuffle" title="Shuffle"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg></button>
     <button class="player-mode-btn" id="playerRepeat" title="Repeat off"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg><span class="player-repeat-badge" id="playerRepeatBadge"></span></button>
     <button id="playerAddToPlaylist" title="Add to playlist"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg></button>
@@ -1191,7 +1197,7 @@
     <div class="fp-header">
       <button id="fpClose" title="Close"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></button>
       <span class="fp-source">Now Playing</span>
-      <button id="fpQueueTop" title="Playlist"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
+      <button id="fpQueueTop" title="Queue"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
     </div>
     <div class="fp-art-wrap">
       <img class="fp-art" id="fpImg" src="" alt="">
@@ -1303,7 +1309,7 @@
   </div>
 
   <div class="fp-queue-side" id="fpQueueSide">
-    <div class="panel-header">Playlist <span class="playlist-mode-badge" id="fpPlaylistBadge" style="display:none;"></span><div style="display:flex;gap:8px;align-items:center;"><button class="btn-logout" id="fpSaveQueue" style="font-size:11px;display:none;">Save</button><button class="btn-logout" id="fpClearQueue" style="font-size:11px;">Clear</button></div></div>
+    <div class="panel-header">Queue <span class="playlist-mode-badge" id="fpPlaylistBadge" style="display:none;"></span><div style="display:flex;gap:8px;align-items:center;"><button class="btn-logout" id="fpSaveQueue" style="font-size:11px;display:none;">Save</button><button class="btn-logout" id="fpClearQueue" style="font-size:11px;">Clear</button></div></div>
     <div class="queue-list" id="fpQueueList"></div>
   </div>
 </div>
@@ -1312,14 +1318,14 @@
 <div class="queue-backdrop" id="queueBackdrop"></div>
 <div class="queue-panel" id="queuePanel">
   <div class="panel-header">
-    Playlist
+    Queue
     <div style="display:flex; gap:8px; align-items:center;">
       <button class="btn-logout" id="clearQueue" style="font-size:11px;">Clear</button>
       <button class="panel-close" id="queuePanelClose">&times;</button>
     </div>
   </div>
   <div class="queue-list" id="queueList">
-    <div class="empty-state"><p>Playlist is empty</p></div>
+    <div class="empty-state"><p>Queue is empty</p></div>
   </div>
   <div class="queue-drag-handle"></div>
 </div>
@@ -1328,14 +1334,14 @@
 <div class="fp-queue-panel" id="fpQueuePanel">
   <div class="queue-drag-handle"></div>
   <div class="panel-header">
-    Playlist
+    Queue
     <div style="display:flex; gap:8px; align-items:center;">
       <button class="btn-logout" id="fpQueueClear" style="font-size:11px;">Clear</button>
       <button class="panel-close" id="fpQueuePanelClose">&times;</button>
     </div>
   </div>
   <div class="queue-list" id="fpQueuePanelList">
-    <div class="empty-state"><p>Playlist is empty</p></div>
+    <div class="empty-state"><p>Queue is empty</p></div>
   </div>
 </div>
 

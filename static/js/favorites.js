@@ -38,7 +38,7 @@ export async function toggleFavoriteArtist(item, btnEl) {
 export async function loadFavorites() {
   const grid = $('#favoritesGrid');
   const empty = $('#favoritesEmpty');
-  grid.innerHTML = Array(6).fill('<div class="skeleton skeleton-card"></div>').join('');
+  grid.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   empty.style.display = 'none';
   try {
     const data = await apiJson('/api/favorites');

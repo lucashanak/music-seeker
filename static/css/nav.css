@@ -20,6 +20,11 @@ nav {
 .nav-btn:hover { color: var(--text); background: var(--bg-elevated); }
 .nav-btn.active { color: var(--accent); background: var(--accent-dim); }
 
+/* Legacy nav stubs (data-page="playlists") kept only so settings.js / auth.js
+   hide_spotify handlers find them. They must never render; !important wins over
+   the inline style.display those handlers set. */
+.nav-legacy-hidden { display: none !important; }
+
 .nav-spacer { flex: 1; }
 
 .nav-user {

@@ -7,7 +7,7 @@ import { init as initSearch } from './search.js';
 import { init as initSpotify, loadPlaylists, closePlaylistDetail, closeShowDetail, closeArtistDetail, closeAlbumDetail } from './spotify.js';
 import { init as initDiscover, loadTags, closeTagDetail } from './discover.js';
 import { init as initDownloads } from './downloads.js';
-// Dynamic player engine selection (classic/crossfade/dj) — resolved via player_active.js
+// Dynamic player engine selection (classic/dj) — resolved via player_active.js
 // so every cross-module caller shares this exact engine instance.
 import { getPlayerModule } from './player_active.js';
 const _playerModule = await getPlayerModule();
@@ -19,7 +19,7 @@ import { init as initFavorites, loadFavorites } from './favorites.js';
 import { init as initPodcasts, loadPodcasts, closePodcastShow } from './podcasts.js';
 import { init as initSettings, loadSettings } from './settings.js';
 import { init as initRecognize } from './recognize.js';
-import { init as initLibrary, loadLibrary, closeLibraryDetail, closeLikedSongs } from './library.js';
+import { init as initLibrary, loadLibraryPage, closeLibraryDetail, closeLikedSongs } from './library.js';
 import { init as initRecommendations } from './recommendations.js';
 import { initVirtualKeyboard } from './utils.js';
 
@@ -43,13 +43,13 @@ setCloseHandlers({
   closeLikedSongs,
 });
 
-// Register page loaders with router
+// Register page loaders with router.
+// playlists/podcasts/favorites are no longer standalone pages — they are Library
+// sub-tabs driven by library.js (loaded lazily via switchLibraryTab). Their
+// init()s below still run so their event wiring is set up at startup.
 registerPageLoader('discover', loadTags);
-registerPageLoader('playlists', loadPlaylists);
-registerPageLoader('podcasts', loadPodcasts);
-registerPageLoader('favorites', loadFavorites);
 registerPageLoader('settings', loadSettings);
-registerPageLoader('library', loadLibrary);
+registerPageLoader('library', loadLibraryPage);
 
 // ── Initialize all modules ──
 initRouter();

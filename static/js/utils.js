@@ -1,6 +1,9 @@
 // utils.js — DOM helpers, formatting, notifications
 
 import { store } from './store.js';
+// apiJson is safe to import here: api.js only imports store.js (no util→api→util
+// cycle), so the "+ New playlist" picker row can create a playlist inline.
+import { apiJson } from './api.js';
 
 // ── DOM Query Helpers ──
 export const $ = (s, p) => (p || document).querySelector(s);
@@ -118,6 +121,10 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
     modal.innerHTML = `
       <div style="font-size:15px;font-weight:600;margin-bottom:14px;">Add to playlist${multi ? 's' : ''}</div>
       <div style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:4px;">
+        <div class="pl-pick-new" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:none;background:none;color:var(--text);border-radius:10px;cursor:pointer;text-align:left;transition:background .15s;">
+          <div style="width:36px;height:36px;border-radius:6px;border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text-muted);flex-shrink:0;">+</div>
+          <div style="min-width:0;flex:1;"><div style="font-size:13px;font-weight:500;">New playlist</div></div>
+        </div>
         ${playlists.map((p, i) => `
           <label class="pl-pick-btn" data-pl-idx="${i}" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:none;background:none;color:var(--text);border-radius:10px;cursor:pointer;text-align:left;transition:background .15s;">
             ${multi ? `<input type="checkbox" data-pl-idx="${i}" style="width:16px;height:16px;accent-color:var(--accent);flex-shrink:0;">` : ''}
@@ -137,6 +144,25 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
     document.body.appendChild(overlay);
 
     const addBtn = modal.querySelector('.pl-pick-add');
+
+    // "+ New playlist" row — create-and-pick-immediately in both modes. A
+    // cancelled name modal keeps the picker open; a successful create closes it
+    // and resolves with the fresh playlist (object in single mode, array of one
+    // in multi mode).
+    const newRow = modal.querySelector('.pl-pick-new');
+    if (newRow) newRow.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const name = await showInputModal('New playlist', '', { okLabel: 'Create', placeholder: 'Playlist name' });
+      if (!name) return; // cancelled → leave picker open
+      try {
+        const res = await apiJson('/api/library/playlist', { method: 'POST', body: { name } });
+        const newPl = { id: res && res.id, name, songCount: 0 };
+        overlay.remove();
+        resolve(multi ? [newPl] : newPl);
+      } catch (err) {
+        showToast(err.message || 'Failed to create playlist');
+      }
+    });
 
     if (multi) {
       // Checkbox logic
@@ -168,7 +194,7 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
       }
     });
     // Hover style
-    modal.querySelectorAll('.pl-pick-btn').forEach(b => {
+    modal.querySelectorAll('.pl-pick-btn, .pl-pick-new').forEach(b => {
       b.addEventListener('mouseenter', () => b.style.background = 'rgba(255,255,255,.06)');
       b.addEventListener('mouseleave', () => b.style.background = 'none');
     });

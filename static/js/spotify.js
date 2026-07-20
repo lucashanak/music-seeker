@@ -31,7 +31,7 @@ function loadSpTab(tab) {
 
   if (store.spCache[tab]) { renderSpGrid(tab, store.spCache[tab], grid); return; }
 
-  grid.innerHTML = Array(6).fill('<div class="skeleton skeleton-card"></div>').join('');
+  grid.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   (async () => {
     try {
       if (tab === 'playlists') {
@@ -156,12 +156,14 @@ export async function loadPlaylistDetail(id, url, fromPage) {
   store.currentPlaylistUrl = url;
   store.playlistDetailSource = fromPage || null;
   if (fromPage) {
-    store.currentPage = 'playlists';
+    // The Spotify library is now the Library → Spotify sub-tab. Reveal the
+    // Library page + that sub-view (without reloading it) so #playlistDetail,
+    // which lives inside #pagePlaylists, becomes visible.
+    store.currentPage = 'library';
     $('#pageSearch').style.display = 'none';
     $('#pageDiscover').style.display = 'none';
-    $('#pagePlaylists').style.display = '';
-    $('#pageFavorites').style.display = 'none';
     $('#pageSettings').style.display = 'none';
+    import('./library.js').then(m => m.showLibrarySubView && m.showLibrarySubView('spotify'));
   }
   $('#spotifyLibrary').style.display = 'none';
   $('#playlistDetail').style.display = '';
@@ -210,7 +212,7 @@ export async function loadShowDetail(id, url, fromPage, feedUrl) {
   $('#showDetail').style.display = '';
   history.pushState({ layer: 'showDetail' }, '');
   const episodesEl = $('#showEpisodes');
-  episodesEl.innerHTML = Array(6).fill('<div class="skeleton skeleton-card"></div>').join('');
+  episodesEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   const subBtn = $('#subscribeShow');
   subBtn.textContent = 'Subscribe';
   subBtn.disabled = false;

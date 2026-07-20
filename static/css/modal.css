@@ -38,6 +38,24 @@
 .option-btn.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 .option-btn small { display: block; font-size: 11px; color: var(--text-dim); margin-top: 3px; font-weight: 400; }
 
+/* Explains the currently-selected download method (also covers why Format
+   disappears for Soulseek/Lidarr — those hints don't mention quality). */
+.modal-hint { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+
+/* Medium secondary action (Add/Download row) — reuses bg-elevated look
+   previously inlined on these buttons. */
+.modal-secondary { background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); }
+
+/* Small, lighter "chip" style for demoted secondary actions (Radio/Follow),
+   visually distinct from the primary Play and the medium Add/Download row. */
+.modal-chip {
+  flex: 1; padding: 9px 8px; text-align: center; background: transparent;
+  border: 1px solid var(--border); border-radius: 20px;
+  color: var(--text-muted); cursor: pointer; font-size: 12px; font-weight: 500;
+  font-family: inherit; transition: all var(--transition);
+}
+.modal-chip:hover { border-color: var(--border-hover); color: var(--text); }
+
 .btn-download {
   width: 100%; padding: 15px; background: var(--accent); color: #000;
   border: none; border-radius: 12px; font-size: 15px;

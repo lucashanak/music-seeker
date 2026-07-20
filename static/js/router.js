@@ -19,6 +19,15 @@ export function switchPage(page, fromPopstate) {
     store.panelOpen ? closePanel() : openPanel();
     return;
   }
+  // Backward-compat: the former "My Spotify", "My Podcasts" and "Favorites"
+  // pages are now sub-tabs inside Library. Redirect any legacy switchPage call
+  // to Library and select the matching sub-tab.
+  const legacyLibTab = { playlists: 'spotify', podcasts: 'podcasts', favorites: 'favorites' };
+  if (legacyLibTab[page]) {
+    switchPage('library', fromPopstate);
+    import('./library.js').then(m => m.switchLibraryTab && m.switchLibraryTab(legacyLibTab[page]));
+    return;
+  }
   if (page === store.currentPage) return;
   if (!fromPopstate) history.pushState({ page }, '');
   // Update desktop nav
@@ -32,18 +41,13 @@ export function switchPage(page, fromPopstate) {
   store.currentPage = page;
   $('#pageSearch').style.display = page === 'search' ? '' : 'none';
   $('#pageDiscover').style.display = page === 'discover' ? '' : 'none';
-  $('#pagePlaylists').style.display = page === 'playlists' ? '' : 'none';
-  $('#pagePodcasts').style.display = page === 'podcasts' ? '' : 'none';
-  $('#pageFavorites').style.display = page === 'favorites' ? '' : 'none';
   $('#pageSettings').style.display = page === 'settings' ? '' : 'none';
+  // #pagePlaylists / #pagePodcasts / #pageFavorites are now sub-views inside
+  // #pageLibrary, toggled by library.js switchLibraryTab — not at page level.
   if ($('#pageLibrary')) $('#pageLibrary').style.display = page === 'library' ? '' : 'none';
   if (page === 'search') {
     $('#showDetail').style.display = 'none';
     $('#searchResults').style.display = '';
-  }
-  if (page === 'playlists') {
-    $('#spotifyLibrary').style.display = '';
-    $('#playlistDetail').style.display = 'none';
   }
   if (page === 'library') {
     if ($('#libraryList')) $('#libraryList').style.display = '';

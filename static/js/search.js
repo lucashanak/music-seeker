@@ -5,7 +5,7 @@ import { $, $$, esc, escAttr, formatDuration } from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { loadPlaylistDetail, loadShowDetail, loadArtistDetail, loadAlbumDetail } from './spotify.js';
-import { attachContextMenu, wasLongPress, makeKebabButton } from './contextmenu.js';
+import { attachContextMenu, wasLongPress, makeKebabButton, _addToNavidromePlaylist } from './contextmenu.js';
 import { makeHeartButton } from './likes.js';
 
 // ── Card Helper Functions ──
@@ -25,6 +25,12 @@ export function cardRadioBtn(item) {
   const type = item.type || 'track';
   if (type === 'playlist' || type === 'show' || type === 'episode') return '';
   return '<button class="card-radio-btn" title="Play Radio">&#x1f4fb;</button>';
+}
+
+export function cardAddPlBtn(item) {
+  const type = item.type || 'track';
+  if (type !== 'track') return '';
+  return '<button class="card-addpl-btn" title="Add to playlist"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z"/></svg></button>';
 }
 
 export function cardFavBtn(item) {
@@ -69,7 +75,7 @@ export function buildCardElement(item, fromPage) {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div class="card${artistCls}" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-      ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="card-body">
         <div class="card-title">${esc(item.name)}</div>
         <div class="card-sub">${cardSubHtml(item)}</div>
@@ -85,10 +91,17 @@ export function buildCardElement(item, fromPage) {
   const card = wrap.firstElementChild;
   card.addEventListener('click', (e) => {
     if (wasLongPress()) return;
-    if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-fav-btn')) return;
+    if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-addpl-btn') || e.target.closest('.card-fav-btn')) return;
     let it;
     try { it = JSON.parse(card.dataset.item); } catch { return; }
     _routeCardClick(it, fromPage);
+  });
+  const addPlBtn = card.querySelector('.card-addpl-btn');
+  if (addPlBtn) addPlBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    let it;
+    try { it = JSON.parse(card.dataset.item); } catch { return; }
+    _addToNavidromePlaylist(it);
   });
   return card;
 }

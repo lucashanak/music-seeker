@@ -70,6 +70,10 @@
   .player-bar { padding: 0 12px; padding-bottom: env(safe-area-inset-bottom, 0); gap: 10px; height: calc(68px + env(safe-area-inset-bottom, 0)); }
   .player-progress-wrap { display: none; }
   .player-volume { display: none !important; }
+  /* Declutter the mini-bar: keep only play/pause + like + queue. All hidden
+     controls remain available in the full player, so nothing is lost. */
+  #playerCastBtn, #playerDevicesBtn, #playerShuffle, #playerRepeat,
+  #playerAddToPlaylist, #playerRemoveFromPlaylist, #playerDownloadBtn, #playerMute { display: none; }
   .player-bar .player-img { width: 42px; height: 42px; }
   .card-play-btn { opacity: .85; transform: translateY(0); }
   .card-dl-btn { opacity: .85; transform: translateY(0); }

@@ -273,8 +273,12 @@ export function buildActionsFor(item, type, context = {}) {
       onClick: () => _playAlbumReplace(it),
     });
     actions.push({
-      label: 'Add all to playlist', icon: '+',
+      label: 'Add all to queue', icon: '+',
       onClick: () => _addAlbumToQueue(it),
+    });
+    actions.push({
+      label: 'Add all to playlist…', icon: '&#9776;',
+      onClick: () => _addAlbumToNavidromePlaylist(it),
     });
     actions.push({ divider: true });
   } else if (type === 'artist') {
@@ -486,7 +490,7 @@ async function _playAlbumReplace(album) {
   }
 }
 
-async function _addToNavidromePlaylist(item) {
+export async function _addToNavidromePlaylist(item) {
   try {
     const data = await apiJson('/api/library/playlists');
     const playlists = data.playlists || [];
@@ -502,6 +506,28 @@ async function _addToNavidromePlaylist(item) {
     showToast(`Added to ${picked.map(p => p.name).join(', ')}`);
   } catch (e) {
     showToast(e.message || 'Failed to add to playlist');
+  }
+}
+
+async function _addAlbumToNavidromePlaylist(album) {
+  try {
+    showToast('Loading album…');
+    const tracks = await _fetchAlbumTracks(album);
+    if (!tracks.length) { showToast('No tracks found'); return; }
+    const data = await apiJson('/api/library/playlists');
+    const playlists = data.playlists || [];
+    if (!playlists.length) { showToast('No Navidrome playlists'); return; }
+    const picked = await showPlaylistPicker(playlists);
+    if (!picked || !picked.length) return;
+    const payload = tracks.map(t => ({ name: t.name, artist: t.artist || '', album: t.album || '' }));
+    for (const pl of picked) {
+      await apiJson(`/api/library/playlist/${pl.id}/add-and-download-batch`, {
+        method: 'POST', body: { tracks: payload },
+      });
+    }
+    showToast(`Added ${payload.length} tracks to ${picked.map(p => p.name).join(', ')}`);
+  } catch (e) {
+    showToast(e.message || 'Failed to add album to playlist');
   }
 }
 

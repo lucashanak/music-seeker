@@ -163,13 +163,27 @@ body.player-active .player-bar { display: flex; }
 .queue-item .qi-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .queue-item .qi-artist { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .queue-item .qi-bpm { font-size: 10px; color: var(--accent); background: var(--bg-elevated); border: 1px solid var(--border); padding: 1px 6px; border-radius: 8px; flex-shrink: 0; white-space: nowrap; }
-.queue-item .qi-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; width: 24px; height: 24px; font-size: 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%; opacity: 0; transition: all .15s; flex-shrink: 0; }
-.queue-item:hover .qi-remove { opacity: 1; }
+.queue-item .qi-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; width: 24px; height: 24px; font-size: 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%; opacity: 1; transition: all .15s; flex-shrink: 0; }
 .queue-item .qi-remove:hover { color: var(--red); background: rgba(255,255,255,.05); }
-.queue-item .qi-drag { cursor: grab; color: var(--text-dim); font-size: 12px; width: 16px; text-align: center; flex-shrink: 0; opacity: 0.4; transition: opacity .15s; user-select: none; }
-.queue-item:hover .qi-drag { opacity: 1; }
+/* touch-action:none so a touch-drag on the handle reorders instead of scrolling the list. */
+.queue-item .qi-drag { cursor: grab; color: var(--text-dim); font-size: 12px; width: 16px; text-align: center; flex-shrink: 0; opacity: 1; transition: opacity .15s; user-select: none; touch-action: none; }
+/* Touch devices have no hover: keep the row's remove/drag controls always visible.
+   Only hover-capable, fine-pointer (desktop) devices hide them until row hover. */
+@media (hover: hover) and (pointer: fine) {
+  .queue-item .qi-remove { opacity: 0; }
+  .queue-item:hover .qi-remove { opacity: 1; }
+  .queue-item .qi-drag { opacity: 0.4; }
+  .queue-item:hover .qi-drag { opacity: 1; }
+}
 .queue-item.qi-dragging { opacity: 0.4; }
 .queue-item.qi-drag-over { border-top: 2px solid var(--accent); margin-top: -2px; }
+
+/* ── Kebab (⋯) button base ── */
+/* Base size/appearance so kebabs in queue rows (and anywhere without a scoped
+   rule) get a proper touch target instead of a default UA button. Scoped rules
+   (search.css song-list, card positioning) override position/context as needed. */
+.kebab-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: none; border: none; border-radius: 50%; color: var(--text-muted); flex-shrink: 0; cursor: pointer; }
+.kebab-btn:hover { background: rgba(255,255,255,.08); color: var(--text); }
 
 /* ── Recommendations ── */
 .recs-section { padding: 0 4px 12px; }

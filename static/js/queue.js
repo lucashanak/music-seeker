@@ -1,7 +1,7 @@
 // queue.js — Queue panel rendering (renderQueue), small player queue panel
 
 import { store } from './store.js';
-import { $, $$, esc, historyBack, showToast } from './utils.js';
+import { $, $$, esc, historyBack, showToast, showInputModal } from './utils.js';
 import { getCachedBpm } from './bpm.js';
 import { attachContextMenu, wasLongPress, makeKebabButton } from './contextmenu.js';
 import { makeHeartButton } from './likes.js';
@@ -90,6 +90,7 @@ export function renderQueueInto(el) {
     </div>
   `).join('');
   _attachDragHandlers(el);
+  _attachTouchReorder(el);
   // Lazy-load BPM badges for tracks not yet in cache
   _loadMissingBpm(el);
   $$('.queue-item', el).forEach(qi => {
@@ -252,6 +253,63 @@ function _attachDragHandlers(el) {
   });
 }
 
+// ── Touch/Pointer Reorder ──
+// HTML5 Drag-and-Drop (above) never fires on touch, so the queue — the mobile-
+// primary surface — has no reorder there. This adds a Pointer Events path on the
+// .qi-drag handle for touch/pen only; desktop mouse still uses the native DnD.
+// On commit it reuses the same _moveQueueItem(from, to) as the drop handler.
+function _attachTouchReorder(el) {
+  $$('.qi-drag', el).forEach(handle => {
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return; // mouse keeps the HTML5 DnD path
+      const row = handle.closest('.queue-item');
+      if (!row) return;
+      e.preventDefault(); // touch-action:none on the handle also blocks scroll
+      const fromIdx = parseInt(row.dataset.qi);
+      let toIdx = fromIdx;
+      row.classList.add('qi-dragging');
+      try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+
+      const onMove = (ev) => {
+        // Target index = the last row whose vertical midpoint is above the pointer.
+        const rows = $$('.queue-item', el);
+        let target = 0;
+        for (const r of rows) {
+          const rect = r.getBoundingClientRect();
+          if (ev.clientY > rect.top + rect.height / 2) target = parseInt(r.dataset.qi);
+        }
+        const n = store.playerQueue.length;
+        target = Math.max(0, Math.min(n - 1, target));
+        if (target !== toIdx) {
+          rows.forEach(r => r.classList.remove('qi-drag-over'));
+          toIdx = target;
+          if (toIdx !== fromIdx) {
+            const tr = el.querySelector(`.queue-item[data-qi="${toIdx}"]`);
+            if (tr) tr.classList.add('qi-drag-over');
+          }
+        }
+      };
+      const finish = (commit) => {
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onUp);
+        handle.removeEventListener('pointercancel', onCancel);
+        try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+        row.classList.remove('qi-dragging');
+        $$('.queue-item', el).forEach(r => r.classList.remove('qi-drag-over'));
+        const n = store.playerQueue.length;
+        if (commit && fromIdx >= 0 && fromIdx < n && toIdx >= 0 && toIdx < n && fromIdx !== toIdx) {
+          _moveQueueItem(fromIdx, toIdx);
+        }
+      };
+      const onUp = () => finish(true);
+      const onCancel = () => finish(false);
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp);
+      handle.addEventListener('pointercancel', onCancel);
+    });
+  });
+}
+
 function _moveQueueItem(from, to) {
   const [item] = store.playerQueue.splice(from, 1);
   store.playerQueue.splice(to, 0, item);
@@ -307,7 +365,7 @@ export function init() {
   // Save: promote current Up Next to a named playlist, then spawn a fresh Up Next.
   $('#fpSaveQueue').addEventListener('click', async () => {
     if (!store.playerQueue.length) return;
-    const name = prompt('Save as playlist:');
+    const name = await showInputModal('Save as playlist', '', { okLabel: 'Save', placeholder: 'Playlist name' });
     if (!name || !name.trim()) return;
     const btn = $('#fpSaveQueue');
     btn.disabled = true;

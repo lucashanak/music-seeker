@@ -1,4 +1,16 @@
-/* ── Grid ── */
+/* ── Card action-icon corner grammar ──
+   top-left    = selection / kebab (⋯) menu
+   top-right   = like (heart)
+   bottom-right = play
+   bottom-left  = download / add
+   Library-detail cards (#libraryTracks) deviate from this on purpose: the
+   bulk-select checkbox needs top-left, so the kebab moves to the mid-right
+   edge (.kebab-lib, defined in index.html's inline <style> block) and the
+   heart shifts to right:52px to clear both the kebab and the "remove"
+   control. Those per-context offsets are load-bearing for bulk-select layout
+   — left unchanged here; see index.html's kebab-btn/like-btn rules for the
+   actual offsets. Hit targets stay >=32px in all contexts (kebab/like are
+   40x40 by default, 32x32 for .card-fav-btn). */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -76,6 +88,20 @@
 .card-radio-btn { position: absolute; bottom: 8px; left: 52px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; font-size: 16px; }
 .card:hover .card-radio-btn { opacity: 1; transform: translateY(0); }
 .card-radio-btn:hover { transform: scale(1.1) !important; background: var(--accent); color: #000; border-color: var(--accent); }
+/* Quick "add to playlist" — sits bottom-left just right of the radio button
+   (dl left:8, radio left:52, addpl left:96), clear of the play button (right). */
+.card-addpl-btn { position: absolute; bottom: 8px; left: 96px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
+.card:hover .card-addpl-btn { opacity: 1; transform: translateY(0); }
+.card-addpl-btn:hover { transform: scale(1.1) !important; background: var(--accent); color: #000; border-color: var(--accent); }
+/* Drag-to-reorder handle (library playlist detail only — added by JS there).
+   Mid-left edge: clear of checkbox (top-left), dl (bottom-left), kebab/heart
+   (right), remove (top-right), play (bottom-right). Pointer Events need
+   touch-action:none so a touch-drag doesn't scroll the grid. */
+.card-drag-handle { position: absolute; top: 50%; left: 8px; transform: translateY(-50%); z-index: 5; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(0,0,0,.5); color: var(--text-muted); cursor: grab; opacity: 0; transition: opacity .2s; touch-action: none; font-size: 13px; }
+.card:hover .card-drag-handle { opacity: 1; }
+.card-drag-handle:hover { color: var(--text); }
+.card-drag-handle:active { cursor: grabbing; }
+.card.lib-dragging { opacity: .5; }
 .card-fav-btn { position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: rgba(0,0,0,.6); color: var(--text); border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transition: all .2s; cursor: pointer; z-index: 3; font-size: 18px; }
 .card:hover .card-fav-btn { opacity: 1; }
 .card-fav-btn:hover { color: #ef4444; transform: scale(1.1); }

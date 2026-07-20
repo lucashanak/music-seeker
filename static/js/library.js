@@ -11,6 +11,76 @@ import { loadLikes, getLikedTracks, likedCount } from './likes.js';
 
 let libraryCache = null;
 
+// ── Library sub-tabs (Downloaded / Spotify / Podcasts / Favorites) ──
+// The former "My Spotify", "My Podcasts" and "Favorites" pages now live as
+// sub-views inside #pageLibrary. Each sub-view is lazy-loaded the first time its
+// tab is opened; the matching loader is imported dynamically to avoid load-order
+// coupling. Container IDs are preserved from the old pages so their existing JS
+// keeps working unchanged.
+const _LIB_TABS = {
+  downloaded: '#libTabDownloaded',
+  spotify:    '#pagePlaylists',
+  podcasts:   '#pagePodcasts',
+  favorites:  '#pageFavorites',
+};
+let _activeLibTab = null;
+const _loadedLibTabs = new Set();
+
+function _spotifyHidden() {
+  return !!(store.currentUser && store.currentUser.hide_spotify);
+}
+
+// Show/hide the Spotify sub-tab button per the hide_spotify user setting. The
+// settings.js #settingHideSpotify handler can't be edited, so we re-read the
+// setting whenever the Library page is (re)entered rather than reacting live.
+function _applySpotifyTabVisibility() {
+  const tabBtn = $('#libraryTabs .sp-tab[data-lib-tab="spotify"]');
+  if (tabBtn) tabBtn.style.display = _spotifyHidden() ? 'none' : '';
+}
+
+// Toggle which sub-view container + tab button is active (no loading).
+function _setActiveLibTab(name, bypassGate = false) {
+  if (!_LIB_TABS[name]) name = 'downloaded';
+  if (!bypassGate && name === 'spotify' && _spotifyHidden()) name = 'downloaded';
+  _activeLibTab = name;
+  $$('#libraryTabs .sp-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.libTab === name));
+  Object.entries(_LIB_TABS).forEach(([key, sel]) => {
+    const el = $(sel);
+    if (el) el.style.display = key === name ? '' : 'none';
+  });
+}
+
+// Reveal the Library page + a sub-view container WITHOUT (re)loading it. Used by
+// cross-module detail openers (e.g. opening a Spotify playlist from search) that
+// render their own content into a moved sub-view.
+export function showLibrarySubView(name) {
+  const page = $('#pageLibrary');
+  if (page) page.style.display = '';
+  // bypassGate: a caller is about to render detail into this container, so show
+  // it even if its tab is gated (e.g. Spotify hidden) — else detail renders hidden.
+  _setActiveLibTab(name, true);
+}
+
+// Switch sub-tab: activate it and lazy-load its content the first time.
+export function switchLibraryTab(name, force) {
+  _setActiveLibTab(name);
+  name = _activeLibTab; // normalized (may have fallen back to 'downloaded')
+  if (!force && _loadedLibTabs.has(name)) return;
+  _loadedLibTabs.add(name);
+  if (name === 'downloaded') loadLibrary();
+  else if (name === 'spotify') import('./spotify.js').then(m => m.loadPlaylists());
+  else if (name === 'podcasts') import('./podcasts.js').then(m => m.loadPodcasts());
+  else if (name === 'favorites') import('./favorites.js').then(m => m.loadFavorites());
+}
+
+// Page loader registered with the router for 'library'. Applies the Spotify-tab
+// visibility gate, then shows the active sub-tab (defaulting to Downloaded).
+export function loadLibraryPage() {
+  _applySpotifyTabVisibility();
+  switchLibraryTab(_activeLibTab || 'downloaded');
+}
+
 // Format a total duration (seconds) coarsely: "1 h 23 min" / "42 min".
 function _fmtTotal(seconds) {
   seconds = Math.round(seconds || 0);
@@ -53,7 +123,7 @@ export async function loadLibrary() {
   if (likedDetail) likedDetail.style.display = 'none';
   $('#libraryList').style.display = '';
   _refreshLikedCount();
-  grid.innerHTML = Array(6).fill('<div class="skeleton skeleton-card"></div>').join('');
+  grid.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
     const data = await apiJson('/api/library/playlists');
     libraryCache = data.playlists || [];
@@ -65,7 +135,7 @@ export async function loadLibrary() {
 
 function renderLibraryGrid(playlists, grid) {
   if (!playlists.length) {
-    grid.innerHTML = '<div class="empty-state"><p>No playlists in Navidrome yet</p></div>';
+    grid.innerHTML = '<div class="empty-state"><p>No playlists yet — tap + New Playlist above, or download an album to get started.</p></div>';
     return;
   }
   grid.innerHTML = playlists.map((pl, i) => `
@@ -174,17 +244,7 @@ async function loadLibraryDetail(id) {
       $('#libDetailImg').style.background = '';
     }
     _setLibDetailCount();
-    renderResults(currentLibPlaylistTracks, '#libraryTracks');
-    // Tracks from a Navidrome playlist are definitively in the library —
-    // mark them so openModal shows the Delete button without waiting for checkLibrary.
-    _markTracksInLibrary('#libraryTracks', currentLibPlaylistTracks);
-    // Override context menu: inject libraryPlaylistId/Name so right-click offers
-    // "Remove from playlist" and "Delete from library" actions.
-    _attachLibraryTrackContextMenu(id, currentLibPlaylistName);
-    _attachLibraryKebabs(id, currentLibPlaylistName);
-    _addBulkCheckboxes();
-    _addSelectListeners();
-    _addRemoveButtons(id);
+    _renderLibDetailTracks(id);
     // BPM: filter bar with scan button, fetch cached BPM, add badges
     const bpmFilter = _initBpmFilter(id);
     fetchPlaylistBpm(id).then(() => {
@@ -193,6 +253,104 @@ async function loadLibraryDetail(id) {
     });
   } catch (e) {
     tracksEl.innerHTML = `<div class="empty-state"><p>Failed to load playlist</p></div>`;
+  }
+}
+
+// Render + (re)attach all per-card handlers for the opened playlist. Factored out
+// of loadLibraryDetail so a drag-reorder can re-render locally (instant feedback)
+// without a refetch, keeping index-based checkbox/remove handlers in sync.
+function _renderLibDetailTracks(id) {
+  renderResults(currentLibPlaylistTracks, '#libraryTracks');
+  // Tracks from a Navidrome playlist are definitively in the library —
+  // mark them so openModal shows the Delete button without waiting for checkLibrary.
+  _markTracksInLibrary('#libraryTracks', currentLibPlaylistTracks);
+  // Override context menu: inject libraryPlaylistId/Name so right-click offers
+  // "Remove from playlist" and "Delete from library" actions.
+  _attachLibraryTrackContextMenu(id, currentLibPlaylistName);
+  _attachLibraryKebabs(id, currentLibPlaylistName);
+  _addBulkCheckboxes();
+  _addSelectListeners();
+  _addRemoveButtons(id);
+  _addDragHandles(id);
+  // Restore BPM badges from cache (fetchPlaylistBpm populates it on first load;
+  // a local re-render after reorder would otherwise drop them).
+  addBpmBadges('#libraryTracks');
+}
+
+// ── Drag-to-reorder (mouse + touch via Pointer Events) ──
+// A dedicated per-card handle drives reordering; the card itself stays
+// non-draggable so the existing bulk-select checkbox + modifier-click capture
+// handlers are untouched.
+function _addDragHandles(playlistId) {
+  $$('#libraryTracks .card').forEach(card => {
+    if (card.querySelector('.card-drag-handle')) return;
+    const handle = document.createElement('span');
+    handle.className = 'card-drag-handle';
+    handle.title = 'Drag to reorder';
+    handle.innerHTML = '&#x2630;';
+    // Swallow clicks so the handle never opens the track modal.
+    handle.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
+    card.style.position = 'relative';
+    card.appendChild(handle);
+    _wireDragHandle(handle, card, playlistId);
+  });
+}
+
+function _wireDragHandle(handle, card, playlistId) {
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const container = $('#libraryTracks');
+    if (!container) return;
+    const cards0 = () => Array.from(container.querySelectorAll('.card'));
+    const fromIdx = cards0().indexOf(card);
+    if (fromIdx < 0) return;
+    card.classList.add('lib-dragging');
+    let moved = false;
+    const onMove = (ev) => {
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      const overCard = el && el.closest('#libraryTracks .card');
+      if (!overCard || overCard === card) return;
+      const sibs = cards0();
+      const overIdx = sibs.indexOf(overCard);
+      const curIdx = sibs.indexOf(card);
+      if (overIdx < 0 || curIdx < 0) return;
+      // Move the dragged node toward the hovered card (works for list + grid).
+      if (overIdx < curIdx) container.insertBefore(card, overCard);
+      else container.insertBefore(card, overCard.nextSibling);
+      moved = true;
+    };
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onUp);
+      card.classList.remove('lib-dragging');
+      if (!moved) return;
+      const toIdx = cards0().indexOf(card);
+      if (toIdx < 0 || toIdx === fromIdx) return;
+      _commitLibReorder(playlistId, fromIdx, toIdx);
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+  });
+}
+
+async function _commitLibReorder(playlistId, from, to) {
+  // Splice the local model to match the DOM the drag already produced.
+  const [movedTrack] = currentLibPlaylistTracks.splice(from, 1);
+  currentLibPlaylistTracks.splice(to, 0, movedTrack);
+  // Re-render locally so index-based checkbox/remove handlers resync to new order.
+  _renderLibDetailTracks(playlistId);
+  _setLibDetailCount();
+  const songIds = currentLibPlaylistTracks.map(t => t.id).filter(Boolean);
+  try {
+    await apiJson(`/api/library/playlist/${playlistId}/reorder`, {
+      method: 'PUT', body: { song_ids: songIds },
+    });
+  } catch (e) {
+    showToast('Failed to reorder — reloading');
+    loadLibraryDetail(playlistId);
   }
 }
 
@@ -614,6 +772,11 @@ export function getCurrentLibPlaylist() {
 
 // ── Init ──
 export function init() {
+  // Library sub-tab strip (Downloaded / Spotify / Podcasts / Favorites)
+  $$('#libraryTabs .sp-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchLibraryTab(tab.dataset.libTab));
+  });
+
   const backBtn = $('#backToLibrary');
   if (backBtn) backBtn.addEventListener('click', () => closeLibraryDetail());
 
@@ -725,8 +888,7 @@ export function init() {
       }
       libraryCache = null;
       showToast(`Duplicated as "${name}" (${songIds.length} tracks)`);
-      closeLibraryDetail();
-      loadLibrary();
+      loadLibraryDetail(pl.id);
     } catch (e) {
       showToast('Failed to duplicate');
     }
@@ -823,10 +985,11 @@ export function init() {
     const name = await showInputModal('New playlist', '', { okLabel: 'Create', placeholder: 'Playlist name' });
     if (!name) return;
     try {
-      await apiJson('/api/library/playlist', { method: 'POST', body: { name } });
+      const created = await apiJson('/api/library/playlist', { method: 'POST', body: { name } });
       showToast('Playlist created');
       libraryCache = null;
-      loadLibrary();
+      if (created && created.id) loadLibraryDetail(created.id);
+      else loadLibrary();
     } catch (e) {
       showToast('Failed to create playlist');
     }
