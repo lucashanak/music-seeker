@@ -463,7 +463,7 @@ function _removeFromQueue(idx, fromPlaylist) {
 }
 
 async function _fetchAlbumTracks(album) {
-  const data = await apiJson(`/api/spotify/album/${encodeURIComponent(album.id || '')}/tracks`);
+  const data = await apiJson(`/api/album/${encodeURIComponent(album.id || '')}/tracks`);
   return (data.tracks || []).map(t => ({ ...t, album: album.name, image: t.image || album.image }));
 }
 
