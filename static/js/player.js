@@ -93,12 +93,10 @@ export function addToQueue(items, playNow = false) {
   if (store.playlistMode) {
     apiJson(`/api/library/playlist/${store.playlistMode.id}/add-and-download-batch`, {
       method: 'POST',
-      body: { tracks: items.map(it => ({ name: it.name || '', artist: it.artist || '', album: it.album || '' })) },
+      // Queue mirror only — never download missing tracks just for queueing.
+      body: { tracks: items.map(it => ({ name: it.name || '', artist: it.artist || '', album: it.album || '' })), download: false },
     }).then(data => {
-      const parts = [];
-      if (data.added) parts.push(`${data.added} added`);
-      if (data.queued) parts.push(`${data.queued} downloading`);
-      if (parts.length) showToast(`${parts.join(', ')} → ${store.playlistMode.name}`);
+      if (data.added) showToast(`${data.added} added → ${store.playlistMode.name}`);
     }).catch(() => {});
   }
   if (store.remoteTarget && !playNow && store.playerIndex >= 0) {

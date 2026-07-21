@@ -164,7 +164,8 @@ export function mirrorAdd(tracks) {
   if (!id || !isTempActive()) return;
   apiJson(`/api/library/playlist/${id}/add-and-download-batch`, {
     method: 'POST',
-    body: { tracks: tracks.map(t => ({ name: t.name || '', artist: t.artist || '', album: t.album || '' })) },
+    // Queue mirror only — DJ/radio fills must not pull tracks into the library.
+    body: { tracks: tracks.map(t => ({ name: t.name || '', artist: t.artist || '', album: t.album || '' })), download: false },
   }).catch(() => {});
 }
 
