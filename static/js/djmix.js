@@ -936,8 +936,20 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   const matchedBpm = (Number.isFinite(outBpm) && outBpm > 0 ? outBpm : 85) * outRate;
   const beatPeriod = 60 / matchedBpm;
   const fallbackSec = opts.fallbackSec || 5;
-  // fadeCap: never fade longer than the outgoing track has left (see top of function).
-  const duration = Math.min(fadeCap, outData?.bpm ? numBeats * beatPeriod : fallbackSec);
+  const beatFade = outData?.bpm ? numBeats * beatPeriod : fallbackSec;
+  // The outgoing deck plays at `outRate`, so it needs `fadeCap / outRate` WALL-CLOCK
+  // seconds to actually reach its effective end. Land the outgoing gain at 0 exactly
+  // there. Using just `beatFade` (or an un-rate-adjusted `fadeCap`) drops the deck to
+  // silence a few seconds early — and the teardown timer, armed off this duration,
+  // then stops the deck before its real end — which is heard as "the song's ending is
+  // cut / a few seconds of quiet at the end", worst when a slow-down tempo match
+  // (outRate < 1) stretches the wall-clock time further. When the caller gave no cap
+  // (ended-blend path), keep the beat-synced length.
+  // beatFade stays the intended (upper-bound) length — a manual mid-track skip passes a
+  // huge fadeCap (full remaining playtime, no trigger clamp) and must NOT blend for that
+  // whole time. fadeCapWall is only the SHRINK bound so the fade never outlives the deck.
+  const fadeCapWall = Number.isFinite(fadeCap) ? fadeCap / (outRate || 1) : Infinity;
+  const duration = Number.isFinite(fadeCapWall) ? Math.max(3, Math.min(beatFade, fadeCapWall)) : beatFade;
 
   /* ---- 3. Locked dual-deck tempo glide ----
    * The OUTGOING deck is audible at fade start — snapping it straight to outRate
