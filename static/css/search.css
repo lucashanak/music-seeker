@@ -134,7 +134,10 @@
 .top-songs-panel { min-width: 0; }
 
 /* ── Song rows (compact list; each row carries .card for play delegation) ── */
-.song-list { display: flex; flex-direction: column; gap: 2px; }
+/* The album/playlist track list lives inside #albumTracks, which is a CSS grid
+   (styled for card layouts). Span all columns + full width so the flat list
+   doesn't collapse into a single ~150px grid cell (which zeroed out titles). */
+.song-list { display: flex; flex-direction: column; gap: 2px; width: 100%; grid-column: 1 / -1; }
 .song-list .song-row {
   display: flex; align-items: center; gap: 12px; padding: 8px;
   border-radius: 8px; cursor: pointer; background: transparent;
@@ -145,6 +148,12 @@
 .song-row .song-thumb {
   width: 44px; height: 44px; border-radius: 4px; object-fit: cover;
   background: var(--bg-elevated); flex-shrink: 0;
+}
+/* Numbered album list: track position replaces the repeated cover thumbnail. */
+.song-num {
+  width: 28px; flex-shrink: 0; text-align: center;
+  font-size: 14px; color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 .song-info { min-width: 0; flex: 1; }
 .song-title {
@@ -167,6 +176,11 @@
 }
 .song-list .song-row .kebab-btn:hover { background: var(--bg-elevated); }
 .song-list .song-row .like-btn { position: static; width: 32px; height: 32px; flex-shrink: 0; }
+/* The card overlay "In Library" badge is position:absolute (built for cover art)
+   and would float over the track title on a flat row. Drop it and instead tint
+   the track number of in-library rows — clean and non-overlapping. */
+.song-list .song-row .in-library-badge { display: none; }
+.song-list .song-row.in-library .song-num { color: var(--accent); }
 
 /* Circular artist thumbnails on result cards. */
 .card.artist-card .card-img { border-radius: 50%; }
@@ -176,4 +190,10 @@
   .top-result-img { width: 140px; height: 140px; }
   .top-result-name { font-size: 22px; }
   .song-list .song-row .card-play-btn { opacity: 1; }
+  /* Album/playlist track list: maximise room for the title on narrow screens by
+     dropping the per-row heart + BPM badge (both still reachable — the ⋮ menu and
+     the tempo-filter bar respectively) and tightening the gaps. */
+  .song-list-numbered .song-row { gap: 8px; }
+  .song-list-numbered .song-row .like-btn,
+  .song-list-numbered .song-row .bpm-badge { display: none; }
 }

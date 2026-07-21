@@ -120,12 +120,20 @@ export function addBpmBadges(container) {
       if (item.type && item.type !== 'track') continue;
       const bpm = getCachedBpm(item.name, item.artist);
       if (bpm == null) continue;
-      const meta = card.querySelector('.card-meta');
-      if (!meta || meta.querySelector('.bpm-badge')) continue;
+      if (card.querySelector('.bpm-badge')) continue;
       const badge = document.createElement('span');
       badge.className = 'bpm-badge';
       badge.textContent = `${Math.round(bpm)} BPM`;
-      meta.prepend(badge);
+      const meta = card.querySelector('.card-meta');
+      if (meta) {
+        meta.prepend(badge);
+      } else {
+        // Flat song-row (album/playlist list) has no .card-meta — sit the badge
+        // next to the duration on the right of the row.
+        const dur = card.querySelector('.song-duration');
+        if (!dur) continue;
+        dur.parentNode.insertBefore(badge, dur);
+      }
     } catch {}
   }
 }

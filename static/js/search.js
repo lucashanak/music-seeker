@@ -75,7 +75,7 @@ export function buildCardElement(item, fromPage) {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div class="card${artistCls}" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-      ${cardPlayBtn(item)}${cardDlBtn(item)}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      ${cardPlayBtn(item)}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="card-body">
         <div class="card-title">${esc(item.name)}</div>
         <div class="card-sub">${cardSubHtml(item)}</div>
@@ -399,20 +399,27 @@ function buildTopResultCard(item, fromPage) {
 // ── Compact song rows (list, not cards) — reuse card-play delegation + kebab/heart ──
 // sink (optional): { items: [], cards: [] } accumulators so the caller can run a
 // library-check over these rows (they carry `.card` but live outside the grid).
-export function renderSongRows(tracks, sink) {
+export function renderSongRows(tracks, sink, opts = {}) {
   const list = document.createElement('div');
-  list.className = 'song-list';
-  tracks.forEach(item => {
+  list.className = 'song-list' + (opts.numbered ? ' song-list-numbered' : '');
+  tracks.forEach((item, idx) => {
     // `.card` class lets the event-delegated .card-play-btn handler (player_v3.js)
     // find this row via btn.closest('.card'); CSS re-styles it as a flat row.
     const row = document.createElement('div');
     row.className = 'song-row card';
     row.dataset.item = JSON.stringify(item);
+    // Numbered mode (album detail): show the track position instead of repeating
+    // the album cover on every row. hideArtist drops the redundant per-track
+    // artist line when every track shares the album's artist.
+    const lead = opts.numbered
+      ? `<div class="song-num">${esc(String(item.track_number || (idx + 1)))}</div>`
+      : `<img class="song-thumb" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">`;
+    const sub = opts.hideArtist ? '' : `<div class="song-artist">${cardSubHtml(item)}</div>`;
     row.innerHTML = `
-      <img class="song-thumb" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      ${lead}
       <div class="song-info">
         <div class="song-title">${esc(item.name)}</div>
-        <div class="song-artist">${cardSubHtml(item)}</div>
+        ${sub}
       </div>
       <span class="song-duration">${item.duration_ms ? formatDuration(item.duration_ms) : ''}</span>
       ${cardPlayBtn(item)}
@@ -542,6 +549,20 @@ async function doSearchAll() {
 
 // ── Init (called from app.js) ──
 export function init() {
+  // Quick "refresh app" button next to the mic — clears the asset cache and
+  // reloads with a cache-bust (same effect as Settings → Refresh), so users can
+  // pull a new frontend without hunting through Settings. Keeps login.
+  const refreshBtn = $('#appRefreshBtn');
+  if (refreshBtn) refreshBtn.addEventListener('click', async () => {
+    refreshBtn.disabled = true;
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    } catch (e) {}
+    const av = new URLSearchParams(window.location.search).get('app_version') || localStorage.getItem('app_installed_version');
+    window.location.href = window.location.origin + '/?_=' + Date.now() + (av ? '&app_version=' + av : '');
+  });
+
   $('#searchInput').addEventListener('input', () => {
     clearTimeout(store.searchTimeout);
     $('#searchClear').style.display = $('#searchInput').value ? 'block' : 'none';

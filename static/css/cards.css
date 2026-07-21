@@ -82,15 +82,17 @@
 .card-play-btn { position: absolute; bottom: 8px; right: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
 .card:hover .card-play-btn { opacity: 1; transform: translateY(0); }
 .card-play-btn:hover { transform: scale(1.1) !important; box-shadow: 0 4px 16px rgba(0,0,0,.5), var(--shadow-glow); }
+/* Download is intentionally NOT shown on cards — it lives only in the ⋮ context
+   menu so the card face stays play-first. Rule kept for any legacy render path. */
 .card-dl-btn { position: absolute; bottom: 8px; left: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
 .card:hover .card-dl-btn { opacity: 1; transform: translateY(0); }
 .card-dl-btn:hover { transform: scale(1.1) !important; box-shadow: 0 4px 16px rgba(0,0,0,.5), var(--shadow-glow); }
-.card-radio-btn { position: absolute; bottom: 8px; left: 52px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; font-size: 16px; }
+.card-radio-btn { position: absolute; bottom: 8px; left: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; font-size: 16px; }
 .card:hover .card-radio-btn { opacity: 1; transform: translateY(0); }
 .card-radio-btn:hover { transform: scale(1.1) !important; background: var(--accent); color: #000; border-color: var(--accent); }
 /* Quick "add to playlist" — sits bottom-left just right of the radio button
    (dl left:8, radio left:52, addpl left:96), clear of the play button (right). */
-.card-addpl-btn { position: absolute; bottom: 8px; left: 96px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
+.card-addpl-btn { position: absolute; bottom: 8px; left: 52px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
 .card:hover .card-addpl-btn { opacity: 1; transform: translateY(0); }
 .card-addpl-btn:hover { transform: scale(1.1) !important; background: var(--accent); color: #000; border-color: var(--accent); }
 /* Drag-to-reorder handle (library playlist detail only — added by JS there).

@@ -116,6 +116,8 @@ async def deezer_get_album_tracks(album_id: str) -> list[dict]:
             "album": album_name,
             "image": album_image,
             "url": item.get("link", ""),
+            "duration_ms": (item.get("duration") or 0) * 1000,
+            "track_number": item.get("track_position") or (len(tracks) + 1),
         })
     return tracks
 
@@ -423,6 +425,8 @@ async def itunes_get_album_tracks(album_id: str) -> list[dict]:
             "album": album_name,
             "image": album_image,
             "url": item.get("trackViewUrl", ""),
+            "duration_ms": item.get("trackTimeMillis") or 0,
+            "track_number": item.get("trackNumber") or (len(tracks) + 1),
         })
     return tracks
 

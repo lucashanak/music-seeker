@@ -4,7 +4,7 @@ import { store } from './store.js';
 import { $, $$, esc, showToast, historyBack } from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { renderResults, checkLibrary } from './search.js';
+import { renderResults, renderSongRows, checkLibrary } from './search.js';
 import { switchPage } from './router.js';
 import { attachContextMenu, wasLongPress, addTracksToNavidromePlaylist } from './contextmenu.js';
 import { getPlayerModule } from './player_active.js';
@@ -357,7 +357,16 @@ export async function loadAlbumDetail(album, fromPage) {
     }));
     store.currentAlbumTracks = tracks;
     $('#albumDetailCount').textContent = `${tracks.length} tracks`;
-    renderResults(tracks, '#albumTracks');
+    // Album detail: numbered track list (position + duration) instead of a card
+    // grid that repeats the album cover on every row. Drop the per-track artist
+    // line when every track shares the album's artist (the common case).
+    const albumArtist = (album.artist || '').toLowerCase();
+    const hideArtist = tracks.every(t => (t.artist || '').toLowerCase() === albumArtist);
+    const sink = { items: [], cards: [] };
+    const listEl = renderSongRows(tracks, sink, { numbered: true, hideArtist });
+    tracksEl.innerHTML = '';
+    tracksEl.appendChild(listEl);
+    checkLibrary(sink.items, tracksEl, sink.cards);
     _mountTempoFilter(tracks, '#albumTracks');
   } catch (e) {
     tracksEl.innerHTML = `<div class="empty-state"><p>Failed to load tracks: ${e.message}</p></div>`;
