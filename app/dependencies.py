@@ -1,9 +1,15 @@
 import os
 import re
+import secrets
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
-from app.services import auth as auth_service, spotify as spotify_service
+from app.services import (
+    auth as auth_service,
+    spotify as spotify_service,
+    navidrome_admin,
+    library as library_service,
+)
 
 _DEVICE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 
@@ -17,6 +23,41 @@ def _user_spotify_creds(user: dict) -> dict | None:
     if spotify_service.SPOTIFY_REFRESH_TOKEN:
         return None  # None = use global defaults in spotify.py
     return None
+
+
+async def _resolve_navidrome_creds(user: dict) -> dict | None:
+    """Return {username,password} for the user's own Navidrome account, lazily
+    provisioning it on first use. Returns None (→ shared service account) for the
+    admin and on any provisioning error, so playback/library never hard-fails."""
+    username = user["username"]
+    # Admin keeps the shared service account (and owns the pre-existing playlists).
+    if username == navidrome_admin.NAVIDROME_ADMIN_USER:
+        return None
+    stored = auth_service.get_user_navidrome_raw(username)
+    if stored.get("username") and stored.get("password"):
+        return stored
+    # Lazy provision: create (or re-key) a Navidrome account named after the MS user.
+    try:
+        password = secrets.token_urlsafe(18)
+        existing = await navidrome_admin.find_user(username)
+        if existing:
+            if not await navidrome_admin.set_password(existing["id"], username, password):
+                return None
+        else:
+            await navidrome_admin.create_user(username, password, name=username)
+        auth_service.set_user_navidrome(username, username, password)
+        return {"username": username, "password": password}
+    except Exception:
+        return None
+
+
+async def bind_navidrome_creds(user: dict = Depends(auth_service.get_current_user)) -> dict:
+    """Router-level dependency: bind the logged-in user's Navidrome creds for this
+    request so library.py talks to Navidrome as that user (shared music, per-user
+    playlists/likes). asyncio.create_task inherits the contextvar for downloads."""
+    creds = await _resolve_navidrome_creds(user)
+    library_service.set_request_creds(creds)
+    return user
 
 
 def _get_device_id(request: Request) -> str:

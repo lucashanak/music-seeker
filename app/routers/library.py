@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.models import CreatePlaylistRequest, PlaylistDetailsRequest, PlaylistCoverRequest, AddTracksByIdRequest, RemoveTracksRequest, AddTrackByNameRequest, DeleteAlbumRequest, LikeRequest
 from app.services import auth, library, downloader, player
 from app.services.jobs import create_job
-from app.dependencies import _get_device_id
+from app.dependencies import _get_device_id, bind_navidrome_creds
 from fastapi.responses import Response
 
 
@@ -21,9 +21,14 @@ class ReplaceByNameRequest(BaseModel):
 
 class BatchAddRequest(BaseModel):
     tracks: list[dict]
+    # When False, only mirror already-in-library tracks into the playlist and
+    # report the rest as `missing` WITHOUT kicking off yt-dlp downloads. Used by
+    # the queue/Up Next mirror so that merely queueing a track doesn't pull it
+    # into the library — missing tracks just stream on demand (like Play All).
+    download: bool = True
 
 
-router = APIRouter(prefix="/api/library", tags=["library"])
+router = APIRouter(prefix="/api/library", tags=["library"], dependencies=[Depends(bind_navidrome_creds)])
 
 
 # ── Server-side liked set (per-user, persisted JSON; mirrors users/settings) ──
@@ -334,7 +339,7 @@ async def add_and_download_batch(playlist_id: str, req: BatchAddRequest, user: d
             added = len(song_ids)
 
     queued = 0
-    if missing:
+    if missing and req.download:
         from app.services import settings as app_settings
         fmt = app_settings._settings.get("default_format", "flac")
         method = app_settings._settings.get("default_method", "yt-dlp")

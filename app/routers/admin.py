@@ -37,6 +37,17 @@ async def update_user_perms(username: str, req: UpdateUserPermsRequest, user: di
 async def delete_user(username: str, user: dict = Depends(auth.require_admin)):
     if username == user["username"]:
         raise HTTPException(400, "Cannot delete yourself")
+    # Tear down the user's provisioned Navidrome account (best-effort) before
+    # dropping the MusicSeeker record, so we don't orphan Navidrome users.
+    nav = auth.get_user_navidrome_raw(username)
+    if nav.get("username"):
+        try:
+            from app.services import navidrome_admin
+            existing = await navidrome_admin.find_user(nav["username"])
+            if existing:
+                await navidrome_admin.delete_user(existing["id"])
+        except Exception:
+            pass
     if not auth.delete_user(username):
         raise HTTPException(404, "User not found")
     return {"status": "deleted"}

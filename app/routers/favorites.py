@@ -2,8 +2,9 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from app.models import FollowArtistRequest, UpdateFavoriteRequest
 from app.services import auth, favorites, settings as app_settings
+from app.dependencies import bind_navidrome_creds
 
-router = APIRouter(prefix="/api/favorites", tags=["favorites"])
+router = APIRouter(prefix="/api/favorites", tags=["favorites"], dependencies=[Depends(bind_navidrome_creds)])
 
 
 @router.get("")

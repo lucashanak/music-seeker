@@ -3,21 +3,41 @@ import os
 import re
 import secrets
 import unicodedata
+from contextvars import ContextVar
 import httpx
 
 NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://navidrome:4533")
 NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "lucas")
 NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "")
 
+# Per-request Navidrome credentials for the logged-in user's own account. Set by
+# the auth dependency (bind_navidrome_creds) at the start of each request so that
+# playlists/stars/play-counts are per-user while the music library stays shared.
+# Falls back to the module-global service account (lucas) when unset — e.g. system
+# tasks, unauthenticated paths, or users not yet provisioned. asyncio.create_task
+# (used by the downloader) copies the current context, so background jobs keep the
+# requesting user's creds. Value shape: {"username": str, "password": str}.
+_req_creds: ContextVar[dict | None] = ContextVar("navidrome_req_creds", default=None)
+
+
+def set_request_creds(creds: dict | None) -> None:
+    """Bind the current request's Navidrome credentials (or None to use the
+    global service account)."""
+    _req_creds.set(creds or None)
+
 
 def _params(**extra) -> dict:
-    """Use Subsonic token auth (salt + md5) instead of plaintext password."""
+    """Use Subsonic token auth (salt + md5) instead of plaintext password.
+    Authenticates as the per-request user when bound, else the service account."""
+    creds = _req_creds.get() or {}
+    user = creds.get("username") or NAVIDROME_USER
+    password = creds.get("password") or NAVIDROME_PASSWORD
     salt = secrets.token_hex(8)
-    token = hashlib.md5((NAVIDROME_PASSWORD + salt).encode()).hexdigest()
+    token = hashlib.md5((password + salt).encode()).hexdigest()
     p = {
         "v": "1.16.1",
         "c": "music-seeker",
-        "u": NAVIDROME_USER,
+        "u": user,
         "t": token,
         "s": salt,
         "f": "json",

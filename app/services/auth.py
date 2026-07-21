@@ -336,6 +336,28 @@ def clear_user_spotify(username: str) -> bool:
     return True
 
 
+# ── Per-user Navidrome account (playlists/likes/stars isolated; library shared) ──
+def get_user_navidrome_raw(username: str) -> dict:
+    """Get the user's stored per-user Navidrome account creds (empty if none)."""
+    users = _load_users()
+    user = users.get(username, {})
+    return {
+        "username": user.get("navidrome_user", ""),
+        "password": user.get("navidrome_password", ""),
+    }
+
+
+def set_user_navidrome(username: str, navidrome_user: str, navidrome_password: str) -> bool:
+    """Persist the Navidrome account provisioned for this MusicSeeker user."""
+    users = _load_users()
+    if username not in users:
+        return False
+    users[username]["navidrome_user"] = navidrome_user
+    users[username]["navidrome_password"] = navidrome_password
+    _save_users(users)
+    return True
+
+
 def update_user_setting(username: str, key: str, value) -> bool:
     """Update a single user-level setting (e.g., hide_spotify)."""
     allowed = {"hide_spotify"}

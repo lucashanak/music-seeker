@@ -5,9 +5,9 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from app.models import DownloadRequest
 from app.services import auth, jobs, downloader
-from app.dependencies import _get_dir_size
+from app.dependencies import _get_dir_size, bind_navidrome_creds
 
-router = APIRouter(prefix="/api", tags=["downloads"])
+router = APIRouter(prefix="/api", tags=["downloads"], dependencies=[Depends(bind_navidrome_creds)])
 
 
 @router.post("/download")
