@@ -28,7 +28,7 @@ class BatchAddRequest(BaseModel):
     download: bool = True
 
 
-router = APIRouter(prefix="/api/library", tags=["library"], dependencies=[Depends(bind_navidrome_creds)])
+router = APIRouter(prefix="/api/library", tags=["library"])
 
 
 # ── Server-side liked set (per-user, persisted JSON; mirrors users/settings) ──
@@ -123,7 +123,7 @@ async def get_cover_art(cover_id: str):
 
 
 @router.get("/playlists")
-async def get_playlists(user: dict = Depends(auth.get_current_user)):
+async def get_playlists(user: dict = Depends(bind_navidrome_creds)):
     playlists = await library.get_playlists()
     # Hide internal temp playlists (Up Next + Radio) from the library UI
     playlists = [p for p in playlists if not library.is_temp_playlist_name(p.get("name", ""))]
@@ -138,7 +138,7 @@ async def get_playlists(user: dict = Depends(auth.get_current_user)):
 
 
 @router.get("/upnext")
-async def get_upnext(request: Request, user: dict = Depends(auth.get_current_user)):
+async def get_upnext(request: Request, user: dict = Depends(bind_navidrome_creds)):
     """Idempotently fetch (or create) the Up Next temp playlist for this user+device."""
     device_id = _get_device_id(request)
     pl = await library.get_or_create_upnext(user["username"], device_id)
@@ -148,7 +148,7 @@ async def get_upnext(request: Request, user: dict = Depends(auth.get_current_use
 
 
 @router.get("/radio")
-async def get_radio_playlist(request: Request, user: dict = Depends(auth.get_current_user)):
+async def get_radio_playlist(request: Request, user: dict = Depends(bind_navidrome_creds)):
     """Idempotently fetch (or create) the Radio temp playlist for this user+device."""
     device_id = _get_device_id(request)
     pl = await library.get_or_create_radio(user["username"], device_id)
@@ -158,14 +158,14 @@ async def get_radio_playlist(request: Request, user: dict = Depends(auth.get_cur
 
 
 @router.post("/playlist/{playlist_id}/replace-by-name")
-async def replace_playlist_by_name(playlist_id: str, req: ReplaceByNameRequest, user: dict = Depends(auth.get_current_user)):
+async def replace_playlist_by_name(playlist_id: str, req: ReplaceByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     """Atomically replace a playlist's tracks by name/artist matching."""
     result = await library.replace_playlist_by_names(playlist_id, req.tracks)
     return result
 
 
 @router.get("/playlist/{playlist_id}")
-async def get_playlist(playlist_id: str, user: dict = Depends(auth.get_current_user)):
+async def get_playlist(playlist_id: str, user: dict = Depends(bind_navidrome_creds)):
     pl = await library.get_playlist(playlist_id)
     if not pl:
         raise HTTPException(404, "Playlist not found")
@@ -178,7 +178,7 @@ async def get_playlist(playlist_id: str, user: dict = Depends(auth.get_current_u
 
 
 @router.post("/playlist")
-async def create_playlist(req: CreatePlaylistRequest, user: dict = Depends(auth.get_current_user)):
+async def create_playlist(req: CreatePlaylistRequest, user: dict = Depends(bind_navidrome_creds)):
     new_id = await library.create_playlist_and_get_id(req.name, req.description)
     if not new_id:
         raise HTTPException(500, "Failed to create playlist")
@@ -186,7 +186,7 @@ async def create_playlist(req: CreatePlaylistRequest, user: dict = Depends(auth.
 
 
 @router.put("/playlist/{playlist_id}/tracks")
-async def add_tracks_to_playlist(playlist_id: str, req: AddTracksByIdRequest, user: dict = Depends(auth.get_current_user)):
+async def add_tracks_to_playlist(playlist_id: str, req: AddTracksByIdRequest, user: dict = Depends(bind_navidrome_creds)):
     ok = await library.update_playlist(playlist_id, song_ids_to_add=req.song_ids)
     if not ok:
         raise HTTPException(500, "Failed to add tracks")
@@ -194,7 +194,7 @@ async def add_tracks_to_playlist(playlist_id: str, req: AddTracksByIdRequest, us
 
 
 @router.post("/playlist/{playlist_id}/add-by-name")
-async def add_track_by_name(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(auth.get_current_user)):
+async def add_track_by_name(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     song_id = await library.find_song_id(req.name, req.artist, req.album)
     if not song_id:
         raise HTTPException(404, "Track not found in Navidrome library")
@@ -213,7 +213,7 @@ async def add_track_by_name(playlist_id: str, req: AddTrackByNameRequest, user: 
 
 
 @router.delete("/playlist/{playlist_id}/tracks")
-async def remove_tracks_from_playlist(playlist_id: str, req: RemoveTracksRequest, user: dict = Depends(auth.get_current_user)):
+async def remove_tracks_from_playlist(playlist_id: str, req: RemoveTracksRequest, user: dict = Depends(bind_navidrome_creds)):
     ok = await library.update_playlist(playlist_id, song_indices_to_remove=req.indices)
     if not ok:
         raise HTTPException(500, "Failed to remove tracks")
@@ -221,7 +221,7 @@ async def remove_tracks_from_playlist(playlist_id: str, req: RemoveTracksRequest
 
 
 @router.put("/playlist/{playlist_id}/rename")
-async def rename_playlist(playlist_id: str, req: CreatePlaylistRequest, user: dict = Depends(auth.get_current_user)):
+async def rename_playlist(playlist_id: str, req: CreatePlaylistRequest, user: dict = Depends(bind_navidrome_creds)):
     """Rename a playlist (also updates description when provided)."""
     ok = await library.update_playlist_details(playlist_id, name=req.name, comment=req.description)
     if not ok:
@@ -230,7 +230,7 @@ async def rename_playlist(playlist_id: str, req: CreatePlaylistRequest, user: di
 
 
 @router.put("/playlist/{playlist_id}/details")
-async def update_playlist_details(playlist_id: str, req: PlaylistDetailsRequest, user: dict = Depends(auth.get_current_user)):
+async def update_playlist_details(playlist_id: str, req: PlaylistDetailsRequest, user: dict = Depends(bind_navidrome_creds)):
     """Update a playlist's name and/or description (Subsonic name/comment)."""
     if req.name is None and req.description is None:
         raise HTTPException(400, "Provide name and/or description")
@@ -241,7 +241,7 @@ async def update_playlist_details(playlist_id: str, req: PlaylistDetailsRequest,
 
 
 @router.post("/playlist/{playlist_id}/cover")
-async def set_playlist_cover(playlist_id: str, req: PlaylistCoverRequest, user: dict = Depends(auth.get_current_user)):
+async def set_playlist_cover(playlist_id: str, req: PlaylistCoverRequest, user: dict = Depends(bind_navidrome_creds)):
     """Set an app-side cover image override (a URL) for a playlist."""
     if not req.image_url:
         raise HTTPException(400, "image_url is required")
@@ -255,7 +255,7 @@ async def set_playlist_cover(playlist_id: str, req: PlaylistCoverRequest, user: 
 
 
 @router.delete("/playlist/{playlist_id}/cover")
-async def delete_playlist_cover(playlist_id: str, user: dict = Depends(auth.get_current_user)):
+async def delete_playlist_cover(playlist_id: str, user: dict = Depends(bind_navidrome_creds)):
     """Clear an app-side cover image override for a playlist."""
     with _covers_lock:
         covers = _load_playlist_covers()
@@ -266,7 +266,7 @@ async def delete_playlist_cover(playlist_id: str, user: dict = Depends(auth.get_
 
 
 @router.put("/playlist/{playlist_id}/reorder")
-async def reorder_playlist(playlist_id: str, req: AddTracksByIdRequest, user: dict = Depends(auth.get_current_user)):
+async def reorder_playlist(playlist_id: str, req: AddTracksByIdRequest, user: dict = Depends(bind_navidrome_creds)):
     """Reorder playlist tracks. Receives full ordered list of song_ids."""
     ok = await library.reorder_playlist(playlist_id, req.song_ids)
     if not ok:
@@ -275,7 +275,7 @@ async def reorder_playlist(playlist_id: str, req: AddTracksByIdRequest, user: di
 
 
 @router.post("/playlist/{playlist_id}/remove-by-name")
-async def remove_track_by_name(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(auth.get_current_user)):
+async def remove_track_by_name(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     """Remove a track from playlist by name/artist match (exact index when given)."""
     ok = await library.remove_track_by_name(playlist_id, req.name, req.artist, req.index)
     if not ok:
@@ -284,7 +284,7 @@ async def remove_track_by_name(playlist_id: str, req: AddTrackByNameRequest, use
 
 
 @router.post("/playlist/{playlist_id}/add-and-download")
-async def add_and_download(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(auth.get_current_user)):
+async def add_and_download(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     """Add track to playlist. If not in Navidrome, download first then add."""
     # Try to find in Navidrome first
     song_id = await library.find_song_id(req.name, req.artist, req.album)
@@ -310,7 +310,7 @@ async def add_and_download(playlist_id: str, req: AddTrackByNameRequest, user: d
 
 
 @router.post("/playlist/{playlist_id}/add-and-download-batch")
-async def add_and_download_batch(playlist_id: str, req: BatchAddRequest, user: dict = Depends(auth.get_current_user)):
+async def add_and_download_batch(playlist_id: str, req: BatchAddRequest, user: dict = Depends(bind_navidrome_creds)):
     """Add a batch of tracks to a playlist in one call.
 
     Resolves Navidrome song IDs in parallel; adds matched IDs in batches;
@@ -358,7 +358,7 @@ async def add_and_download_batch(playlist_id: str, req: BatchAddRequest, user: d
 
 
 @router.post("/track/delete")
-async def delete_track(req: AddTrackByNameRequest, user: dict = Depends(auth.get_current_user)):
+async def delete_track(req: AddTrackByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     """Delete a track file from disk. Returns playlists it belongs to for confirmation."""
     # Check which playlists contain this track (bounded parallel fetches)
     playlists = await library.get_playlists()
@@ -376,7 +376,7 @@ async def delete_track(req: AddTrackByNameRequest, user: dict = Depends(auth.get
 
 
 @router.post("/album/delete")
-async def delete_album(req: DeleteAlbumRequest, user: dict = Depends(auth.get_current_user)):
+async def delete_album(req: DeleteAlbumRequest, user: dict = Depends(bind_navidrome_creds)):
     """Delete all files for an album from disk."""
     deleted = player.delete_album_files(req.artist, req.album)
     if deleted == 0:
@@ -386,7 +386,7 @@ async def delete_album(req: DeleteAlbumRequest, user: dict = Depends(auth.get_cu
 
 
 @router.post("/track/check-playlists")
-async def check_track_playlists(req: AddTrackByNameRequest, user: dict = Depends(auth.get_current_user)):
+async def check_track_playlists(req: AddTrackByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     """Check which playlists contain a track (for delete confirmation)."""
     playlists = await library.get_playlists()
     in_playlists = await _playlists_containing(playlists, req.name, req.artist)
@@ -395,7 +395,7 @@ async def check_track_playlists(req: AddTrackByNameRequest, user: dict = Depends
 
 
 @router.delete("/playlist/{playlist_id}")
-async def delete_playlist(playlist_id: str, user: dict = Depends(auth.get_current_user)):
+async def delete_playlist(playlist_id: str, user: dict = Depends(bind_navidrome_creds)):
     ok = await library.delete_playlist(playlist_id)
     if not ok:
         raise HTTPException(500, "Failed to delete playlist")
@@ -403,7 +403,7 @@ async def delete_playlist(playlist_id: str, user: dict = Depends(auth.get_curren
 
 
 @router.post("/like")
-async def like_track(req: LikeRequest, user: dict = Depends(auth.get_current_user)):
+async def like_track(req: LikeRequest, user: dict = Depends(bind_navidrome_creds)):
     """Like a track: star in Navidrome if it resolves locally, AND always record
     in the server-side liked set (likes.json). Robust when Navidrome is down."""
     # Star in Navidrome (best-effort)
@@ -437,7 +437,7 @@ async def like_track(req: LikeRequest, user: dict = Depends(auth.get_current_use
 
 
 @router.post("/unlike")
-async def unlike_track(req: LikeRequest, user: dict = Depends(auth.get_current_user)):
+async def unlike_track(req: LikeRequest, user: dict = Depends(bind_navidrome_creds)):
     """Unlike a track: unstar in Navidrome if local, AND remove from liked.json."""
     song_id = req.id
     if not song_id:
@@ -465,7 +465,7 @@ async def unlike_track(req: LikeRequest, user: dict = Depends(auth.get_current_u
 
 
 @router.get("/likes")
-async def get_likes(user: dict = Depends(auth.get_current_user)):
+async def get_likes(user: dict = Depends(bind_navidrome_creds)):
     """Return the merged liked list: Navidrome getStarred2 ∪ local likes.json,
     newest first. Robust when Navidrome is unreachable (local-only fallback)."""
     merged: dict[str, dict] = {}
