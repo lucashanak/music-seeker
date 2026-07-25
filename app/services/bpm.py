@@ -1,6 +1,9 @@
 """BPM analysis service — ensemble detection optimized for zouk music."""
 
 import asyncio
+import ctypes
+import ctypes.util
+import gc
 import json
 import logging
 import os
@@ -62,6 +65,37 @@ _bpm_cache: dict = {}
 # release the GIL, so threads give real parallelism with shared memory.
 # 4 threads ≈ 1.5 GB total vs 16 subprocesses ≈ 10 GB.
 _executor = ThreadPoolExecutor(max_workers=int(os.environ.get("BPM_WORKERS", "2")))
+
+
+# ── Native-memory reclaim ────────────────────────────────────────────────────
+# librosa/essentia/madmom/numpy allocate large native buffers per analysis. glibc
+# keeps freed pages in per-thread arenas instead of returning them to the OS, so
+# RSS ratchets up over many analyses and never comes down — this drove the uvicorn
+# OOM. After each analysis we force gc + malloc_trim(0) to hand the pages back;
+# MALLOC_ARENA_MAX=2 (container env) caps arena fragmentation. If insufficient,
+# escalate to a recycling ProcessPoolExecutor (native heap dies with the worker).
+try:
+    _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
+except Exception:
+    _libc = None
+
+
+def _trim_memory():
+    try:
+        gc.collect()
+        if _libc is not None:
+            _libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
+async def _run_in_pool(fn, *args):
+    """Run a heavy analysis fn in the thread pool, then reclaim native memory."""
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(_executor, fn, *args)
+    finally:
+        _trim_memory()
 
 
 def _load_cache() -> dict:
@@ -1179,8 +1213,7 @@ async def _backfill_features(entry: dict, song_id: str, name: str, artist: str) 
     file_path = await _get_audio_file(song_id, name, artist)
     if not file_path:
         return entry  # can't backfill without audio — leave BPM data intact
-    loop = asyncio.get_event_loop()
-    feats = await loop.run_in_executor(_executor, compute_features_only, file_path)
+    feats = await _run_in_pool(compute_features_only, file_path)
     entry.update(feats)  # feats contains ONLY feature fields → never overwrites bpm/key/grid
     _bpm_cache[_cache_key(name, artist)] = entry
     _save_cache()
@@ -1205,8 +1238,7 @@ async def analyze_track(song_id: str, name: str, artist: str,
         if not file_path:
             return None
 
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(_executor, _analyze_or_read_tag, file_path)
+        result = await _run_in_pool(_analyze_or_read_tag, file_path)
         result["name"] = name
         result["artist"] = artist
         _bpm_cache[key] = result
@@ -1237,8 +1269,7 @@ async def analyze_playlist(playlist_id: str, force: bool = False,
         fp = await _get_audio_file(track["id"], track["name"], track["artist"])
         if not fp:
             return
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(_executor, _analyze_or_read_tag, fp)
+        result = await _run_in_pool(_analyze_or_read_tag, fp)
         result["name"] = track["name"]
         result["artist"] = track["artist"]
         key = _cache_key(track["name"], track["artist"])
@@ -1265,8 +1296,7 @@ def get_all_cached() -> dict:
 
 
 async def analyze_and_tag(file_path: str, name: str, artist: str) -> dict | None:
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(_executor, _analyze_or_read_tag, file_path)
+    result = await _run_in_pool(_analyze_or_read_tag, file_path)
     result["name"] = name
     result["artist"] = artist
     _bpm_cache[_cache_key(name, artist)] = result
