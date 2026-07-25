@@ -7,3 +7,17 @@ data/
 certs/
 CLAUDE.md
 node_modules/
+
+# Local tooling caches / test artifacts
+.playwright-mcp/
+.serena/
+test-results/
+package.json
+package-lock.json
+research/
+test_bpm.py
+
+# Ad-hoc scratch screenshots at repo root (static/ images stay tracked)
+/*.png
+/*.jpeg
+/*.jpg
