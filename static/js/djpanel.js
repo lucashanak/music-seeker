@@ -7,9 +7,9 @@
 //
 // Only visible when the active engine is 'dj' (ms_player_engine === 'dj').
 
-import { $ } from './utils.js';
+import { $, showToast } from './utils.js';
 import { store } from './store.js';
-import { getPlayerModule } from './player_active.js';
+import { getPlayerModule, getPlayerEngine } from './player_active.js';
 import { switchPage } from './router.js';
 import { closeFullPlayer } from './fullplayer.js';
 import { preloadSet, clearPreload, preloadStatus, cleanup as prefetchCleanup } from './prefetch.js';
@@ -113,6 +113,25 @@ export function syncDjPanel() {
     el.value = val;
     if (cfg.badge) { const b = $(cfg.badge); if (b) b.textContent = val; }
   }
+  const engEl = $('#fpPlayerEngine');
+  if (engEl) engEl.value = getPlayerEngine();
+  _applyPanelMode();
+}
+
+// Switch the player engine (classic ↔ dj) straight from the live DJ panel.
+// Mirrors the Settings flow: flush the queue on the OUTGOING engine, persist the
+// choice, then reload (the engine module is memoized and owns a different audio
+// graph, so a reload is required to swap it in).
+async function _applyEngineChange() {
+  const el = $('#fpPlayerEngine');
+  if (!el || el.value === getPlayerEngine()) return;
+  const next = el.value;
+  try { const m = await getPlayerModule(); await m.flushQueue?.(); } catch {}
+  localStorage.setItem('ms_player_engine', next);
+  showToast('Switching player…');
+  const av = new URLSearchParams(window.location.search).get('app_version')
+    || localStorage.getItem('app_installed_version');
+  window.location.href = window.location.origin + '/?_=' + Date.now() + (av ? '&app_version=' + av : '');
 }
 
 function _isDjEngine() {
@@ -126,7 +145,6 @@ let _isOpen = false;
 export function isDjPanelOpen() { return _isOpen; }
 
 function openDjPanel() {
-  if (!_isDjEngine()) return;
   syncDjPanel();
   $('#fpDjBackdrop')?.classList.add('open');
   const panel = $('#fpDjPanel');
@@ -190,16 +208,26 @@ function openSettingsDjSection() {
 // legacy #fpDjMode cycle button is always hidden now — it only ever showed for the
 // removed 'crossfade' engine.
 export function refreshDjPanelVisibility() {
-  const engine = localStorage.getItem('ms_player_engine') || 'classic';
-  const isDj = engine === 'dj';
-
+  // The panel is available in BOTH engines now — it hosts the Player selector so
+  // users can switch classic↔dj from the player. The dj-only mixing controls
+  // (Smart Queue, crossfade, …) are hidden in classic via _applyPanelMode().
   const panelBtn = $('#fpDjPanelBtn');
-  if (panelBtn) panelBtn.style.display = isDj ? '' : 'none';
+  if (panelBtn) panelBtn.style.display = '';
 
   const cycleBtn = $('#fpDjMode');
   if (cycleBtn) cycleBtn.style.display = 'none';
 
-  if (!isDj && _isOpen) closeDjPanel();
+  _applyPanelMode();
+}
+
+// Show the dj-only mixing controls only when the DJ engine is active; in classic
+// the panel shows just the Player selector.
+function _applyPanelMode() {
+  const isDj = _isDjEngine();
+  const rows = $('#fpDjOnlyRows');
+  if (rows) rows.style.display = isDj ? '' : 'none';
+  const more = $('#fpDjMoreSettings');
+  if (more) more.style.display = isDj ? '' : 'none';
 }
 
 export function init() {
@@ -213,6 +241,7 @@ export function init() {
   $('#fpDjBackdrop')?.addEventListener('click', closeDjPanel);
   $('#fpDjMoreSettings')?.addEventListener('click', openSettingsDjSection);
   $('#fpDjPreloadBtn')?.addEventListener('click', (e) => { e.stopPropagation(); _togglePreload(); });
+  $('#fpPlayerEngine')?.addEventListener('change', _applyEngineChange);
 
   // Esc is owned exclusively by router.js (synchronous flag check via window.__djPanelOpen).
   // No local keydown listener here — avoids the race where djpanel's handler fires

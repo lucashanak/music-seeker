@@ -1295,6 +1295,14 @@
     </div>
     <div class="fp-dj-body">
       <div class="setting-group">
+        <label class="setting-label" for="fpPlayerEngine">Player</label>
+        <select class="setting-select" id="fpPlayerEngine">
+          <option value="classic">Classic</option>
+          <option value="dj">DJ Player (EQ transitions)</option>
+        </select>
+      </div>
+      <div id="fpDjOnlyRows">
+      <div class="setting-group">
         <label class="setting-label" for="fpDjSmartQueue">Smart Queue</label>
         <select class="setting-select" id="fpDjSmartQueue">
           <option value="off">Off — play queue in order</option>
@@ -1342,6 +1350,7 @@
           <button class="fp-dj-preload-btn" id="fpDjPreloadBtn" type="button">Preload set</button>
           <span class="fp-dj-preload-status" id="fpDjPreloadStatus"></span>
         </div>
+      </div>
       </div>
     </div>
     <div class="fp-dj-foot">
