@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+import tempfile
 import time
 from pathlib import Path
 
@@ -62,9 +63,38 @@ def _load_users() -> dict:
 
 
 def _save_users(users: dict):
+    """Persist the user database atomically.
+
+    A plain write_text() truncates users.json before writing, so a crash or a
+    full disk mid-write leaves it empty or half-written — and since this file IS
+    the account list, that locks every user out permanently. Writing to a temp
+    file in the same directory and swapping it in with os.replace() means a
+    reader either sees the old complete file or the new complete one, never a
+    partial one. Same volume as the rest of /app/data, so the rename is atomic.
+    """
     global _users_cache, _users_cache_mtime
     _ensure_data_dir()
-    USERS_FILE.write_text(json.dumps(users, indent=2))
+    payload = json.dumps(users, indent=2)
+    fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), prefix=".users.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())  # the rename is only safe once the bytes are on disk
+        os.chmod(tmp, 0o600)  # holds password hashes — match jwt_secret's mode
+        os.replace(tmp, USERS_FILE)
+    except BaseException:
+        # Leave the previous users.json untouched and don't strand the temp file.
+        # Also drop the cache: callers mutate the dict _load_users handed them
+        # *before* saving, so on failure it holds a change that never reached
+        # disk. Without this the process would keep serving that phantom state
+        # (a password that works until the next restart) while disk says otherwise.
+        _users_cache, _users_cache_mtime = None, -1.0
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     _users_cache = users
     _users_cache_mtime = USERS_FILE.stat().st_mtime
 
