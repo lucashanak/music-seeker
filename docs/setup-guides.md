@@ -89,6 +89,11 @@ Open `http://localhost:4533` and create an admin account.
 
 In Settings → Library & Downloads, enter the Navidrome URL, username, and password.
 
+The account must be a Navidrome **admin** — MusicSeeker uses it to provision a separate
+Navidrome account per MusicSeeker user, so playlists and likes stay private while the
+library is shared. See
+[Per-user Navidrome accounts](architecture.md#per-user-navidrome-accounts).
+
 **Important**: MusicSeeker and Navidrome must share the same music volume. Both containers must mount the same host directory to `/music`.
 
 ## Last.fm
@@ -124,9 +129,11 @@ services:
     build: /path/to/music-seeker
     container_name: music-seeker
     restart: unless-stopped
+    mem_limit: 2g          # see docs/architecture.md#memory-limits
     ports:
       - "8090:8090"
     environment:
+      - MALLOC_ARENA_MAX=2 # see docs/architecture.md#memory-limits
       - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
       - LIDARR_URL=http://lidarr:8686
@@ -144,3 +151,29 @@ services:
       - /mnt/nas/Media/_Music:/music
       - ${INSTALL_DIRECTORY}/config/music-seeker:/app/data
 ```
+
+`mem_limit` and `MALLOC_ARENA_MAX` are not optional in production — without them a
+memory ratchet in the audio-analysis libraries can exhaust the host and take the whole
+stack down. See [Memory limits](architecture.md#memory-limits).
+
+### Deploying updates
+
+Code is baked into the image, so a plain `restart` picks up nothing — rebuild and
+recreate. Always go through compose (with *both* compose files) so the container keeps
+the same `/app/data` mount:
+
+```bash
+# on the server, from the YAMS directory
+docker compose -f docker-compose.yaml -f docker-compose.custom.yaml build music-seeker
+docker compose -f docker-compose.yaml -f docker-compose.custom.yaml up -d music-seeker
+```
+
+If `up -d` reports that the container name is already in use, remove the old container
+first (`docker stop music-seeker && docker rm music-seeker`) and run `up -d` again —
+otherwise the old image keeps serving and the deploy looks like a no-op.
+
+Environment variables belong in the compose file — do not pass `-e` by hand, and do not
+start the container with `docker run`: a hand-written command easily mounts a *different*
+host directory at `/app/data`, which makes every account and playlist look lost. See
+[One data path](architecture.md#data-storage). Recreating the container is otherwise
+safe — the JWT secret lives in the data volume, so users stay logged in.

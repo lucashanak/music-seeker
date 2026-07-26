@@ -29,6 +29,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 ### Player & Mobile
 - **Multi-source streaming** — local file > Navidrome > YouTube proxy (4h URL cache)
 - **Full-screen player** — album art, seek bar, shuffle, repeat (off/all/one), grouped action row (DJ / track / output)
+- **Two player engines** — Classic or DJ (beat-matched EQ/filter transitions), switchable per device from the Live DJ Controls drawer or Settings
 - **Queue management** — drag & drop reorder, per-user persistent, save as Navidrome playlist, always visible on touch
 - **Playlist Mode** — queue linked to Navidrome playlist with auto-sync
 - **Multi-device** — separate queue and play progress per device, with device naming
@@ -49,6 +50,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 - **Download & sync** — download Spotify playlists to Navidrome
 
 ### Library
+- **Private playlists per user** — every user gets its own Navidrome account automatically, so playlists, likes and stars are personal while the music library stays shared
 - **Organized tabs** — Downloaded (your Navidrome playlists + Liked Songs), Spotify (read-only mirror), Podcasts, Favorites
 - **Spotify tab** — Playlists, Albums, Artists, Shows segmented control for easy browsing
 - **Quick search** — "In Library" badge with fuzzy matching on all search results

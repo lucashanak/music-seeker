@@ -38,8 +38,12 @@ Set these in your `.env` file or pass directly to `docker run` / `docker-compose
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NAVIDROME_URL` | `http://navidrome:4533` | Navidrome Subsonic API endpoint |
-| `NAVIDROME_USER` | — | Navidrome username |
-| `NAVIDROME_PASSWORD` | — | Navidrome password |
+| `NAVIDROME_USER` | — | Navidrome **admin** username. Doubles as the service account: it provisions the per-user Navidrome accounts and is the fallback identity for system paths. |
+| `NAVIDROME_PASSWORD` | — | Password for that admin account |
+
+Each MusicSeeker user gets its **own** Navidrome account, provisioned automatically
+on first use — the music library is shared, but playlists, likes, stars and play
+counts are per-user. See [Per-user Navidrome accounts](architecture.md#per-user-navidrome-accounts).
 
 ### Soulseek (slskd)
 
@@ -65,6 +69,8 @@ Set these in your `.env` file or pass directly to `docker run` / `docker-compose
 | `DLNA_SERVER_URL` | auto-detected | Server URL for DLNA metadata |
 | `DLNA_RENDERER_URL` | — | Manual DLNA renderer description URL |
 | `PODCAST_SYNC_HOURS` | `6` | Auto-sync interval for podcast subscriptions |
+| `BPM_WORKERS` | `2` | Thread-pool size for BPM/key analysis. Each worker holds large native audio buffers — raising this raises peak memory. |
+| `MALLOC_ARENA_MAX` | — (unset) | glibc arena cap. **Set to `2` in production** — see [Memory limits](architecture.md#memory-limits). |
 
 ## In-App Settings
 
@@ -102,6 +108,17 @@ Each device (browser/app instance) is identified by a UUID stored in `localStora
 | Device Name | free text | Friendly name (e.g. "Phone", "Work PC", "Tablet") |
 | Output Mode | `default` / `local` / `dlna_only` | Controls playback routing |
 | DLNA Renderer URL | URL | Renderer for DLNA Only mode |
+| Player | `classic` / `dj` | Playback engine (`ms_player_engine`) — see below |
+
+**Player engine:** two engines ship side by side — `classic` (`player.js`) and `dj`
+(`player_v3.js`, adds beat-matched EQ/filter transitions). The choice is per device and
+switchable in two places: Settings, or the **Player** row at the top of the 🎛 Live DJ
+Controls drawer in the full player. Switching flushes the queue on the outgoing engine
+and reloads the page — the engine module is memoized and owns a different audio graph, so
+a reload is required. The drawer is reachable in both engines (in `classic` it shows only
+the Player row), so the switch works in both directions. Cross-module code must resolve
+the engine through `getPlayerModule()` (`player_active.js`) instead of importing
+`player.js` directly, or the dj engine is silently bypassed.
 
 **Output modes:**
 - **Default** — local browser playback with optional cast button
