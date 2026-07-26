@@ -11,7 +11,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
     # Include routers
-    from app.routers import auth, search, spotify as spotify_router, downloads, player, discover, favorites, podcasts, settings, admin, library as library_router, dlna as dlna_router, bpm as bpm_router, recognize as recognize_router, remote as remote_router
+    from app.routers import auth, search, spotify as spotify_router, downloads, player, discover, favorites, podcasts, settings, admin, library as library_router, dlna as dlna_router, bpm as bpm_router, recognize as recognize_router, remote as remote_router, feedback as feedback_router
     app.include_router(auth.router)
     app.include_router(search.router)
     app.include_router(spotify_router.router)
@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(bpm_router.router)
     app.include_router(recognize_router.router)
     app.include_router(remote_router.router)
+    app.include_router(feedback_router.router)
 
     # Apply saved settings to library/downloader modules
     app_settings._apply_to_modules()

@@ -164,3 +164,20 @@ class DeviceSettingRequest(BaseModel):
     name: str = ""
     output_mode: str = "default"  # "default" | "local" | "dlna_only"
     dlna_renderer_url: str = ""
+
+
+class FeedbackRequest(BaseModel):
+    kind: str = "bug"          # "bug" | "feature"
+    # Limits match the truncation applied in app/services/feedback.py so an
+    # over-long submission gets a clear 422 instead of silent data loss.
+    title: str = Field(max_length=120)
+    description: str = Field("", max_length=5000)
+    # data URL: "data:image/jpeg;base64,...." — capped so an oversized payload is
+    # rejected at parse time, before any base64 decode is attempted.
+    screenshot: str = Field("", max_length=6 * 1024 * 1024)
+    context: dict = {}
+
+
+class FeedbackPromoteRequest(BaseModel):
+    title: str | None = Field(None, max_length=200)
+    description: str | None = Field(None, max_length=8000)

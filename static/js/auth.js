@@ -87,6 +87,7 @@ export async function initApp() {
     // Show admin sections
     $('#usersSection').style.display = me.is_admin ? '' : 'none';
     $('#diskUsageSection').style.display = me.is_admin ? '' : 'none';
+    $('#feedbackSection').style.display = me.is_admin ? '' : 'none';
     // Global-settings auto-saves and the credential Save & Test buttons write to
     // PUT /api/settings (require_admin). Non-admins can view but not save, so hide
     // the credential Save & Test buttons for them (the auto-save handlers also

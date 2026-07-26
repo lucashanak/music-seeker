@@ -39,8 +39,8 @@
 ## Backend
 
 - **Framework**: FastAPI (Python 3.11), single process via uvicorn
-- **15 routers** with ~90 API endpoints
-- **No database** — JSON file storage in `/app/data/` (users, settings, jobs, queue, favorites, subscriptions)
+- **16 routers** with ~95 API endpoints
+- **No database** — JSON file storage in `/app/data/` (users, settings, jobs, queue, favorites, subscriptions, feedback)
 - **No build step** — frontend served as static files by FastAPI
 - **Job queue** — in-memory with semaphore for concurrency control (configurable max concurrent downloads)
 
@@ -62,6 +62,7 @@
 | `remote.py` | `remote.py` | — (device→device remote control, SSE) |
 | `bpm.py` | `bpm.py` | — (BPM detection for DJ mode) |
 | `admin.py` | — | Filesystem |
+| `feedback.py` | `feedback.py`, `github.py` | GitHub REST API |
 | `spotify.py` | `spotify.py` | Spotify Web API |
 
 ### Key design decisions
@@ -72,6 +73,7 @@
 - **Fuzzy library matching**: Navidrome library check uses normalized string comparison to handle variations (remasters, feat. tags, live versions).
 - **Queueing never downloads**: adding tracks to the queue only mirrors them into the Up Next playlist (`download: false`); tracks missing from the library stream on demand. Downloads happen only through explicit actions (Download, Add to playlist, per-artist auto-download). Historically queueing pulled every missing track into the library via yt-dlp, which filled the shared library as a side effect of pressing play.
 - **Metadata embedding**: yt-dlp downloads raw audio, then metaflac (FLAC) or ffmpeg (MP3) embeds artist/title/album/artwork from the search provider (Deezer/Spotify), not from YouTube.
+- **In-app feedback**: Reports are collected locally and privately first (`/app/data/feedback/`), then reviewed by an admin in Settings. Only on explicit admin action are they promoted to a public GitHub issue. This two-phase design prevents spam on a public tracker, keeps screenshots private until reviewed, and allows the entire feature to degrade gracefully when `GITHUB_TOKEN` is unset — capture, submit, and triage still work; only promotion is disabled.
 
 ### Per-user Navidrome accounts
 
@@ -152,6 +154,7 @@ All data is stored as JSON files in `/app/data/`:
 | `player/{username}.json` | Default queue state (legacy fallback) |
 | `player/{username}_{device_id}.json` | Per-device queue state (tracks, position, volume, playlist mode) |
 | `jwt_secret` | Persistent JWT signing secret |
+| `feedback/<id>.json` + `<id>.jpg`/`.png` | In-app feedback reports awaiting admin triage (private; capped at 200 reports / 200 MB) |
 
 Because `jwt_secret` lives in the data volume, recreating the container keeps
 everyone logged in. Only losing or **switching** the data volume logs users out.

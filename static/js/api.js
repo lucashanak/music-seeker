@@ -41,7 +41,12 @@ export async function apiJson(url, opts = {}) {
   if (res.status === 204) return null;
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || res.statusText);
+    // FastAPI/Pydantic validation errors return `detail` as an ARRAY of
+    // {msg, loc, ...} objects (truthy but not a string) — stringifying it
+    // verbatim used to show the user a literal "[object Object]" toast.
+    const d = body.detail;
+    const msg = Array.isArray(d) ? (d[0]?.msg || res.statusText) : (d || res.statusText);
+    throw new Error(msg);
   }
   return res.json();
 }

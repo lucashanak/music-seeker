@@ -21,6 +21,7 @@ import { init as initSettings, loadSettings } from './settings.js';
 import { init as initRecognize } from './recognize.js';
 import { init as initLibrary, loadLibraryPage, closeLibraryDetail, closeLikedSongs } from './library.js';
 import { init as initRecommendations } from './recommendations.js';
+import { init as initFeedback } from './feedback.js';
 import { initVirtualKeyboard } from './utils.js';
 
 // ── Wire up cross-module references ──
@@ -67,6 +68,7 @@ initSettings();
 initRecognize();
 initLibrary();
 initRecommendations();
+initFeedback();
 initVirtualKeyboard();
 
 // Auth init last (triggers initApp which depends on everything above)

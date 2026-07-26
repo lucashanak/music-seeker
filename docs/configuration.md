@@ -60,6 +60,18 @@ counts are per-user. See [Per-user Navidrome accounts](architecture.md#per-user-
 | `LIDARR_API_KEY` | — | Lidarr API key |
 | `LIDARR_ROOT_FOLDER` | `{MUSIC_DIR}/_lidarr` | Root folder path as seen by Lidarr |
 
+### GitHub
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GITHUB_TOKEN` | — | Fine-grained PAT for promoting in-app feedback into GitHub issues. Required permissions on the target repo: **Issues: Read and write**, **Contents: Read and write**, **Metadata: Read**. Leave unset to disable promotion (reports are still collected locally). |
+| `GITHUB_REPO` | — | Target repository for promoted issues, as `owner/name` |
+| `GITHUB_SCREENSHOT_BRANCH` | `bug-screenshots` | Branch where screenshots are committed. Kept off the main branch so binaries never enter its history. |
+
+**Rate limits & storage:**
+- In-app feedback submissions are rate limited to **5 reports per 10 minutes per user**.
+- Local storage is capped at **200 reports / 200 MB total** (JSON + screenshots combined), evicting oldest-first when limits are reached.
+
 ### Other
 
 | Variable | Default | Description |

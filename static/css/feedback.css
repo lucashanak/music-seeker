@@ -1,0 +1,82 @@
+/* feedback.css — floating report button + admin triage list */
+
+/* z-index 120 is deliberate: above the mini player bar (99) and bottom nav
+   (100), below modals (200) and the full-screen player (201) so opening the
+   full player naturally covers it. */
+#feedbackFab {
+  position: fixed; right: 16px; bottom: calc(80px + env(safe-area-inset-bottom, 0));
+  width: 44px; height: 44px; border-radius: 50%; z-index: 120;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--text-muted); display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: var(--transition);
+  box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  opacity: .55;
+}
+#feedbackFab:hover, #feedbackFab:focus-visible {
+  opacity: 1; color: var(--accent); border-color: var(--accent); transform: translateY(-1px);
+}
+body.keyboard-open #feedbackFab { display: none; }
+
+/* Busy state while a screenshot capture is in flight (can take a few seconds) —
+   the FAB stays visible (it's excluded from its own shot via snapdom's
+   `exclude` option) but shows it's working instead of looking dead. */
+#feedbackFab.fb-busy { cursor: wait; animation: fb-fab-pulse 1s ease-in-out infinite; }
+#feedbackFab:disabled { pointer-events: none; }
+@keyframes fb-fab-pulse { 0%, 100% { opacity: .35; } 50% { opacity: .9; } }
+
+/* Breakpoint matches the bottom nav's own (640px, base.css/responsive.css) —
+   768px used to leave a 641-768px band where the FAB used mobile offsets
+   while no bottom nav existed, wasting ~88px of dead space. */
+@media (max-width: 640px) {
+  /* No extra env(safe-area-inset-bottom) here: --bottom-nav-height (72px) is a
+     box-sizing:border-box height that already includes the nav's own safe-area
+     padding, so adding it again floated the FAB ~34px too high on notched
+     phones. (The body.player-active variant below genuinely needs it — the
+     67px offset in responsive.css:67 does NOT itself include safe-area.) */
+  #feedbackFab { bottom: calc(var(--bottom-nav-height) + 16px); }
+  body.player-active #feedbackFab {
+    bottom: calc(var(--bottom-nav-height) + 68px + 16px + env(safe-area-inset-bottom, 0));
+  }
+}
+
+/* ── Admin triage list ── */
+.fb-row {
+  display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); margin-bottom: 8px; flex-wrap: wrap;
+}
+.fb-row-main { flex: 1; min-width: 0; }
+.fb-row-title-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fb-row .fb-title { font-size: 14px; font-weight: 600; }
+.fb-row .fb-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.fb-row .fb-desc { font-size: 12px; color: var(--text-muted); margin-top: 6px; white-space: pre-line; }
+.fb-row .fb-desc.fb-desc-clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+.fb-row .fb-desc.fb-desc-clamp.fb-desc-open { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.fb-thumb-sm {
+  width: 64px; height: 64px; border-radius: 8px; object-fit: cover;
+  border: 1px solid var(--border); flex-shrink: 0; cursor: pointer;
+  /* Shown until the blob fetch resolves and sets src — without this the
+     src-less <img> can render as a broken-image glyph instead of looking
+     like an intentional loading placeholder. */
+  background: var(--bg-elevated);
+}
+.fb-pill {
+  font-size: 10px; text-transform: uppercase; font-weight: 700;
+  padding: 3px 10px; border-radius: 20px; letter-spacing: .5px; white-space: nowrap;
+}
+.fb-pill-bug { color: var(--red); background: rgba(239,68,68,.12); }
+.fb-pill-feature { color: var(--accent); background: var(--accent-dim); }
+.fb-pill-promoted { color: var(--accent); background: var(--accent-dim); }
+.fb-pill-promoting { color: var(--text-muted); background: rgba(255,255,255,.08); }
+.fb-row-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.fb-btn {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  cursor: pointer; font-size: 11px; padding: 4px 10px; border-radius: 10px;
+  font-family: inherit; transition: all var(--transition); white-space: nowrap;
+}
+.fb-btn:hover { border-color: var(--accent); color: var(--accent); }
+.fb-btn-delete:hover { border-color: var(--red); color: var(--red); }
+.fb-btn:disabled { opacity: .4; cursor: not-allowed; }
+.fb-issue-link { font-size: 11px; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.fb-issue-link:hover { text-decoration: underline; }
+.fb-gh-hint { font-size: 10px; color: var(--text-dim); max-width: 120px; text-align: right; }

@@ -158,6 +158,16 @@ Each client generates a UUID stored in `localStorage` and sends it as `X-Device-
 
 **Output modes**: `default` (local playback + cast button), `local` (no casting), `dlna_only` (auto-connect to DLNA renderer on play).
 
+## Feedback & Issue Triage
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/feedback` | Submit a bug report or feature request (any logged-in user; rate limited 5/10min) |
+| `GET` | `/api/feedback` | List all feedback reports (admin only) |
+| `GET` | `/api/feedback/{id}/screenshot` | Fetch a report's screenshot (admin only) |
+| `DELETE` | `/api/feedback/{id}` | Delete a feedback report (admin only) |
+| `POST` | `/api/feedback/{id}/promote` | Promote a report to a GitHub issue (admin only; requires GitHub token) |
+
 ## Settings & Admin
 
 | Method | Endpoint | Description |

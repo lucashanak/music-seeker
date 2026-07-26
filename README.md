@@ -75,6 +75,13 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 - **Search & download** — individual episodes or entire shows
 - **Subscriptions** — auto-sync new episodes on configurable interval
 
+### In-App Feedback & Issue Triage
+- **Report button** — always-visible floating button (bottom-right) to report bugs or request features
+- **Screenshot capture** — automatically captures current view (client-side) with optional override
+- **Private storage** — reports stored locally in `/app/data/feedback/` (capped at 200 reports / 200 MB)
+- **Admin triage** — review all reports in Settings → Admin → "Feedback & Reports", enlarge screenshots
+- **GitHub promotion** — one-click promote a report into a GitHub issue (optional; requires `GITHUB_TOKEN`)
+
 ### DLNA/UPnP Cast
 - **Cast to network speakers** — auto-discovers renderers via SSDP
 - **Full control** — play, pause, stop, seek, volume from MusicSeeker UI

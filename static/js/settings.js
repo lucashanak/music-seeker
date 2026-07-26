@@ -1,8 +1,8 @@
 // settings.js — Settings page, user management, disk usage
 
 import { store } from './store.js';
-import { $, $$, esc, formatSize, showToast } from './utils.js';
-import { apiJson } from './api.js';
+import { $, $$, esc, escAttr, formatSize, showToast, showConfirmModal } from './utils.js';
+import { apiJson, apiFetch } from './api.js';
 import { switchPage } from './router.js';
 import { getPlayerModule } from './player_active.js';
 
@@ -725,6 +725,176 @@ export async function deleteUser(username) {
   } catch (e) { alert('Failed: ' + e.message); }
 }
 
+// ── Feedback & Reports (admin triage) ──
+let _fbObjectUrls = []; // screenshot blob URLs from the current render — revoked before the next one
+let _fbGen = 0; // render-generation counter — guards against a stale thumbnail fetch
+                // (from a previous loadFeedback() call) resolving after _fbObjectUrls
+                // has been reset and assigning to a since-detached <img>.
+
+function _revokeFeedbackThumbs() {
+  _fbObjectUrls.forEach(u => URL.revokeObjectURL(u));
+  _fbObjectUrls = [];
+}
+
+function _renderFeedbackRow(r, ghOk) {
+  const kindPill = r.kind === 'feature'
+    ? '<span class="fb-pill fb-pill-feature">Feature</span>'
+    : '<span class="fb-pill fb-pill-bug">Bug</span>';
+  const ctx = r.context || {};
+  const when = r.created_at ? new Date(r.created_at * 1000).toLocaleString() : ''; // backend stores time.time() (Unix seconds)
+  const metaParts = [];
+  if (r.reporter) metaParts.push('by ' + esc(r.reporter));
+  if (ctx.page) metaParts.push(esc(ctx.page));
+  if (ctx.version) metaParts.push('v' + esc(ctx.version));
+  if (when) metaParts.push(when);
+  const thumb = r.has_screenshot
+    ? `<img class="fb-thumb-sm" data-id="${escAttr(r.id)}" alt="Screenshot" title="Click to view full-size">`
+    : '';
+  let actions;
+  // "promoted" no longer implies issue_url is present — a promote call can
+  // succeed on GitHub's side but fail to record/read the resulting URL
+  // (the `warning` case in _promoteFeedback), leaving status=promoted with
+  // no link. Keep `promoted` keyed on status alone so that row still reads
+  // as promoted (pill, non-clickable) instead of falling through to a
+  // "Create issue" button that would 409 against the backend.
+  const promoted = r.status === 'promoted';
+  const promoting = r.status === 'promoting';
+  if (promoted) {
+    // issue_url only ever comes from GitHub's html_url today, but this is an
+    // admin-session href — allowlist the scheme so a compromised/odd value
+    // can't become a javascript: link.
+    const safeUrl = /^https:\/\/github\.com\//.test(r.issue_url || '') ? r.issue_url : '';
+    actions = `<span class="fb-pill fb-pill-promoted">Promoted</span>` +
+      (safeUrl ? `<a class="fb-issue-link" href="${escAttr(safeUrl)}" target="_blank" rel="noopener">View issue</a>` : '');
+  } else if (promoting) {
+    // "promoting" is set while the GitHub call is in flight; the backend
+    // treats claims older than 5 minutes as reclaimable (crashed/stuck
+    // request), so only gate the Retry button on that same window.
+    const ageSec = r.promoting_since ? (Date.now() / 1000 - r.promoting_since) : Infinity;
+    const stale = ageSec > 300;
+    actions = `<span class="fb-pill fb-pill-promoting">${stale ? 'Stuck' : 'In progress…'}</span>
+      <button class="fb-btn fb-btn-promote" data-id="${escAttr(r.id)}" ${stale ? '' : 'disabled'}>Retry</button>`;
+  } else if (!ghOk) {
+    actions = `<span class="fb-gh-hint">Set GITHUB_TOKEN to enable</span>`;
+  } else {
+    actions = `<button class="fb-btn fb-btn-promote" data-id="${escAttr(r.id)}">Create issue</button>`;
+  }
+  return `
+    <div class="fb-row" data-row-id="${escAttr(r.id)}">
+      ${thumb}
+      <div class="fb-row-main">
+        <div class="fb-row-title-line">${kindPill} <span class="fb-title">${esc(r.title)}</span></div>
+        <div class="fb-meta">${metaParts.join(' &middot; ')}</div>
+        ${r.description ? `<div class="fb-desc fb-desc-clamp">${esc(r.description)}</div>` : ''}
+      </div>
+      <div class="fb-row-actions">
+        ${actions}
+        <button class="fb-btn fb-btn-delete" data-id="${escAttr(r.id)}" data-promoted="${promoted ? '1' : '0'}">Delete</button>
+      </div>
+    </div>`;
+}
+
+export async function loadFeedback() {
+  const container = $('#feedbackList');
+  if (!container) return;
+  const gen = ++_fbGen; // this render's generation — see _fbGen declaration above
+  container.innerHTML = '<div class="skeleton" style="height:80px;"></div>';
+  _revokeFeedbackThumbs();
+  try {
+    const data = await apiJson('/api/feedback');
+    if (gen !== _fbGen) return; // a newer loadFeedback() call superseded this one
+    const reports = data.reports || [];
+    if (!reports.length) {
+      container.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">No reports yet.</div>';
+      return;
+    }
+    const ghOk = !!data.github_configured;
+    container.innerHTML = reports.map(r => _renderFeedbackRow(r, ghOk)).join('');
+    // Lazy-load screenshot thumbnails as blobs — the endpoint requires the
+    // Authorization header, so a plain <img src> would 401.
+    $$('.fb-thumb-sm', container).forEach(img => {
+      const id = img.dataset.id;
+      if (!id) return;
+      apiFetch(`/api/feedback/${id}/screenshot`)
+        .then(res => (res.ok ? res.blob() : null))
+        .then(blob => {
+          if (!blob || gen !== _fbGen) return; // stale — a fresh render already reset _fbObjectUrls
+          const url = URL.createObjectURL(blob);
+          _fbObjectUrls.push(url);
+          img.src = url;
+          img._fbBlob = blob; // kept so a click can mint its own untracked URL — see below
+        })
+        .catch(() => {});
+      // Click-to-enlarge: open the full-size screenshot in a new tab. Deliberately
+      // mints a FRESH, untracked object URL rather than reusing img.src's — that
+      // one gets revoked by the next _revokeFeedbackThumbs() (promote/delete both
+      // call loadFeedback()), which would blank an already-open tab out from
+      // under the admin mid-review. This one is intentionally never revoked; it
+      // leaks until the tab is closed, which is the accepted tradeoff.
+      img.addEventListener('click', () => { if (img._fbBlob) window.open(URL.createObjectURL(img._fbBlob), '_blank'); });
+    });
+    $$('.fb-btn-promote', container).forEach(btn => {
+      btn.addEventListener('click', () => _promoteFeedback(btn, btn.dataset.id));
+    });
+    $$('.fb-btn-delete', container).forEach(btn => {
+      btn.addEventListener('click', () => _deleteFeedback(btn, btn.dataset.id, btn.dataset.promoted === '1'));
+    });
+    $$('.fb-desc-clamp', container).forEach(el => {
+      el.addEventListener('click', () => el.classList.toggle('fb-desc-open'));
+    });
+  } catch (e) {
+    if (gen !== _fbGen) return;
+    container.innerHTML = `<div style="color:#e74c3c;font-size:13px;">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+async function _promoteFeedback(btn, id) {
+  // Promotion is permanent and public: the description + screenshot get
+  // committed to github.com/lucashanak/music-seeker and stay in git history
+  // even if the report/issue is later deleted. Confirm before firing.
+  const ok = await showConfirmModal(
+    'Publish to the public GitHub repo?',
+    'The description and any screenshot become permanently public at github.com/lucashanak/music-seeker and stay in git history even if the issue is deleted. Open the screenshot full-size and check it contains nothing private first.',
+    { okLabel: 'Publish', danger: true }
+  );
+  if (!ok) return;
+  const origLabel = btn ? btn.textContent : 'Create issue'; // "Create issue" or "Retry" — restore whichever on failure
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+  try {
+    const resp = await apiJson(`/api/feedback/${id}/promote`, { method: 'POST', body: {} });
+    if (resp && resp.warning) {
+      // Issue was created on GitHub but we couldn't record/read its URL —
+      // that's not a plain success, so surface it as an error-styled toast
+      // instead of silently discarding it (loadFeedback() will still show
+      // the row as promoted, just without a link — see _renderFeedbackRow).
+      showToast(resp.warning, true);
+    } else {
+      showToast('Issue created');
+    }
+    loadFeedback();
+  } catch (e) {
+    showToast(e.message || 'Failed to create issue', true);
+    if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+  }
+}
+
+async function _deleteFeedback(btn, id, promoted) {
+  const msg = promoted
+    ? 'This cannot be undone. The GitHub issue and screenshot commit will remain public.'
+    : 'This cannot be undone.';
+  const ok = await showConfirmModal('Delete report?', msg);
+  if (!ok) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try {
+    await apiJson(`/api/feedback/${id}`, { method: 'DELETE' });
+    showToast('Report deleted');
+    loadFeedback();
+  } catch (e) {
+    showToast(e.message || 'Failed to delete', true);
+    if (btn) { btn.disabled = false; btn.textContent = 'Delete'; }
+  }
+}
+
 // ── Init ──
 export function init() {
   $('#settingSearchProvider').addEventListener('change', updateFallbackNote);
@@ -911,6 +1081,12 @@ export function init() {
   $('#refreshDiskUsage').addEventListener('click', loadDiskUsage);
   $('#diskUsageSection').addEventListener('toggle', (e) => {
     if (e.target.open) loadDiskUsage();
+  });
+
+  // Feedback & Reports
+  $('#refreshFeedback')?.addEventListener('click', loadFeedback);
+  $('#feedbackSection')?.addEventListener('toggle', (e) => {
+    if (e.target.open) loadFeedback();
   });
 
   // Add User
