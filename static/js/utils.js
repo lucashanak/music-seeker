@@ -136,13 +136,18 @@ export function initVirtualKeyboard() {
 export function showPlaylistPicker(playlists, { multi = true } = {}) {
   return new Promise((resolve) => {
     const selected = new Set();
+    // Zero playlists is a supported state: the "+ New playlist" row is the whole
+    // point of opening the picker then, so show a hint and drop the multi-select
+    // "Add" button (it could never leave its disabled state).
+    const isEmpty = !playlists.length;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay open';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);';
     const modal = document.createElement('div');
     modal.style.cssText = 'background:var(--bg-card);border-radius:16px;padding:20px;min-width:280px;max-width:400px;max-height:70vh;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.5);';
     modal.innerHTML = `
-      <div style="font-size:15px;font-weight:600;margin-bottom:14px;">Add to playlist${multi ? 's' : ''}</div>
+      <div style="font-size:15px;font-weight:600;margin-bottom:${isEmpty ? '8px' : '14px'};">Add to playlist${multi && !isEmpty ? 's' : ''}</div>
+      ${isEmpty ? `<div style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">You have no playlists yet — create one to add this to.</div>` : ''}
       <div style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:4px;">
         <div class="pl-pick-new" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:none;background:none;color:var(--text);border-radius:10px;cursor:pointer;text-align:left;transition:background .15s;">
           <div style="width:36px;height:36px;border-radius:6px;border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text-muted);flex-shrink:0;">+</div>
@@ -151,7 +156,7 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
         ${playlists.map((p, i) => `
           <label class="pl-pick-btn" data-pl-idx="${i}" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:none;background:none;color:var(--text);border-radius:10px;cursor:pointer;text-align:left;transition:background .15s;">
             ${multi ? `<input type="checkbox" data-pl-idx="${i}" style="width:16px;height:16px;accent-color:var(--accent);flex-shrink:0;">` : ''}
-            ${p.image ? `<img src="${p.image}" style="width:36px;height:36px;border-radius:6px;object-fit:cover;">` : `<div style="width:36px;height:36px;border-radius:6px;background:var(--bg-elevated);display:flex;align-items:center;justify-content:center;font-size:16px;">&#9835;</div>`}
+            ${p.image ? `<img src="${escAttr(p.image)}" style="width:36px;height:36px;border-radius:6px;object-fit:cover;">` : `<div style="width:36px;height:36px;border-radius:6px;background:var(--bg-elevated);display:flex;align-items:center;justify-content:center;font-size:16px;">&#9835;</div>`}
             <div style="min-width:0;flex:1;">
               <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(p.name)}</div>
               <div style="font-size:11px;color:var(--text-muted);">${p.songCount || 0} tracks</div>
@@ -159,7 +164,7 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
           </label>`).join('')}
       </div>
       <div style="display:flex;gap:8px;margin-top:12px;">
-        ${multi ? `<button class="pl-pick-add" style="flex:1;padding:10px;border:none;background:var(--accent);color:#000;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;" disabled>Add</button>` : ''}
+        ${multi && !isEmpty ? `<button class="pl-pick-add" style="flex:1;padding:10px;border:none;background:var(--accent);color:#000;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;" disabled>Add</button>` : ''}
         <button class="pl-pick-cancel" style="flex:1;padding:10px;border:1px solid var(--border);background:none;color:var(--text-muted);border-radius:10px;cursor:pointer;font-size:13px;">Cancel</button>
       </div>
     `;

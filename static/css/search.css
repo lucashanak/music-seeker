@@ -117,6 +117,21 @@
   position: relative; display: flex; flex-direction: column; gap: 4px;
   overflow: visible;
 }
+/* .card-play-btn's shared cards.css rule anchors to `100cqw` (the artwork's
+   height, since .card-img is width:100%;aspect-ratio:1) — that doesn't hold
+   here: .top-result-img is a FIXED 180px square (140px below the 640px
+   breakpoint), unrelated to the hero card's own (much wider, up to 340px)
+   inline size. Fall back to a fixed px offset instead: 20px card padding-top
+   + 180px artwork - 8px inset - 36px button height = 156px (116px at the
+   140px mobile artwork size, kept in sync with the breakpoint below). This
+   selector's specificity (2 classes) already wins over the shared rule, so
+   no !important is needed. */
+.top-result-card .card-play-btn,
+.top-result-card .card-radio-btn,
+.top-result-card .card-addpl-btn { top: 156px; bottom: auto; }
+/* Horizontal placement of the radio/add buttons is set in JS (buildTopResultCard),
+   because it depends on whether a play button exists for this item type; only the
+   artwork-relative `top` is static, so it lives here with the play button. */
 .top-result-img {
   width: 180px; height: 180px; max-width: 100%; border-radius: 8px;
   object-fit: cover; background: var(--bg-elevated); margin-bottom: 12px;
@@ -176,6 +191,13 @@
 }
 .song-list .song-row .kebab-btn:hover { background: var(--bg-elevated); }
 .song-list .song-row .like-btn { position: static; width: 32px; height: 32px; flex-shrink: 0; }
+/* Quick add-to-playlist: same inline-flow reset as the play button above. */
+.song-list .song-row .card-addpl-btn {
+  position: static; width: 32px; height: 32px; background: none; border: none;
+  box-shadow: none; opacity: 0; transform: none; flex-shrink: 0;
+}
+.song-list .song-row:hover .card-addpl-btn { opacity: 1; transform: none; }
+.song-list .song-row .card-addpl-btn:hover { background: var(--bg-elevated); }
 /* The card overlay "In Library" badge is position:absolute (built for cover art)
    and would float over the track title on a flat row. Drop it and instead tint
    the track number of in-library rows — clean and non-overlapping. */
@@ -185,11 +207,28 @@
 /* Circular artist thumbnails on result cards. */
 .card.artist-card .card-img { border-radius: 50%; }
 
-@media (max-width: 760px) {
+/* Aligned to the app's single mobile breakpoint (640px — see responsive.css,
+   which switches the card grids, nav, modal, etc. at max-width:640px). This
+   used to be 760px, so the 641–760px range rendered the hero row collapsed
+   to mobile layout while the card grids below it were still on desktop
+   sizing ("mobile on top, desktop below"). Picked 640 over bumping the rest
+   of the app to 760 since 640 is already the established convention
+   everywhere else and responsive.css is out of this fix's scope. */
+@media (max-width: 640px) {
   .top-result-row { grid-template-columns: 1fr; gap: 16px; }
   .top-result-img { width: 140px; height: 140px; }
   .top-result-name { font-size: 22px; }
-  .song-list .song-row .card-play-btn { opacity: 1; }
+  /* Keep in sync with .top-result-img's shrink above: 20px padding-top +
+     140px artwork - 8px inset - 36px button height = 116px. */
+  .top-result-card .card-play-btn,
+  .top-result-card .card-radio-btn,
+  .top-result-card .card-addpl-btn { top: 116px; }
+  .song-list .song-row .card-play-btn,
+  .song-list .song-row .card-addpl-btn { opacity: 1; }
+  /* Universal-search rows now carry play + add + kebab + heart; at this width the
+     title already truncates, so drop the heart here the same way the numbered
+     album/playlist list below does (still reachable from the ⋮ menu). */
+  .song-list:not(.song-list-numbered) .song-row .like-btn { display: none; }
   /* Album/playlist track list: maximise room for the title on narrow screens by
      dropping the per-row heart + BPM badge (both still reachable — the ⋮ menu and
      the tempo-filter bar respectively) and tightening the gaps. */

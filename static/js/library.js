@@ -600,7 +600,8 @@ function _buildMultiSelectMenu(playlistId, playlistName) {
           try {
             const data = await apiJson('/api/library/playlists');
             const others = (data.playlists || []).filter(p => p.id !== playlistId);
-            if (!others.length) { showToast('No other playlists'); return; }
+            // No bail on an empty list: the picker's "+ New playlist" row is a
+            // legitimate destination for "add to other playlist".
             const picked = await showPlaylistPicker(others);
             if (!picked || !picked.length) return;
             for (const pl of picked) {
@@ -983,7 +984,8 @@ export function init() {
     try {
       const data = await apiJson('/api/library/playlists');
       const others = (data.playlists || []).filter(p => p.id !== currentLibPlaylistId);
-      if (!others.length) { showToast('No other playlists'); return; }
+      // Copying to a brand-new playlist is a valid destination — let the picker
+      // offer "+ New playlist" instead of dead-ending here.
       const picked = await showPlaylistPicker(others);
       if (!picked || !picked.length) return;
       const songIds = [..._selectSet].map(i => currentLibPlaylistTracks[i]?.id).filter(Boolean);

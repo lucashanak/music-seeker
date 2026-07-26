@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import threading
 import unicodedata
 import logging
 import defusedxml.ElementTree as ET
@@ -12,15 +13,25 @@ logger = logging.getLogger(__name__)
 DEEZER_BASE = "https://api.deezer.com"
 ITUNES_BASE = "https://itunes.apple.com"
 
-# Lazy-init ytmusicapi
+# Bounds for paginated playlist fetches
+_PLAYLIST_MAX_PAGES = 5
+_PLAYLIST_MAX_TRACKS = 500
+
+# Hard ceiling for the aggregate search so a stalled provider can't hang the request
+_SEARCH_ALL_TIMEOUT = 12
+
+# Lazy-init ytmusicapi (guarded: concurrent to_thread calls must not build several clients)
 _ytmusic = None
+_ytmusic_lock = threading.Lock()
 
 
 def _get_ytmusic():
     global _ytmusic
     if _ytmusic is None:
-        from ytmusicapi import YTMusic
-        _ytmusic = YTMusic()
+        with _ytmusic_lock:
+            if _ytmusic is None:
+                from ytmusicapi import YTMusic
+                _ytmusic = YTMusic()
     return _ytmusic
 
 
@@ -120,6 +131,43 @@ async def deezer_get_album_tracks(album_id: str) -> list[dict]:
             "track_number": item.get("track_position") or (len(tracks) + 1),
         })
     return tracks
+
+
+async def deezer_get_playlist_tracks(playlist_id: str) -> dict:
+    """Get playlist info + tracks. Deezer pages `tracks.data` (~100/page) via `tracks.next`."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{DEEZER_BASE}/playlist/{playlist_id}")
+        resp.raise_for_status()
+        data = resp.json()
+
+        if "error" in data:
+            raise RuntimeError(f"Deezer error: {data['error'].get('message', '')}")
+
+        playlist_name = data.get("title", "")
+        playlist_image = data.get("picture_big", "")
+        page = data.get("tracks") or {}
+        tracks = []
+        for _ in range(_PLAYLIST_MAX_PAGES):
+            for item in page.get("data", []):
+                if len(tracks) >= _PLAYLIST_MAX_TRACKS:
+                    break
+                album = item.get("album") or {}
+                tracks.append({
+                    "name": item.get("title", ""),
+                    "artist": (item.get("artist") or {}).get("name", ""),
+                    "album": album.get("title", ""),
+                    "image": album.get("cover_big", "") or playlist_image,
+                    "url": item.get("link", ""),
+                    "duration_ms": (item.get("duration") or 0) * 1000,
+                    "track_number": item.get("track_position") or (len(tracks) + 1),
+                })
+            next_url = page.get("next")
+            if not next_url or len(tracks) >= _PLAYLIST_MAX_TRACKS:
+                break
+            resp = await client.get(next_url)
+            resp.raise_for_status()
+            page = resp.json()
+    return {"tracks": tracks, "name": playlist_name, "image": playlist_image}
 
 
 async def deezer_get_artist_albums(artist_id: str) -> dict:
@@ -274,6 +322,43 @@ def _ytmusic_search_sync(query: str, search_type: str, limit: int) -> list[dict]
 
 async def ytmusic_search(query: str, search_type: str = "track", limit: int = 20) -> list[dict]:
     return await asyncio.to_thread(_ytmusic_search_sync, query, search_type, limit)
+
+
+def _ytmusic_playlist_tracks_sync(playlist_id: str) -> dict:
+    """Best-effort playlist fetch. ytmusicapi shapes vary, so read everything defensively."""
+    try:
+        yt = _get_ytmusic()
+        data = yt.get_playlist(playlist_id, limit=_PLAYLIST_MAX_TRACKS) or {}
+    except Exception as e:
+        # Do NOT swallow into an empty result: a caller rendering "0 tracks" for a
+        # playlist that actually has tracks is the exact bug this endpoint fixes.
+        logger.warning(f"ytmusic playlist {playlist_id} failed: {e}")
+        raise RuntimeError(f"YouTube Music playlist fetch failed: {e}") from e
+
+    playlist_name = data.get("title", "") or ""
+    playlist_image = ((data.get("thumbnails") or [{}])[-1] or {}).get("url", "")
+    tracks = []
+    for item in (data.get("tracks") or []):
+        if not isinstance(item, dict):
+            continue
+        album = item.get("album") or {}
+        if not isinstance(album, dict):
+            album = {}
+        video_id = item.get("videoId", "") or ""
+        tracks.append({
+            "name": item.get("title", "") or "",
+            "artist": ", ".join((a or {}).get("name", "") for a in (item.get("artists") or [])),
+            "album": album.get("name", "") or "",
+            "image": ((item.get("thumbnails") or [{}])[-1] or {}).get("url", "") or playlist_image,
+            "url": f"https://music.youtube.com/watch?v={video_id}" if video_id else "",
+            "duration_ms": (item.get("duration_seconds") or 0) * 1000,
+            "track_number": len(tracks) + 1,
+        })
+    return {"tracks": tracks, "name": playlist_name, "image": playlist_image}
+
+
+async def ytmusic_get_playlist_tracks(playlist_id: str) -> dict:
+    return await asyncio.to_thread(_ytmusic_playlist_tracks_sync, playlist_id)
 
 
 # ── iTunes / Apple Music ──
@@ -562,60 +647,99 @@ def _parse_duration(text: str) -> int:
 
 # ── Unified search ──
 
+async def _spotify_search(query: str, search_type: str, limit: int, offset: int) -> list[dict]:
+    from app.services import spotify
+    return await spotify.search(query, search_type, limit, offset)
+
+
+# Canonical provider keys. "apple" (the settings/UI value) is an alias of "itunes".
+_PROVIDER_ALIASES = {"apple": "itunes"}
+
 _SEARCH_FUNCS = {
     "deezer": deezer_search,
     "ytmusic": ytmusic_search,
-    "apple": itunes_search,
+    "itunes": itunes_search,
+    "spotify": _spotify_search,
 }
+
+# Providers whose search function accepts an `offset` argument
+_OFFSET_CAPABLE = {"deezer", "spotify"}
 
 # Default fallback when user doesn't pick one
 _DEFAULT_FALLBACK = {
     "deezer": "ytmusic",
     "ytmusic": "deezer",
-    "apple": "deezer",
+    "itunes": "deezer",
     "spotify": "",
-    "itunes": "spotify",
 }
 
 
+def _canonical_provider(name: str) -> str:
+    """Map provider aliases (e.g. the UI's "apple") to the canonical key."""
+    name = (name or "").strip().lower()
+    return _PROVIDER_ALIASES.get(name, name)
+
+
+class ProviderError(RuntimeError):
+    """Every provider leg failed with an error (distinct from 'no results')."""
+
+
 async def _try_provider(name: str, query: str, search_type: str, limit: int, offset: int) -> list[dict] | None:
-    """Try a single provider, return results or None."""
-    if name == "spotify":
-        from app.services import spotify
-        return await spotify.search(query, search_type, limit, offset)
-    if name == "itunes":
-        return await itunes_search(query, search_type, limit)
+    """Try a single provider, return results (provider-stamped) or None."""
+    name = _canonical_provider(name)
     func = _SEARCH_FUNCS.get(name)
     if not func:
         return None
-    return await func(query, search_type, limit, offset) if name != "apple" else await func(query, search_type, limit)
+    if name in _OFFSET_CAPABLE:
+        results = await func(query, search_type, limit, offset)
+    else:
+        results = await func(query, search_type, limit)
+    for item in results or []:
+        item["provider"] = name
+    return results
 
 
 async def search(query: str, search_type: str = "track", limit: int = 20, offset: int = 0,
-                 provider: str = "deezer", fallback: str = "") -> list[dict]:
-    """Search with the specified provider, falling back if needed."""
+                 provider: str = "deezer", fallback: str = "", raise_on_error: bool = False) -> list[dict]:
+    """Search with the specified provider, falling back if needed.
+
+    With raise_on_error=True, a ProviderError is raised when every attempted leg
+    errored out, so callers can tell an outage from a legitimately empty result.
+    """
+    provider = _canonical_provider(provider)
 
     if fallback == "none":
         fallback = ""
     elif not fallback:
         fallback = _DEFAULT_FALLBACK.get(provider, "")
+    fallback = _canonical_provider(fallback)
+
+    attempted = 0
+    failed = []
 
     # Primary
+    attempted += 1
     try:
         results = await _try_provider(provider, query, search_type, limit, offset)
         if results:
             return results
     except Exception as e:
         logger.warning(f"{provider} search failed: {e}")
+        failed.append(f"{provider}: {e}")
 
     # Fallback
     if fallback and fallback != provider:
+        attempted += 1
         try:
             results = await _try_provider(fallback, query, search_type, limit, offset)
             if results:
                 return results
         except Exception as e:
             logger.warning(f"{fallback} fallback failed: {e}")
+            failed.append(f"{fallback}: {e}")
+
+    if raise_on_error and len(failed) == attempted:
+        raise ProviderError("; ".join(failed))
 
     return []
 
@@ -630,13 +754,12 @@ async def resolve(name: str, artist: str, item_type: str = "track", provider: st
 def _normalize(name: str) -> str:
     """Normalize artist/album name for comparison: lowercase, fold diacritics, collapse whitespace.
 
-    Latin accents fold to ASCII (José->jose). For fully non-Latin names (Cyrillic/CJK/…)
-    the ASCII fold would wipe the string to "" and make everything compare-equal, so we
-    keep the lowercased original in that case instead of collapsing to empty.
+    Only combining marks are dropped (José->jose, Černý->cerny); non-Latin scripts survive
+    verbatim, so mixed-script names ("水星記 (Live)" vs "ヨルシカ (Live)") stay distinct instead
+    of both collapsing to "(live)" and comparing equal.
     """
     s = name.strip().lower()
-    folded = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    s = folded or s
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
     return re.sub(r'\s+', ' ', s).strip()
 
 
@@ -671,18 +794,30 @@ def _pick_top_result(query: str, tracks: list[dict], artists: list[dict],
 async def search_all(query: str, provider: str = "deezer", fallback: str = "",
                      limit_per_type: int = 8) -> dict:
     """Run track/artist/album/playlist searches concurrently and aggregate (Spotify-style)."""
-    results = await asyncio.gather(
-        search(query, "track", limit_per_type, provider=provider, fallback=fallback),
-        search(query, "artist", limit_per_type, provider=provider, fallback=fallback),
-        search(query, "album", limit_per_type, provider=provider, fallback=fallback),
-        search(query, "playlist", limit_per_type, provider=provider, fallback=fallback),
+    types = ("track", "artist", "album", "playlist")
+    gathered = asyncio.gather(
+        *(search(query, t, limit_per_type, provider=provider, fallback=fallback, raise_on_error=True)
+          for t in types),
         return_exceptions=True,
     )
-    tracks, artists, albums, playlists = [
-        r if isinstance(r, list) else [] for r in results
-    ]
+    try:
+        results = await asyncio.wait_for(gathered, timeout=_SEARCH_ALL_TIMEOUT)
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning(f"search_all timed out after {_SEARCH_ALL_TIMEOUT}s (provider={provider})")
+        results = [None] * len(types)
+
+    buckets = {}
+    errors = {}
+    for search_type, r in zip(types, results):
+        if isinstance(r, list):
+            buckets[search_type] = r
+        else:
+            buckets[search_type] = []
+            errors[search_type] = "timeout" if r is None else "provider_unavailable"
+
+    tracks, artists, albums, playlists = (buckets[t] for t in types)
     top = _pick_top_result(query, tracks, artists, albums, playlists)
-    return {
+    response = {
         "query": query,
         "top": top,
         "tracks": tracks,
@@ -690,6 +825,9 @@ async def search_all(query: str, provider: str = "deezer", fallback: str = "",
         "albums": albums,
         "playlists": playlists,
     }
+    if errors:
+        response["errors"] = errors
+    return response
 
 
 async def find_artist_by_name(name: str, provider: str = "deezer") -> dict | None:
@@ -714,20 +852,53 @@ async def find_artist_by_name(name: str, provider: str = "deezer") -> dict | Non
 
 async def get_artist_albums(artist_id: str, provider: str = "deezer") -> dict:
     """Get artist albums using the appropriate provider."""
-    if provider in ("apple", "itunes"):
+    if _canonical_provider(provider) == "itunes":
         return await itunes_get_artist_albums(artist_id)
     return await deezer_get_artist_albums(artist_id)
 
 
 async def get_album_tracks(album_id: str, provider: str = "deezer") -> list[dict]:
     """Get album tracks using the appropriate provider."""
-    if provider in ("apple", "itunes"):
+    if _canonical_provider(provider) == "itunes":
         return await itunes_get_album_tracks(album_id)
     return await deezer_get_album_tracks(album_id)
 
 
+async def get_playlist_tracks(playlist_id: str, provider: str = "deezer", creds: dict | None = None) -> dict:
+    """Get playlist tracks using the appropriate provider.
+
+    Returns {"tracks": [...], "name": str, "image": str}. iTunes has no playlist
+    entity, so it yields an empty result instead of hitting the wrong API.
+
+    `creds` are the CALLER's Spotify credentials; they must be threaded through so
+    this route reads the same account as /api/spotify/playlist/{id}/tracks rather
+    than always falling back to the server-configured one.
+    """
+    provider = _canonical_provider(provider)
+    if provider == "itunes":
+        return {"tracks": [], "name": "", "image": ""}
+    if provider == "spotify":
+        from app.services import spotify
+        data = await spotify.get_playlist_tracks(playlist_id, creds=creds)
+        tracks = []
+        for t in data.get("tracks", []):
+            tracks.append({
+                "name": t.get("name", ""),
+                "artist": t.get("artist", ""),
+                "album": t.get("album", ""),
+                "image": t.get("image", "") or data.get("image", ""),
+                "url": t.get("url", ""),
+                "duration_ms": t.get("duration_ms", 0),
+                "track_number": len(tracks) + 1,
+            })
+        return {"tracks": tracks, "name": data.get("name", ""), "image": data.get("image", "")}
+    if provider == "ytmusic":
+        return await ytmusic_get_playlist_tracks(playlist_id)
+    return await deezer_get_playlist_tracks(playlist_id)
+
+
 async def artist_latest_album(artist_id: str, provider: str = "deezer") -> dict | None:
     """Get latest album from an artist using the appropriate provider."""
-    if provider in ("apple", "itunes"):
+    if _canonical_provider(provider) == "itunes":
         return await itunes_artist_latest_album(artist_id)
     return await deezer_artist_latest_album(artist_id)

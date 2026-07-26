@@ -57,16 +57,38 @@ export function cardSubHtml(item) {
 // ── Route a card/hero click to the right detail view (or download modal) ──
 function _routeCardClick(item, fromPage) {
   if (item.type === 'playlist' && item.id) {
-    loadPlaylistDetail(item.id, item.url, fromPage);
+    // Pass the provider explicitly: ytmusic playlist items carry no `url`, so URL
+    // inference alone would fall back to the configured provider and resolve a
+    // ytmusic id against Deezer. name/image let the hero paint before the fetch.
+    loadPlaylistDetail(item.id, item.url, fromPage,
+      { provider: item.provider, name: item.name, image: item.image });
   } else if (item.type === 'show' && item.id) {
     loadShowDetail(item.id, item.url, fromPage, item.feed_url);
   } else if (item.type === 'artist' && item.id) {
-    loadArtistDetail(item.id, fromPage);
+    // Pass the item's own provider: with the fallback chain live, an artist can
+    // come from a different provider than the configured one, and its id must be
+    // resolved against the API that issued it.
+    loadArtistDetail(item.id, fromPage, item.provider);
   } else if (item.type === 'album' && item.id) {
     loadAlbumDetail(item, fromPage);
   } else {
     openModal(item);
   }
+}
+
+// ── Wire the quick "+" (add to Navidrome playlist) button on a card/row ──
+// Shared by grid cards, the top-result hero and the compact song rows so the
+// same affordance behaves identically everywhere it appears.
+function _wireAddPlBtn(el) {
+  const btn = el.querySelector('.card-addpl-btn');
+  if (!btn) return null;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    let it;
+    try { it = JSON.parse(el.dataset.item); } catch { return; }
+    _addToNavidromePlaylist(it);
+  });
+  return btn;
 }
 
 // ── Build a single result card element (markup + click handler) ──
@@ -80,9 +102,9 @@ export function buildCardElement(item, fromPage) {
         <div class="card-title">${esc(item.name)}</div>
         <div class="card-sub">${cardSubHtml(item)}</div>
         <div class="card-meta">
-          ${item.year ? `<span>${item.year}</span>` : ''}
-          ${item.total_tracks ? `<span>${item.total_tracks} ${item.type === 'show' ? 'episodes' : 'tracks'}</span>` : ''}
-          ${item.release_date ? `<span>${item.release_date}</span>` : ''}
+          ${item.year ? `<span>${esc(item.year)}</span>` : ''}
+          ${item.total_tracks ? `<span>${esc(item.total_tracks)} ${item.type === 'show' ? 'episodes' : 'tracks'}</span>` : ''}
+          ${item.release_date ? `<span>${esc(item.release_date)}</span>` : ''}
           ${item.duration_ms ? `<span>${formatDuration(item.duration_ms)}</span>` : ''}
         </div>
       </div>
@@ -96,13 +118,7 @@ export function buildCardElement(item, fromPage) {
     try { it = JSON.parse(card.dataset.item); } catch { return; }
     _routeCardClick(it, fromPage);
   });
-  const addPlBtn = card.querySelector('.card-addpl-btn');
-  if (addPlBtn) addPlBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    let it;
-    try { it = JSON.parse(card.dataset.item); } catch { return; }
-    _addToNavidromePlaylist(it);
-  });
+  _wireAddPlBtn(card);
   return card;
 }
 
@@ -173,6 +189,9 @@ export async function checkLibrary(items, containerEl, cards) {
         badge.className = 'in-library-badge';
         badge.textContent = 'In Library';
         cards[i].appendChild(badge);
+        // Search/discover cards don't render a download button, but the
+        // artist-detail album cards built in spotify.js do (and they route
+        // through this same helper), so the branch is live there.
         const dlBtn = cards[i].querySelector('.card-dl-btn');
         if (dlBtn) {
           dlBtn.disabled = true;
@@ -192,7 +211,11 @@ export async function checkLibrary(items, containerEl, cards) {
         }
       }
     });
-  } catch {}
+  } catch (e) {
+    // Non-fatal: results stay rendered without the "In Library" badges. Surface
+    // it though — a mid-search auth expiry looks identical to "nothing matched".
+    console.warn('Library check failed; in-library badges skipped.', e);
+  }
 }
 
 // ── Persist / Restore Search ──
@@ -258,7 +281,10 @@ function renderRecentSearches() {
     return;
   }
   wrap.innerHTML = list.map(q =>
-    `<button type="button" class="recent-chip" data-recent-q="${esc(q)}">${esc(q)}</button>`
+    // escAttr (not esc) inside the attribute: esc() leaves quotes intact, and the
+    // value is attacker-reachable (provider artist name → data-search-q → input
+    // → addRecentSearch → localStorage → here).
+    `<button type="button" class="recent-chip" data-recent-q="${escAttr(q)}">${esc(q)}</button>`
   ).join('') + '<button type="button" class="recent-clear" id="recentClear">Clear</button>';
   wrap.style.display = 'flex';
   $$('.recent-chip', wrap).forEach(chip => {
@@ -326,15 +352,47 @@ function _handleSearchKeydown(e) {
   }
 }
 
+// ── Search request generation guard ──
+// Every search (per-type, "All", infinite-scroll append) bumps _searchGen and
+// gets a fresh AbortController; the previous one is aborted. A response from an
+// older generation must never touch the DOM or `store` — without this a slow
+// "daft punk" response landing after "enya" repainted the whole page under the
+// newer query, a stale append double-advanced store.searchOffset, and a stale
+// "All" response repainted sections after the user switched to a per-type tab
+// (leaving searchHasMore=true with no .grid class → unstyled append cards).
+let _searchGen = 0;
+let _searchAbort = null;
+
+function _beginSearch() {
+  try { _searchAbort?.abort(); } catch {}
+  _searchAbort = (typeof AbortController === 'function') ? new AbortController() : null;
+  return { gen: ++_searchGen, signal: _searchAbort ? _searchAbort.signal : undefined };
+}
+
+// Invalidate any in-flight search without starting a new one (input cleared).
+// Clears searchLoading too: the aborted request returns via the stale-generation
+// path and would otherwise leave the flag stuck on.
+function _cancelSearch() {
+  _beginSearch();
+  store.searchLoading = false;
+  // An aborted append returns via the stale-generation path, which skips the
+  // line that normally hides this — otherwise the spinner outlives the results.
+  const more = $('#searchLoadMore');
+  if (more) more.style.display = 'none';
+}
+
 // ── Do Search ──
 export async function doSearch(append) {
+  // "All" mode has its own renderer; it bumps the shared generation counter
+  // itself, which is what invalidates any in-flight per-type search.
   if (store.searchType === 'all') {
     store.searchHasMore = false;
     await doSearchAll();
     return;
   }
+  const { gen, signal } = _beginSearch();
   const q = $('#searchInput').value.trim();
-  if (!q) { $('#searchResults').innerHTML = ''; saveSearchState(); return; }
+  if (!q) { $('#searchResults').innerHTML = ''; store.searchLoading = false; saveSearchState(); return; }
   if (!append) {
     store.searchOffset = 0;
     store.searchHasMore = true;
@@ -343,9 +401,12 @@ export async function doSearch(append) {
     $('#searchResults').innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   }
   store.searchLoading = true;
-  $('#searchLoadMore').style.display = '';
+  // Append-only: on a fresh search this flashed a load-more skeleton underneath
+  // the card skeletons.
+  if (append) $('#searchLoadMore').style.display = '';
   try {
-    const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=${store.searchType}&limit=20&offset=${store.searchOffset}`);
+    const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=${store.searchType}&limit=20&offset=${store.searchOffset}`, { signal });
+    if (gen !== _searchGen) return; // superseded — leave DOM/store to the newer search
     if (data.results.length < 20) store.searchHasMore = false;
     if (!append) {
       renderResults(data.results, '#searchResults', 'search');
@@ -363,8 +424,10 @@ export async function doSearch(append) {
       _setKbdActive(-1);
     }
   } catch (e) {
-    if (!append) $('#searchResults').innerHTML = `<div class="empty-state"><p>Search failed: ${e.message}</p></div>`;
+    if (gen !== _searchGen) return; // also swallows our own AbortError
+    if (!append) $('#searchResults').innerHTML = `<div class="empty-state"><p>Search failed: ${esc(e.message)}</p></div>`;
   }
+  if (gen !== _searchGen) return; // the newer search owns searchLoading now
   store.searchLoading = false;
   $('#searchLoadMore').style.display = 'none';
 }
@@ -380,7 +443,7 @@ function buildTopResultCard(item, fromPage) {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div class="card top-result-card${artistCls}" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-      ${cardPlayBtn(item)}${cardFavBtn(item)}<img class="top-result-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      ${cardPlayBtn(item)}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="top-result-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="top-result-name">${esc(item.name)}</div>
       <div class="top-result-type">${sub}</div>
     </div>
@@ -388,10 +451,24 @@ function buildTopResultCard(item, fromPage) {
   const card = wrap.firstElementChild;
   card.addEventListener('click', (e) => {
     if (wasLongPress()) return;
-    if (e.target.closest('.card-play-btn') || e.target.closest('.card-fav-btn')) return;
+    if (e.target.closest('.card-play-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-addpl-btn')
+        || e.target.closest('.card-fav-btn') || e.target.closest('.kebab-btn') || e.target.closest('.like-btn')) return;
     let it;
     try { it = JSON.parse(card.dataset.item); } catch { return; }
     _routeCardClick(it, fromPage);
+  });
+  _wireAddPlBtn(card);
+  // The shared .card-radio-btn / .card-addpl-btn rules pin these to a card's
+  // bottom-LEFT, which on the tall hero lands on the name/type labels rather
+  // than on cover art. Line them up to the left of the play button instead —
+  // bottom-right is the corner the hero already reserves for actions.
+  let right = card.querySelector('.card-play-btn') ? 52 : 8;
+  ['.card-addpl-btn', '.card-radio-btn'].forEach(sel => {
+    const btn = card.querySelector(sel);
+    if (!btn) return;
+    btn.style.left = 'auto';
+    btn.style.right = right + 'px';
+    right += 44;
   });
   return card;
 }
@@ -422,15 +499,23 @@ export function renderSongRows(tracks, sink, opts = {}) {
         ${sub}
       </div>
       <span class="song-duration">${item.duration_ms ? formatDuration(item.duration_ms) : ''}</span>
-      ${cardPlayBtn(item)}
+      ${opts.numbered ? '' : cardAddPlBtn(item)}${cardPlayBtn(item)}
     `;
+    // Quick-add "+" on the flat song rows (parity with track cards). Skipped in
+    // `numbered` mode (album/playlist detail): at 360px the extra 44px truncates
+    // those titles, which is why search.css already drops the heart there.
+    //
+    // Inline flow + sizing for this button lives in search.css
+    // (`.song-list .song-row .card-addpl-btn`), alongside the play/kebab/like resets.
+    _wireAddPlBtn(row);
     row.appendChild(makeKebabButton(() => {
       try { const it = JSON.parse(row.dataset.item); return { item: it, type: it.type || 'track', context: { inLibrary: !!it.inLibrary } }; } catch { return null; }
     }));
     row.appendChild(makeHeartButton(item));
     row.addEventListener('click', (e) => {
       if (wasLongPress()) return;
-      if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.kebab-btn') || e.target.closest('.like-btn')) return;
+      if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-addpl-btn')
+          || e.target.closest('.kebab-btn') || e.target.closest('.like-btn')) return;
       let it;
       try { it = JSON.parse(row.dataset.item); } catch { return; }
       openModal(it);
@@ -450,11 +535,49 @@ export function renderSongRows(tracks, sink, opts = {}) {
   return list;
 }
 
+// ── Result-list hygiene for the All view ──
+// The backend's _pick_top_result returns an entry that is STILL in its own list,
+// so the hero and the first Songs row (or first Artists card) were the same
+// entity. Drop it from its own list before rendering (Spotify does the same).
+function _sameEntity(a, b) {
+  if (!a || !b || !a.id || !b.id) return false;
+  return (a.type || 'track') === (b.type || 'track') && String(a.id) === String(b.id);
+}
+
+function _withoutTop(top, list) {
+  return top ? list.filter(it => !_sameEntity(it, top)) : list;
+}
+
+// Fold case + diacritics + whitespace so a provider returning 5 separate "Enya"
+// artist entries (distinct ids, identical name) collapses to one card.
+function _normName(s) {
+  return String(s == null ? '' : s)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '') // combining marks left behind by NFKD
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Keep the FIRST occurrence: in-library state isn't known until checkLibrary()
+// has run, so there's nothing better to rank duplicates by without another request.
+function _dedupeByName(list) {
+  const seen = new Set();
+  return list.filter(it => {
+    const key = _normName(it && it.name);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 // ── All-mode aggregated search (Spotify-style sections) ──
 async function doSearchAll() {
+  const { gen, signal } = _beginSearch();
   const q = $('#searchInput').value.trim();
   const resultsEl = $('#searchResults');
-  if (!q) { resultsEl.innerHTML = ''; saveSearchState(); return; }
+  if (!q) { resultsEl.innerHTML = ''; store.searchLoading = false; saveSearchState(); return; }
   store.searchQuery = q;
   store.searchHasMore = false;
   store.searchLoading = true;
@@ -462,11 +585,18 @@ async function doSearchAll() {
   resultsEl.classList.add('grid');
   resultsEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
-    const data = await apiJson('/api/search/all?q=' + encodeURIComponent(q) + '&limit_per_type=8');
-    const tracks = Array.isArray(data.tracks) ? data.tracks : [];
-    const artists = Array.isArray(data.artists) ? data.artists : [];
-    const albums = Array.isArray(data.albums) ? data.albums : [];
-    const playlists = Array.isArray(data.playlists) ? data.playlists : [];
+    // Fetch 8 per type but render 6: both the top-result exclusion and the
+    // artist de-dup below remove entries, so fetching 8 keeps the rows full
+    // instead of dropping to 4-5 cards.
+    const data = await apiJson('/api/search/all?q=' + encodeURIComponent(q) + '&limit_per_type=8', { signal });
+    if (gen !== _searchGen) return; // superseded — don't repaint under a newer query
+    const top = data.top || null;
+    const tracks = _withoutTop(top, Array.isArray(data.tracks) ? data.tracks : []);
+    // Artists only: same-name albums/playlists are frequently distinct releases
+    // or distinct user playlists, so collapsing them would hide real results.
+    const artists = _dedupeByName(_withoutTop(top, Array.isArray(data.artists) ? data.artists : []));
+    const albums = _withoutTop(top, Array.isArray(data.albums) ? data.albums : []);
+    const playlists = _withoutTop(top, Array.isArray(data.playlists) ? data.playlists : []);
 
     resultsEl.classList.remove('grid');
     const frag = document.createDocumentFragment();
@@ -474,12 +604,18 @@ async function doSearchAll() {
     const allCards = [];
 
     // 1) Top-result hero + Songs panel
-    if (data.top) {
+    if (top) {
       const row = document.createElement('div');
       row.className = 'top-result-row';
-      const topCard = buildTopResultCard(data.top, 'search');
+      const topCard = buildTopResultCard(top, 'search');
       row.appendChild(topCard);
-      allItems.push(data.top);
+      // The hero is the most prominent card on the page, so give it the same ⋯
+      // kebab / heart and right-click / long-press menu the grid cards get.
+      // Attached to the card itself (not `row`) so the song rows inside the
+      // panel keep the menu renderSongRows already wired for them.
+      addCardKebabs([topCard]);
+      _attachCardContextMenu(topCard);
+      allItems.push(top);
       allCards.push(topCard);
 
       // Songs panel only when there are tracks (avoids an empty "Songs" header).
@@ -521,7 +657,7 @@ async function doSearchAll() {
     _section('Albums', 'album', albums);
     _section('Playlists', 'playlist', playlists);
 
-    if (!data.top && !tracks.length && !artists.length && !albums.length && !playlists.length) {
+    if (!top && !tracks.length && !artists.length && !albums.length && !playlists.length) {
       resultsEl.innerHTML = '<div class="empty-state"><p>No results found</p></div>';
     } else {
       resultsEl.innerHTML = '';
@@ -540,9 +676,11 @@ async function doSearchAll() {
     addRecentSearch(q);
     _setKbdActive(-1);
   } catch (e) {
+    if (gen !== _searchGen) return; // also swallows our own AbortError
     resultsEl.classList.remove('grid');
     resultsEl.innerHTML = `<div class="empty-state"><p>Search failed: ${esc(e.message)}</p></div>`;
   }
+  if (gen !== _searchGen) return; // the newer search owns searchLoading now
   store.searchLoading = false;
   $('#searchLoadMore').style.display = 'none';
 }
@@ -578,6 +716,9 @@ export function init() {
   });
   $('#searchInput').addEventListener('keydown', _handleSearchKeydown);
   $('#searchClear').addEventListener('click', () => {
+    // Invalidate any in-flight search so it can't repaint results (or re-show
+    // this button) under a now-empty input.
+    _cancelSearch();
     $('#searchInput').value = '';
     $('#searchClear').style.display = 'none';
     $('#searchResults').innerHTML = '';

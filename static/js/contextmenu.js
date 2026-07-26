@@ -290,23 +290,49 @@ export function buildActionsFor(item, type, context = {}) {
       label: 'Play radio', icon: '&#128251;',
       onClick: () => _playArtistRadio(it),
     });
-    if (context.isFavorite) {
-      actions.push({ divider: true });
+    // Derive follow state from the loaded favorites set so search-result cards
+    // get the action too — callers used to have to pass `canFollow`, which
+    // nothing ever set. The favorites page's explicit isFavorite still wins.
+    const following = context.isFavorite === true || (!!it.id && store.favoritedArtistIds.has(it.id));
+    actions.push({ divider: true });
+    if (following) {
       actions.push({
         label: 'Unfollow', icon: '&#x2661;', danger: true,
         onClick: () => import('./favorites.js').then(m => m.toggleFavoriteArtist(it).then(() => import('./favorites.js').then(f => f.loadFavorites && f.loadFavorites()))),
       });
-    } else if (context.canFollow) {
+    } else {
       actions.push({
         label: 'Follow', icon: '&#x2665;',
         onClick: () => import('./favorites.js').then(m => m.toggleFavoriteArtist(it)),
       });
     }
     actions.push({ divider: true });
-  } else if (type === 'playlist' || type === 'show') {
+  } else if (type === 'playlist') {
+    // Where "back" should return to. Search results want the search page (the
+    // default); a menu opened from a page that already hosts the detail view
+    // passes detailSource: null so closing it stays put.
+    const detailSource = context.detailSource !== undefined ? context.detailSource : 'search';
     actions.push({
       label: 'Open', icon: '&#128194;',
-      onClick: () => _openItem(it),
+      onClick: () => _openItem(it, detailSource),
+    });
+    actions.push({
+      label: 'Play all (replace Up Next)', icon: '&#9654;',
+      onClick: () => _playPlaylistReplace(it),
+    });
+    actions.push({
+      label: 'Add all to queue', icon: '+',
+      onClick: () => _addPlaylistToQueue(it),
+    });
+    actions.push({
+      label: 'Add all to playlist…', icon: '&#9776;',
+      onClick: () => _addPlaylistToNavidromePlaylist(it),
+    });
+    actions.push({ divider: true });
+  } else if (type === 'show') {
+    actions.push({
+      label: 'Open', icon: '&#128194;',
+      onClick: () => _openItem(it, context.detailSource !== undefined ? context.detailSource : 'search'),
     });
     actions.push({ divider: true });
   }
@@ -358,11 +384,15 @@ export function buildActionsFor(item, type, context = {}) {
   }
 
   // ── Copy info ──
+  // Only tracks/albums have a meaningful "Artist - Title"; on an artist the two
+  // fields are the same string and on a playlist `artist` is the owner, so those
+  // copy just the name.
   if (it.name) {
-    actions.push({ divider: true });
+    const copyBoth = (isTracklike || type === 'album') && !!it.artist && it.artist !== it.name;
+    if (!actions[actions.length - 1]?.divider) actions.push({ divider: true });
     actions.push({
-      label: 'Copy "Artist - Title"', icon: '&#128203;',
-      onClick: () => _copyInfo(it),
+      label: copyBoth ? 'Copy "Artist - Title"' : 'Copy name', icon: '&#128203;',
+      onClick: () => _copyInfo(it, copyBoth),
     });
   }
 
@@ -463,7 +493,11 @@ function _removeFromQueue(idx, fromPlaylist) {
 }
 
 async function _fetchAlbumTracks(album) {
-  const data = await apiJson(`/api/album/${encodeURIComponent(album.id || '')}/tracks`);
+  // Pass the item's provider through: album ids are provider-scoped, and without
+  // it the backend assumes the configured search provider — which is wrong for
+  // Spotify-library cards and for results served by the search fallback.
+  const qs = album.provider ? `?provider=${encodeURIComponent(album.provider)}` : '';
+  const data = await apiJson(`/api/album/${encodeURIComponent(album.id || '')}/tracks${qs}`);
   return (data.tracks || []).map(t => ({ ...t, album: album.name, image: t.image || album.image }));
 }
 
@@ -490,11 +524,55 @@ async function _playAlbumReplace(album) {
   }
 }
 
+// Playlist equivalents of the album helpers above. Tracks come from the
+// provider-aware endpoint in spotify.js (dynamic import: spotify.js imports this
+// module, so a static import would be a cycle).
+async function _fetchPlaylistTracks(playlist) {
+  const sp = await import('./spotify.js');
+  const data = await sp.fetchPlaylistTracks(playlist.id || '', playlist.url || '', playlist.provider);
+  return (data.tracks || []).map(t => ({ ...t, type: 'track', image: t.image || playlist.image || '' }));
+}
+
+async function _addPlaylistToQueue(playlist) {
+  try {
+    showToast('Loading playlist…');
+    const tracks = await _fetchPlaylistTracks(playlist);
+    if (!tracks.length) { showToast('No tracks found'); return; }
+    _addToQueue(tracks);
+  } catch (e) {
+    showToast(e.message || 'Failed to load playlist');
+  }
+}
+
+async function _playPlaylistReplace(playlist) {
+  try {
+    showToast('Loading playlist…');
+    const tracks = await _fetchPlaylistTracks(playlist);
+    if (!tracks.length) { showToast('No tracks found'); return; }
+    const u = await import('./upnext.js');
+    u.playTracks(tracks);
+  } catch (e) {
+    showToast(e.message || 'Failed to load playlist');
+  }
+}
+
+async function _addPlaylistToNavidromePlaylist(playlist) {
+  try {
+    showToast('Loading playlist…');
+    const tracks = await _fetchPlaylistTracks(playlist);
+    if (!tracks.length) { showToast('No tracks found'); return; }
+    await addTracksToNavidromePlaylist(tracks);
+  } catch (e) {
+    showToast(e.message || 'Failed to add playlist tracks');
+  }
+}
+
 export async function _addToNavidromePlaylist(item) {
   try {
     const data = await apiJson('/api/library/playlists');
+    // No early bail on an empty list — the picker's "+ New playlist" row is the
+    // only way a user with zero playlists can create one from here.
     const playlists = data.playlists || [];
-    if (!playlists.length) { showToast('No Navidrome playlists'); return; }
     const picked = await showPlaylistPicker(playlists);
     if (!picked || !picked.length) return;
     for (const pl of picked) {
@@ -515,8 +593,9 @@ export async function addTracksToNavidromePlaylist(tracks) {
   try {
     if (!tracks || !tracks.length) { showToast('No tracks found'); return; }
     const data = await apiJson('/api/library/playlists');
+    // See _addToNavidromePlaylist: an empty list still opens the picker so the
+    // "+ New playlist" row is reachable.
     const playlists = data.playlists || [];
-    if (!playlists.length) { showToast('No Navidrome playlists'); return; }
     const picked = await showPlaylistPicker(playlists);
     if (!picked || !picked.length) return;
     const payload = tracks.map(t => ({ name: t.name, artist: t.artist || '', album: t.album || '' }));
@@ -555,7 +634,9 @@ function _searchFor(searchType, q) {
 
 function _openArtist(item) {
   if (item.id) {
-    import('./spotify.js').then(m => m.loadArtistDetail && m.loadArtistDetail(item.id, 'search'));
+    // Pass the item's provider: artist ids are provider-scoped, and the search
+    // fallback can serve items from a provider other than the configured one.
+    import('./spotify.js').then(m => m.loadArtistDetail && m.loadArtistDetail(item.id, 'search', item.provider));
   } else if (item.name) {
     _searchFor('artist', item.name);
   }
@@ -571,11 +652,12 @@ export function openAlbumByName(album) {
   if (album) _searchFor('album', album);
 }
 
-function _openItem(item) {
+function _openItem(item, fromPage = 'search') {
   if (item.type === 'playlist' && item.id) {
-    import('./spotify.js').then(m => m.loadPlaylistDetail && m.loadPlaylistDetail(item.id, item.url, 'search'));
+    import('./spotify.js').then(m => m.loadPlaylistDetail && m.loadPlaylistDetail(item.id, item.url, fromPage,
+      { provider: item.provider, name: item.name, image: item.image }));
   } else if (item.type === 'show' && item.id) {
-    import('./spotify.js').then(m => m.loadShowDetail && m.loadShowDetail(item.id, item.url, 'search', item.feed_url));
+    import('./spotify.js').then(m => m.loadShowDetail && m.loadShowDetail(item.id, item.url, fromPage, item.feed_url));
   } else {
     openModal(item);
   }
@@ -599,8 +681,8 @@ async function _playArtistRadio(item) {
   }
 }
 
-function _copyInfo(item) {
-  const text = `${item.artist || ''} - ${item.name || ''}`.trim();
+function _copyInfo(item, withArtist = true) {
+  const text = (withArtist && item.artist ? `${item.artist} - ${item.name || ''}` : (item.name || '')).trim();
   try {
     navigator.clipboard.writeText(text).then(() => showToast('Copied'));
   } catch {

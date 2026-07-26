@@ -9,8 +9,8 @@
    heart shifts to right:52px to clear both the kebab and the "remove"
    control. Those per-context offsets are load-bearing for bulk-select layout
    — left unchanged here; see index.html's kebab-btn/like-btn rules for the
-   actual offsets. Hit targets stay >=32px in all contexts (kebab/like are
-   40x40 by default, 32x32 for .card-fav-btn). */
+   actual offsets. Hit targets stay >=40px in all contexts (kebab/like/
+   card-fav-btn are all 40x40). */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -21,6 +21,15 @@
   background: var(--bg-card); border-radius: 16px;
   overflow: hidden; cursor: pointer; transition: all .25s cubic-bezier(.4,0,.2,1);
   border: 1px solid transparent; position: relative;
+  /* Query container so the bottom action buttons below can anchor to the
+     artwork's real bottom edge (100cqw = this element's own inline size =
+     the height of the square .card-img, since aspect-ratio:1) instead of
+     the bottom of the whole card (title/subtitle sit below the artwork).
+     Harmless on variants with no cqw-based children (.lib-card, .fav-card,
+     .skeleton-card doesn't even carry the .card class). .top-result-card
+     and .song-list .song-row override the affected buttons with their own
+     fixed/static rules — see cards.css §Card Action Buttons and search.css. */
+  container-type: inline-size;
 }
 .card:hover {
   transform: translateY(-6px);
@@ -78,36 +87,64 @@
 
 .skeleton-card { height: 280px; border-radius: 16px; }
 
-/* ── Card Action Buttons ── */
-.card-play-btn { position: absolute; bottom: 8px; right: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
+/* ── Card Action Buttons ──
+   bottom/top: these anchor to the BOTTOM of the square artwork, not the
+   bottom of the whole card. The card-img is width:100%;aspect-ratio:1, so
+   its rendered height equals the card's own inline size — which is exactly
+   what `100cqw` resolves to against the `.card` query container above.
+   `top: calc(100cqw - 44px)` = artwork's bottom edge minus an 8px inset
+   minus the 36px button height, i.e. the button's bottom sits 8px above
+   the artwork, same inset the old `bottom: 8px` used to give (before the
+   card grew taller than the artwork once title/subtitle were added below).
+   .top-result-card overrides .card-play-btn with a fixed px value instead
+   (see search.css) because its artwork is a fixed 180/140px square, not
+   proportional to the card's own width, so cqw does not apply there.
+   .song-list .song-row resets .card-play-btn to position:static (higher
+   specificity, see search.css) so these values are inert there. */
+.card-play-btn { position: absolute; top: calc(100cqw - 44px); right: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
 .card:hover .card-play-btn { opacity: 1; transform: translateY(0); }
 .card-play-btn:hover { transform: scale(1.1) !important; box-shadow: 0 4px 16px rgba(0,0,0,.5), var(--shadow-glow); }
 /* Download is intentionally NOT shown on cards — it lives only in the ⋮ context
    menu so the card face stays play-first. Rule kept for any legacy render path. */
-.card-dl-btn { position: absolute; bottom: 8px; left: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
+.card-dl-btn { position: absolute; top: calc(100cqw - 44px); left: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #000; border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
 .card:hover .card-dl-btn { opacity: 1; transform: translateY(0); }
 .card-dl-btn:hover { transform: scale(1.1) !important; box-shadow: 0 4px 16px rgba(0,0,0,.5), var(--shadow-glow); }
-.card-radio-btn { position: absolute; bottom: 8px; left: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; font-size: 16px; }
+.card-radio-btn { position: absolute; top: calc(100cqw - 44px); left: 8px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; font-size: 16px; }
 .card:hover .card-radio-btn { opacity: 1; transform: translateY(0); }
 .card-radio-btn:hover { transform: scale(1.1) !important; background: var(--accent); color: #000; border-color: var(--accent); }
 /* Quick "add to playlist" — sits bottom-left just right of the radio button
    (dl left:8, radio left:52, addpl left:96), clear of the play button (right). */
-.card-addpl-btn { position: absolute; bottom: 8px; left: 52px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
+.card-addpl-btn { position: absolute; top: calc(100cqw - 44px); left: 52px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(6px); transition: all .2s; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 3; }
 .card:hover .card-addpl-btn { opacity: 1; transform: translateY(0); }
 .card-addpl-btn:hover { transform: scale(1.1) !important; background: var(--accent); color: #000; border-color: var(--accent); }
 /* Drag-to-reorder handle (library playlist detail only — added by JS there).
-   Mid-left edge: clear of checkbox (top-left), dl (bottom-left), kebab/heart
-   (right), remove (top-right), play (bottom-right). Pointer Events need
-   touch-action:none so a touch-drag doesn't scroll the grid. */
-.card-drag-handle { position: absolute; top: 50%; left: 8px; transform: translateY(-50%); z-index: 5; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(0,0,0,.5); color: var(--text-muted); cursor: grab; opacity: 0; transition: opacity .2s; touch-action: none; font-size: 13px; }
+   Left edge, anchored just above the radio/add-to-playlist buttons' new
+   artwork-relative band (top: calc(100cqw - 44px), 36px tall) with a fixed
+   12px gap, instead of the old top:50%-of-whole-card. 50%-of-card-height
+   would drift too close to (and, on the narrowest 150px grid columns,
+   actually into) that band now that the buttons sit higher up against the
+   artwork rather than at the very bottom of the card. Clear of checkbox
+   (top-left), kebab/heart (right), remove (top-right), play (bottom-right).
+   Pointer Events need touch-action:none so a touch-drag doesn't scroll the grid. */
+.card-drag-handle { position: absolute; top: calc(100cqw - 84px); left: 8px; z-index: 5; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(0,0,0,.5); color: var(--text-muted); cursor: grab; opacity: 0; transition: opacity .2s; touch-action: none; font-size: 13px; }
 .card:hover .card-drag-handle { opacity: 1; }
 .card-drag-handle:hover { color: var(--text); }
 .card-drag-handle:active { cursor: grabbing; }
 .card.lib-dragging { opacity: .5; }
-.card-fav-btn { position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: rgba(0,0,0,.6); color: var(--text); border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transition: all .2s; cursor: pointer; z-index: 3; font-size: 18px; }
+/* Follow (heart-outline) button, artist cards only. Sized to match the
+   kebab/like-btn 40x40 tap target (was 32x32 — the smallest tap target on
+   the page, and permanently visible on touch devices). */
+.card-fav-btn { position: absolute; top: 8px; right: 8px; width: 40px; height: 40px; border-radius: 50%; background: rgba(0,0,0,.6); color: var(--text); border: none; display: flex; align-items: center; justify-content: center; opacity: 0; transition: all .2s; cursor: pointer; z-index: 3; font-size: 18px; }
 .card:hover .card-fav-btn { opacity: 1; }
 .card-fav-btn:hover { color: #ef4444; transform: scale(1.1); }
 .card-fav-btn.following { color: #ef4444; opacity: 1; }
+/* When the "In Library" badge occupies the top-right corner, shift the
+   follow button left to clear it — mirrors the identical .like-btn rule in
+   index.html's inline <style> (`.card.in-library .like-btn { right: 84px; }`)
+   which solves the same badge collision for the track "like" heart. Applies
+   equally to grid cards and .top-result-card (the search hero), since both
+   render with the shared .card + .in-library classes. */
+.card.in-library .card-fav-btn { right: 84px; }
 .new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
 .fav-new-badge { position: absolute; top: 8px; left: 8px; background: var(--accent); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; z-index: 3; }
 .fav-auto-dl-badge { position: absolute; bottom: 52px; right: 8px; font-size: 10px; color: var(--accent); opacity: .7; }

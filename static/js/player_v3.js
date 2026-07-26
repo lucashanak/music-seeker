@@ -1436,19 +1436,24 @@ export function updatePlayPauseIcon(playing) {
 export function pauseLocal() { try { _deckA.pause(); _deckB.pause(); } catch {} updatePlayPauseIcon(false); }
 
 // ── Resolve Item Tracks (album/artist → track list) ──
+// Album/artist ids are provider-scoped; the backend otherwise assumes the
+// configured provider, which is wrong for items the search fallback served.
+const _provQs = (p) => (p ? `?provider=${encodeURIComponent(p)}` : '');
+
 export async function resolveItemTracks(item) {
   const type = item.type || 'track';
   if (type === 'album' && item.id) {
-    const data = await apiJson(`/api/album/${item.id}/tracks`);
+    const data = await apiJson(`/api/album/${item.id}/tracks${_provQs(item.provider)}`);
     return (data.tracks || []).map(t => ({ ...t, type: 'track' }));
   }
   if (type === 'artist' && item.id) {
-    const data = await apiJson(`/api/artist/${item.id}/albums`);
+    const data = await apiJson(`/api/artist/${item.id}/albums${_provQs(item.provider)}`);
     const albums = data.albums || [];
     const allTracks = [];
     for (const album of albums.slice(0, 10)) {
       try {
-        const ad = await apiJson(`/api/album/${album.id}/tracks`);
+        // Albums from that response aren't stamped — inherit the artist's.
+        const ad = await apiJson(`/api/album/${album.id}/tracks${_provQs(album.provider || item.provider)}`);
         (ad.tracks || []).forEach(t => allTracks.push({ ...t, type: 'track' }));
       } catch {}
     }
@@ -1895,8 +1900,9 @@ export function init() {
     if (!item) return;
     try {
       const data = await apiJson('/api/library/playlists');
+      // No early bail on an empty list — the picker's "+ New playlist" row lets
+      // a user with zero playlists create one right here.
       const playlists = data.playlists || [];
-      if (!playlists.length) { showToast('No playlists. Create one in Library first.'); return; }
       const { showPlaylistPicker } = await import('./utils.js');
       const picked = await showPlaylistPicker(playlists, { multi: false });
       if (!picked) return;

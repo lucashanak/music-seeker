@@ -6,7 +6,7 @@ import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { renderResults, renderSongRows, checkLibrary } from './search.js';
 import { switchPage } from './router.js';
-import { attachContextMenu, wasLongPress, addTracksToNavidromePlaylist } from './contextmenu.js';
+import { attachContextMenu, wasLongPress, makeKebabButton, addTracksToNavidromePlaylist } from './contextmenu.js';
 import { getPlayerModule } from './player_active.js';
 import { hydrateBpmByName, addBpmBadges, initTempoFilter } from './bpm.js';
 
@@ -60,7 +60,7 @@ function loadSpTab(tab) {
 function renderSpGrid(tab, items, grid) {
   if (tab === 'playlists') {
     const likedCard = `
-      <div class="card sp-card" data-playlist-id="liked" data-playlist-url="" data-sp-type="playlist">
+      <div class="card sp-card" data-playlist-id="liked" data-playlist-url="" data-sp-type="playlist" data-item='${JSON.stringify({id:"liked",name:"Liked Songs",image:"",url:"",type:"playlist",provider:"spotify"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
         <div class="card-img" style="background:linear-gradient(135deg,#604be8,#1db954);display:flex;align-items:center;justify-content:center;font-size:32px;">&#9829;</div>
         <div class="card-body">
           <div class="card-title">Liked Songs</div>
@@ -68,7 +68,7 @@ function renderSpGrid(tab, items, grid) {
         </div>
       </div>`;
     grid.innerHTML = likedCard + items.map(pl => `
-      <div class="card sp-card" data-playlist-id="${pl.id}" data-playlist-url="${pl.url}" data-sp-type="playlist">
+      <div class="card sp-card" data-playlist-id="${pl.id}" data-playlist-url="${pl.url}" data-sp-type="playlist" data-item='${JSON.stringify({id:pl.id,name:pl.name,image:pl.image||"",url:pl.url||"",type:"playlist",provider:"spotify"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
         <img class="card-img" src="${pl.image || ''}" alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(pl.name)}</div>
@@ -77,7 +77,7 @@ function renderSpGrid(tab, items, grid) {
       </div>`).join('');
   } else if (tab === 'albums') {
     grid.innerHTML = items.map(a => `
-      <div class="card sp-card" data-sp-type="album" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.artist,image:a.image,url:a.url,type:"album"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
+      <div class="card sp-card" data-sp-type="album" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.artist,image:a.image,url:a.url,type:"album",provider:"spotify"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
         <img class="card-img" src="${a.image || ''}" alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(a.name)}</div>
@@ -95,7 +95,7 @@ function renderSpGrid(tab, items, grid) {
       </div>`).join('') || '<div class="empty-state"><p>No followed artists</p></div>';
   } else if (tab === 'podcasts') {
     grid.innerHTML = items.map(s => `
-      <div class="card sp-card" data-sp-type="show" data-show-id="${s.id}" data-item='${JSON.stringify({id:s.id,name:s.name,artist:s.artist,image:s.image,url:s.url,type:"show"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
+      <div class="card sp-card" data-sp-type="show" data-show-id="${s.id}" data-item='${JSON.stringify({id:s.id,name:s.name,artist:s.artist,image:s.image,url:s.url,type:"show",provider:"spotify"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
         <img class="card-img" src="${s.image || ''}" alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(s.name)}</div>
@@ -107,9 +107,13 @@ function renderSpGrid(tab, items, grid) {
   // Attach click handlers
   $$('.sp-card', grid).forEach(card => {
     card.addEventListener('click', () => {
+      // A long-press opened the context menu — don't also navigate.
+      if (wasLongPress(card)) return;
       const type = card.dataset.spType;
       if (type === 'playlist') {
-        loadPlaylistDetail(card.dataset.playlistId, card.dataset.playlistUrl);
+        // These come from the user's Spotify library — pin the provider so the
+        // OAuth'd Spotify path is used even when the API omitted the url.
+        loadPlaylistDetail(card.dataset.playlistId, card.dataset.playlistUrl, undefined, { provider: 'spotify' });
       } else if (type === 'album') {
         const item = JSON.parse(card.dataset.item);
         openModal(item);
@@ -122,6 +126,49 @@ function renderSpGrid(tab, items, grid) {
       }
     });
   });
+
+  _attachSpCardMenus(grid);
+}
+
+// Same context menu (right-click / long-press / ⋯ kebab) as search results, so
+// the playlist actions added in contextmenu.js are reachable here too. The items
+// carry provider:'spotify' — that's what keeps Open / Play all / Add all to
+// queue on the OAuth'd Spotify endpoints instead of the search provider's.
+//
+// Only playlist and show cards opt in, because every id in this grid is
+// Spotify's and the rest of the menu can't honor that namespace yet:
+//   • artist — favorites are keyed by the search provider's ids (the follow
+//     endpoint hardcodes that provider), so a Follow from here would store an
+//     entry whose release-checks can never resolve. This is also why the card's
+//     own click resolves the artist by name first, see searchForArtistDetail().
+//   • album — no endpoint serves Spotify album tracks: search_providers'
+//     get_album_tracks falls through to Deezer for provider=spotify, so
+//     "Play all"/"Add all to queue" would silently load the wrong album.
+// Both need backend work before they can be enabled; the card click already
+// opens the download modal for albums, which is that menu's only working extra.
+const SP_MENU_SELECTOR = '.sp-card[data-item][data-sp-type="playlist"], .sp-card[data-item][data-sp-type="show"]';
+
+function _attachSpCardMenus(grid) {
+  const _info = (targetEl) => {
+    try {
+      const item = JSON.parse(targetEl.dataset.item);
+      const type = item.type || 'playlist';
+      // Mirror the source each card click already passes, since the two detail
+      // views live on different pages: #playlistDetail is inside this page
+      // (null → closing stays put) while #showDetail is inside #pageSearch, so
+      // it needs a source to navigate back to the Library.
+      const detailSource = type === 'show' ? 'playlists' : null;
+      return { item, type, context: { inLibrary: !!item.inLibrary, detailSource } };
+    } catch { return null; }
+  };
+  // attachContextMenu no-ops after the first call per element; the grid element
+  // survives re-renders and getItem re-reads data-item from the DOM, so a single
+  // delegated listener stays correct across tab switches.
+  attachContextMenu(grid, { selector: SP_MENU_SELECTOR, getItem: _info });
+  $$(SP_MENU_SELECTOR, grid).forEach(card => {
+    if (card.querySelector('.kebab-btn')) return;
+    card.appendChild(makeKebabButton(() => _info(card)));
+  });
 }
 
 async function searchForArtistDetail(item) {
@@ -130,7 +177,9 @@ async function searchForArtistDetail(item) {
     const match = (data.results || []).find(r => r.name.toLowerCase() === item.name.toLowerCase()) || (data.results || [])[0];
     if (match && match.id) {
       switchPage('search', true);
-      loadArtistDetail(match.id, 'playlists');
+      // match came from /api/search, which stamps the serving provider — pass it
+      // on, since the fallback provider can differ from the configured one.
+      loadArtistDetail(match.id, 'playlists', match.provider);
     } else {
       showToast('Artist not found on Deezer');
     }
@@ -150,8 +199,40 @@ export function loadPlaylists() {
   loadSpTab(store.activeSpTab);
 }
 
+// ── Provider-aware playlist track fetch ──
+// Universal search returns playlists from whichever provider is configured
+// (Deezer by default), whose ids mean nothing to Spotify — the Spotify-only
+// endpoint 500s on them. Resolve the provider from the item's url so Spotify
+// playlists (the user's own OAuth'd library) keep the /api/spotify path and
+// everything else goes through the provider-aware /api/playlist path.
+export function inferPlaylistProvider(url) {
+  const u = String(url || '');
+  if (!u) return '';
+  if (/deezer\.com/i.test(u)) return 'deezer';
+  if (/spotify\.com/i.test(u)) return 'spotify';
+  if (/youtube\.com|youtu\.be/i.test(u)) return 'ytmusic';
+  if (/apple\.com/i.test(u)) return 'itunes';
+  return '';
+}
+
+// Returns the raw endpoint payload: { tracks: [...], name, image }.
+// An unresolved provider is omitted so the backend falls back to the app's
+// configured search provider.
+export async function fetchPlaylistTracks(id, url, provider) {
+  if (id === 'liked') return apiJson('/api/spotify/liked');
+  const prov = provider || inferPlaylistProvider(url);
+  if (prov === 'spotify') return apiJson(`/api/spotify/playlist/${encodeURIComponent(id)}/tracks`);
+  const qs = prov ? `?provider=${encodeURIComponent(prov)}` : '';
+  return apiJson(`/api/playlist/${encodeURIComponent(id)}/tracks${qs}`);
+}
+
 // ── Playlist Detail ──
-export async function loadPlaylistDetail(id, url, fromPage) {
+// `opts` is optional and accepts either a provider string or
+// { provider, name, image } — callers that already know those (search cards)
+// get an instantly-populated hero; older 3-arg callers still work via url
+// inference.
+export async function loadPlaylistDetail(id, url, fromPage, opts) {
+  const o = typeof opts === 'string' ? { provider: opts } : (opts || {});
   store.currentPlaylistId = id;
   store.currentPlaylistUrl = url;
   store.playlistDetailSource = fromPage || null;
@@ -170,24 +251,29 @@ export async function loadPlaylistDetail(id, url, fromPage) {
   history.pushState({ layer: 'playlistDetail' }, '');
   const tracksEl = $('#playlistTracks');
   tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  // Paint whatever the caller already knows so the hero isn't blank while loading.
+  if (id === 'liked') {
+    $('#plDetailImg').style.background = 'linear-gradient(135deg,#604be8,#1db954)';
+    $('#plDetailImg').src = '';
+  } else {
+    $('#plDetailImg').style.background = '';
+    $('#plDetailImg').src = o.image || '';
+  }
+  $('#plDetailName').textContent = o.name || '';
+  $('#plDetailCount').textContent = '';
   try {
-    const data = id === 'liked'
-      ? await apiJson('/api/spotify/liked')
-      : await apiJson(`/api/spotify/playlist/${id}/tracks`);
-    store.currentPlaylistTracks = data.tracks.map(t => ({ name: t.name, artist: t.artist, album: t.album || '', image: t.image || '', url: t.url }));
-    if (id === 'liked') {
-      $('#plDetailImg').style.background = 'linear-gradient(135deg,#604be8,#1db954)';
-      $('#plDetailImg').src = '';
-    } else {
-      $('#plDetailImg').style.background = '';
-      $('#plDetailImg').src = data.image || '';
-    }
-    $('#plDetailName').textContent = data.name;
-    $('#plDetailCount').textContent = `${data.tracks.length} tracks`;
-    renderResults(data.tracks, '#playlistTracks');
-    _mountTempoFilter(data.tracks, '#playlistTracks');
+    const data = await fetchPlaylistTracks(id, url, o.provider);
+    const tracks = data.tracks || [];
+    store.currentPlaylistTracks = tracks.map(t => ({ name: t.name, artist: t.artist, album: t.album || '', image: t.image || '', url: t.url }));
+    // Caller-supplied values win; the response fills the gaps.
+    if (id !== 'liked' && !o.image && data.image) $('#plDetailImg').src = data.image;
+    $('#plDetailName').textContent = o.name || data.name || '';
+    $('#plDetailCount').textContent = `${tracks.length} tracks`;
+    renderResults(tracks, '#playlistTracks');
+    _mountTempoFilter(tracks, '#playlistTracks');
   } catch (e) {
-    tracksEl.innerHTML = `<div class="empty-state"><p>Failed to load tracks</p></div>`;
+    store.currentPlaylistTracks = [];
+    tracksEl.innerHTML = `<div class="empty-state"><p>Failed to load tracks: ${esc(e.message || 'unknown error')}</p></div>`;
   }
 }
 
@@ -250,9 +336,25 @@ export function closeShowDetail(fromPopstate) {
 }
 
 // ── Artist Detail ──
-export async function loadArtistDetail(id, fromPage) {
+// Provider-scoped ids again: album/artist ids only mean something to the
+// provider that issued them. The configured provider is the backend's default,
+// which is wrong whenever the search fallback served the result (e.g. settings
+// say deezer but the item came from ytmusic), so pass it through when known.
+function _providerQs(provider) {
+  return provider ? `?provider=${encodeURIComponent(provider)}` : '';
+}
+
+// Remembers which provider the artist currently on screen came from, so the
+// album cards built from its response inherit it (that endpoint doesn't stamp a
+// provider on each album the way search results do).
+let _artistDetailProvider = '';
+
+// `provider` is optional — 2-arg callers still work and fall back to the
+// backend's configured-provider default.
+export async function loadArtistDetail(id, fromPage, provider) {
   store.artistDetailSource = fromPage || null;
   store.currentArtistId = id;
+  _artistDetailProvider = provider || '';
   $('#searchResults').style.display = 'none';
   $('#searchLoadMore').style.display = 'none';
   $('#artistDetail').style.display = '';
@@ -260,7 +362,7 @@ export async function loadArtistDetail(id, fromPage) {
   const albumsEl = $('#artistAlbums');
   albumsEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
-    const data = await apiJson(`/api/artist/${id}/albums`);
+    const data = await apiJson(`/api/artist/${id}/albums${_providerQs(provider)}`);
     store.currentArtistAlbums = data.albums || [];
     $('#artistDetailImg').src = data.image || '';
     $('#artistDetailName').textContent = data.name;
@@ -280,7 +382,8 @@ export async function loadArtistDetail(id, fromPage) {
         if (wasLongPress()) return;
         if (e.target.closest('.card-dl-btn')) return;
         const album = store.currentArtistAlbums[card.dataset.albumIdx];
-        if (album && album.id) loadAlbumDetail({ ...album, type: 'album', artist: $('#artistDetailName').textContent }, 'search');
+        // Inherit the artist's provider — these albums came from its response.
+        if (album && album.id) loadAlbumDetail({ ...album, type: 'album', artist: $('#artistDetailName').textContent, provider: album.provider || _artistDetailProvider }, 'search');
         else if (album) openModal(album);
       });
     });
@@ -289,7 +392,9 @@ export async function loadArtistDetail(id, fromPage) {
       getItem: (targetEl) => {
         const album = store.currentArtistAlbums[parseInt(targetEl.dataset.albumIdx)];
         if (!album) return null;
-        return { item: { ...album, type: 'album' }, type: 'album', context: { inLibrary: !!album.inLibrary } };
+        // provider: the menu's "Play all"/"Add all to queue" fetch this album's
+        // tracks by id, so it needs the provider that issued the id.
+        return { item: { ...album, type: 'album', provider: album.provider || _artistDetailProvider }, type: 'album', context: { inLibrary: !!album.inLibrary } };
       },
     });
     $$('.card-dl-btn', albumsEl).forEach(btn => {
@@ -349,7 +454,9 @@ export async function loadAlbumDetail(album, fromPage) {
   $('#albumDetailArtist').textContent = album.artist || '';
   $('#albumDetailCount').textContent = '';
   try {
-    const data = await apiJson(`/api/album/${album.id}/tracks`);
+    // album.provider comes from the search result (stamped by the backend) or is
+    // inherited from the artist detail; omitted when unknown.
+    const data = await apiJson(`/api/album/${album.id}/tracks${_providerQs(album.provider)}`);
     const tracks = (data.tracks || []).map(t => ({
       ...t, type: 'track',
       album: album.name || t.album || '',
@@ -406,7 +513,9 @@ export function init() {
       name: $('#plDetailName').textContent,
       artist: 'Playlist',
       image: store.currentPlaylistId === 'liked' ? '' : $('#plDetailImg').src,
-      url: store.currentPlaylistId === 'liked' ? '' : `https://open.spotify.com/playlist/${store.currentPlaylistId}`,
+      // Prefer the real playlist url — non-Spotify playlists (Deezer, YT Music)
+      // would otherwise be sent as a bogus open.spotify.com link.
+      url: store.currentPlaylistId === 'liked' ? '' : (store.currentPlaylistUrl || `https://open.spotify.com/playlist/${store.currentPlaylistId}`),
       type: 'playlist',
     });
   });
@@ -486,7 +595,7 @@ export function init() {
       for (const album of store.currentArtistAlbums) {
         const tracks = [];
         try {
-          const data = await apiJson(`/api/album/${album.id}/tracks`);
+          const data = await apiJson(`/api/album/${album.id}/tracks${_providerQs(album.provider || _artistDetailProvider)}`);
           (data.tracks || []).forEach(t => tracks.push({ name: t.name, artist: t.artist, album: t.album || album.name, image: t.image || album.image || '', url: t.url || '' }));
         } catch {}
         await apiJson('/api/download', { method: 'POST', body: {

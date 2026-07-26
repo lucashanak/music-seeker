@@ -401,7 +401,8 @@ function _attachRecsHandlers(el) {
       try {
         const data = await apiJson('/api/library/playlists');
         const playlists = data.playlists || [];
-        if (!playlists.length) { showToast('No Navidrome playlists'); return; }
+        // No early bail on an empty list: the picker offers "+ New playlist",
+        // so a user with zero playlists can still create one right here.
         const picked = await showPlaylistPicker(playlists);
         if (!picked || !picked.length) return;
         for (const pl of picked) {
