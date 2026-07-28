@@ -83,13 +83,21 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
             cached = player.local_transcode_cached_path(path)
             if cached:
                 return FileResponse(cached, media_type="audio/mpeg", headers=file_headers)
-            # Cold/live path: serve progressive audio immediately (no full-transcode
-            # stall) then build the cache in background so next play gets cached MP3.
+            # Cold path: build the compact MP3 cache in the background (so the NEXT
+            # play gets the smaller cached MP3) but serve the RAW file NOW via
+            # FileResponse. A raw file carries a Content-Length + Range support, so
+            # the browser learns the real, FINITE duration up front. The old chunked
+            # StreamingResponse had no Content-Length → the <audio> element saw
+            # duration=Infinity and the on-the-fly transcode's stream `ended` a few
+            # seconds SHORT of the real length, so the track restarted from 0 before
+            # the shown end and only finished on the (now cached) second play.
+            # Correctness beats the one-time larger cold transfer; Range keeps it
+            # progressive+seekable, and `headers` (no long max-age) lets the next
+            # play revalidate and pick up the cached MP3.
             t = asyncio.create_task(player.cache_local_transcode(path))
             _prewarm_tasks.add(t)
             t.add_done_callback(_prewarm_tasks.discard)
-            return StreamingResponse(player.stream_local_file(path),
-                                     media_type="audio/mpeg", headers=headers)
+            return FileResponse(path, media_type=_mime_for_path(path), headers=headers)
         mime = _mime_for_path(path)
         # FileResponse supports Range requests (required by Safari for duration/seek)
         return FileResponse(path, media_type=mime, headers=file_headers)
