@@ -209,30 +209,47 @@ async def scan_devices() -> list[dict]:
 
     found = []
     factory = await _get_factory()
-    sem = asyncio.Semaphore(50)  # High concurrency — probes are fast TCP connects
 
-    # One shared client for the whole sweep (was creating ~2000 clients, one per probe).
-    async with httpx.AsyncClient(timeout=0.8) as client:
-        async def probe(ip: str, port: int, path: str):
-            url = f"http://{ip}:{port}{path}"
-            async with sem:
+    # Two-phase scan — fast AND gentle on embedded renderers. A flat HTTP flood over
+    # 254 IPs × ports × paths (~2032 GETs) took ~28s at low concurrency; cranked
+    # high it made the renderer drop connections (empty results). Instead:
+    #   Phase 1 — cheap TCP connect-scan of every IP×port (bare sockets, safe at high
+    #             concurrency) to find which ports are actually open.
+    #   Phase 2 — HTTP-GET the descriptor paths ONLY on the few open ip:port, with a
+    #             generous timeout so a slow renderer still answers.
+    # Full sweep is ~1.5s and reliably finds the renderer.
+    connect_sem = asyncio.Semaphore(400)
+
+    async def _port_open(ip: str, port: int):
+        async with connect_sem:
+            try:
+                _, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=0.5)
+                writer.close()
                 try:
-                    resp = await client.get(url)
-                    if resp.status_code == 200 and "MediaRenderer" in resp.text:
-                        return url
+                    await writer.wait_closed()
                 except Exception:
                     pass
+                return (ip, port)
+            except Exception:
+                return None
+
+    open_ports = [r for r in await asyncio.gather(*[
+        _port_open(f"{gateway_ip}.{i}", port)
+        for i in range(1, 255) for port in ports
+    ]) if r]
+
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        async def probe(ip: str, port: int, path: str):
+            try:
+                resp = await client.get(f"http://{ip}:{port}{path}")
+                if resp.status_code == 200 and "MediaRenderer" in resp.text:
+                    return f"http://{ip}:{port}{path}"
+            except Exception:
+                pass
             return None
-
-        # Probe IPs 1-254 on all port/path combos
-        tasks = []
-        for i in range(1, 255):
-            ip = f"{gateway_ip}.{i}"
-            for port in ports:
-                for path in paths:
-                    tasks.append(probe(ip, port, path))
-
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*[
+            probe(ip, port, path) for (ip, port) in open_ports for path in paths
+        ])
     urls = [r for r in results if r]
 
     # Deduplicate by host
