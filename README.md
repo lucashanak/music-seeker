@@ -64,7 +64,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 - **Track/album deletion** — with confirmation showing affected playlists
 
 ### Library & Recognition
-- **Song recognition** — Shazam + AcoustID fingerprinting via microphone
+- **Song recognition** — Shazam fingerprinting via microphone
 
 ### Favorites & New Releases
 - **Follow artists** — heart icon from search or artist detail
@@ -177,7 +177,6 @@ Open `http://localhost:8090` and log in with the `ADMIN_USER` / `ADMIN_PASS` you
 - Docker & Docker Compose
 - *(Optional)* [Spotify Developer App](https://developer.spotify.com/dashboard)
 - *(Optional)* [Last.fm API key](https://www.last.fm/api/account/create)
-- *(Optional)* [AcoustID API key](https://acoustid.org/my-applications)
 - *(Optional)* Lidarr instance
 
 ## Documentation

@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg libchromaprint-tools flac git gcc g++ \
+    ffmpeg flac git gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

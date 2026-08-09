@@ -33,7 +33,7 @@
     └────────┘ └────────┘ └────────┘ └────────┘
                                       Spotify, Deezer,
                                       Last.fm, YouTube,
-                                      AcoustID, Shazam
+                                      Shazam
 ```
 
 ## Backend
@@ -57,7 +57,7 @@
 | `favorites.py` | `favorites.py` | Search providers (release check) |
 | `podcasts.py` | `podcasts.py` | Spotify, RSS feeds |
 | `settings.py` | `settings.py` | — |
-| `recognize.py` | `recognize.py` | Shazam, AcoustID |
+| `recognize.py` | `recognize.py` | Shazam |
 | `dlna.py` | `dlna.py` | UPnP/SSDP (LAN), Onkyo eISCP |
 | `remote.py` | `remote.py` | — (device→device remote control, SSE) |
 | `bpm.py` | `bpm.py` | — (BPM detection for DJ mode) |
@@ -173,8 +173,8 @@ everyone logged in. Only losing or **switching** the data volume logs users out.
 
 ```dockerfile
 FROM python:3.11-slim
-# ffmpeg (audio conversion), chromaprint (AcoustID), flac (metaflac tagging)
-RUN apt-get install ffmpeg libchromaprint-tools flac
+# ffmpeg (audio conversion), flac (metaflac tagging)
+RUN apt-get install ffmpeg flac
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 WORKDIR /app

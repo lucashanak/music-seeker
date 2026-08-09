@@ -74,6 +74,11 @@ export const store = {
   micState: 'idle',
   micStream: null,
   micTimer: null,
+  micStopTimer: null,       // handle for the 12s auto-stop timeout (must be cleared on manual stop/reset)
+  micAbort: null,           // AbortController for the in-flight /api/recognize request, so Cancel can abort it
+  micGen: 0,                // bumped by resetMic(); lets an in-flight attempt detect it has been superseded
+  micAudioCtx: null,        // AudioContext backing the live level meter; must be closed in resetMic (Chrome caps ~6 concurrent)
+  micLevelTimer: null,      // handle for the RMS level-meter sampling interval
 
   // ── Recognized Item ──
   recognizedItem: null,

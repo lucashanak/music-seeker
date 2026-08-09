@@ -77,7 +77,6 @@ counts are per-user. See [Per-user Navidrome accounts](architecture.md#per-user-
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LASTFM_API_KEY` | — | Last.fm API key (for Discover tab) |
-| `ACOUSTID_API_KEY` | — | AcoustID API key (recognition fallback) |
 | `DLNA_SERVER_URL` | auto-detected | Server URL for DLNA metadata |
 | `DLNA_RENDERER_URL` | — | Manual DLNA renderer description URL |
 | `PODCAST_SYNC_HOURS` | `6` | Auto-sync interval for podcast subscriptions |

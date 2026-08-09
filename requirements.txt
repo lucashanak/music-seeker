@@ -3,7 +3,6 @@ uvicorn>=0.42,<1.0
 httpx>=0.28,<1.0
 shazamio>=0.8,<1.0
 python-multipart>=0.0.22
-pyacoustid>=1.3,<2.0
 # yt-dlp installed separately in the Dockerfile from the NIGHTLY channel (see Dockerfile)
 ytmusicapi>=1.11,<2.0
 defusedxml>=0.7,<1.0

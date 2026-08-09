@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -8,6 +10,15 @@ from app.services import spotify
 
 
 def create_app() -> FastAPI:
+    # Root logger stays at WARNING: the production host runs an uncapped docker
+    # json-file log driver on a small (63GB) disk that has already caused an outage,
+    # so switching on logger.info globally would light up every module (bpm.py,
+    # radio.py, spotify.py, search_providers.py, ...) at once. Recognition is a rare,
+    # user-initiated action, so only its logger is raised to INFO — bounded, cheap
+    # instrumentation without that blast radius.
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.getLogger("app.services.recognize").setLevel(logging.INFO)
+
     app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
     # Include routers
