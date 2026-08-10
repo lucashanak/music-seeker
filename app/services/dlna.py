@@ -108,10 +108,13 @@ async def start_discovery():
     from app.services import settings as app_settings
     manual_url = app_settings._settings.get("dlna_renderer_url", "")
     if manual_url:
-        # Non-blocking: add renderer in background
+        # Non-blocking: add the configured renderer immediately so it's usable before
+        # the first background sweep completes.
         asyncio.create_task(_add_manual_renderer(manual_url))
-    else:
-        _listener_task = asyncio.create_task(_run_discovery())
+    # Always run the periodic LAN scan so renderers appear WITHOUT the user pressing
+    # "Scan" first. (SSDP multicast can't cross the Docker bridge network — scan_devices
+    # probes the LAN over unicast HTTP instead.)
+    _listener_task = asyncio.create_task(_run_discovery())
     logger.info("DLNA discovery started")
 
 
@@ -137,37 +140,25 @@ async def _add_manual_renderer(url: str):
 
 
 async def _run_discovery():
+    """Keep the renderer list warm with a periodic LAN HTTP scan, so casting works
+    without the user pressing "Scan" first.
+
+    Replaces the old SSDP `async_search` loop, which (a) never worked from the Docker
+    bridge network (SSDP multicast doesn't cross it) and (b) broke outright on
+    async-upnp-client 0.47 — `async_search` now requires an `async_callback` first arg
+    and returns None, so the old `devices_found = await async_search(...)` raised
+    `missing 1 required positional argument` every cycle. scan_devices() does the
+    actual probing (fast two-phase sweep) and populates `_devices`."""
     try:
+        await asyncio.sleep(5)  # let the app finish booting before the first sweep
         while True:
             try:
-                factory = await _get_factory()
-                if not factory:
-                    break
-                from async_upnp_client.search import async_search
-                devices_found = await async_search(
-                    search_target="urn:schemas-upnp-org:device:MediaRenderer:1",
-                    timeout=10,
-                )
-                for entry in devices_found:
-                    location = entry.get("location", "")
-                    if not location or location in _devices:
-                        continue
-                    try:
-                        device = await factory.async_create_device(location)
-                        _devices[location] = {
-                            "name": device.friendly_name or location,
-                            "location": location,
-                            "udn": device.udn or location,
-                            "ip": location.split("//")[1].split(":")[0] if "//" in location else "",
-                            "upnp_device": device,
-                        }
-                    except Exception:
-                        pass
+                await scan_devices()
                 if _devices:
                     logger.info(f"DLNA: {len(_devices)} renderer(s): {[d['name'] for d in _devices.values()]}")
             except Exception as e:
-                logger.warning(f"DLNA discovery error: {e}")
-            await asyncio.sleep(30)
+                logger.warning(f"DLNA discovery scan error: {e}")
+            await asyncio.sleep(120)
     except asyncio.CancelledError:
         pass
 

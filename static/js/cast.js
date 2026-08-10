@@ -14,6 +14,21 @@ import { apiJson } from './api.js';
 let _ctx = { getAudioEl: () => null, nextTrack: () => {} };
 export function initCast(ctx) { _ctx = { ..._ctx, ...ctx }; }
 
+// Fetch known renderers; if none are known yet (cold start / no prior scan), kick a
+// one-shot LAN scan so casting works without the user opening Settings → Scan first.
+// The backend also runs a periodic background scan, so this is usually a no-op.
+async function _getDevicesOrScan() {
+  const data = await apiJson('/api/dlna/devices');
+  let devices = data.devices || [];
+  if (!devices.length) {
+    try {
+      const scan = await apiJson('/api/dlna/scan', { method: 'POST' });
+      devices = scan.devices || [];
+    } catch { /* fall through with empty list */ }
+  }
+  return devices;
+}
+
 // ── Shared flags ──
 // Set by the ENGINE's loadAndPlay/nextTrack/prevTrack cast branches and read by the
 // poll. Must be a shared object (live binding) so cross-module writes are visible here.
@@ -50,8 +65,7 @@ export function syncCastButtons(color) {
 // DLNA Only mode: auto-connect to a renderer and cast the current item.
 export async function autoCastAndPlay(item, cleanName, cleanArtist) {
   try {
-    const data = await apiJson('/api/dlna/devices');
-    const devices = data.devices || [];
+    const devices = await _getDevicesOrScan();
     if (!devices.length) { showToast('No DLNA devices found. Configure in Settings.'); return; }
     const savedUrl = store.deviceDlnaRendererUrl || store.appSettings.dlna_renderer_url || '';
     const device = (savedUrl && devices.find(d => d.location === savedUrl)) || devices[0];
@@ -105,8 +119,8 @@ async function handleCastClick() {
     return;
   }
   try {
-    const data = await apiJson('/api/dlna/devices');
-    const devices = data.devices || [];
+    showToast('Searching for cast devices…');
+    const devices = await _getDevicesOrScan();
     if (!devices.length) { showToast('No DLNA devices found. Configure in Settings.'); return; }
     if (devices.length === 1) {
       castToDevice(devices[0]);
