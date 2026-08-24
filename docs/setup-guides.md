@@ -71,6 +71,27 @@ docker compose up -d slskd
 
 Go to Settings → Library & Downloads and paste your slskd API key.
 
+With the bundled compose layout, slskd writes completed files to `/music/.slskd-downloads`
+inside both containers (same host volume). No extra env var is required.
+
+### External slskd
+
+If slskd runs outside the MusicSeeker compose stack, both apps must still see the same
+completed downloads on disk — container paths may differ. Point MusicSeeker at its local
+mount of that directory:
+
+```yaml
+music-seeker:
+  environment:
+    SLSKD_DOWNLOAD_DIR: /downloads
+  volumes:
+    - /host/music:/music
+    - /host/slskd-downloads:/downloads
+```
+
+Set `SLSKD_URL` to the external slskd API (e.g. `http://slskd-host:5030`) and keep
+`SLSKD_API_KEY` in sync with slskd's config.
+
 ## Navidrome
 
 Navidrome is included in docker-compose for library detection and playlist management.
