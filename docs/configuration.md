@@ -51,6 +51,7 @@ counts are per-user. See [Per-user Navidrome accounts](architecture.md#per-user-
 |----------|---------|-------------|
 | `SLSKD_URL` | `http://slskd:5030` | slskd REST API endpoint |
 | `SLSKD_API_KEY` | — | slskd API key |
+| `SLSKD_DOWNLOAD_DIR` | `{MUSIC_DIR}/.slskd-downloads` | Path **inside the MusicSeeker container** where completed slskd downloads are found (filesystem, not API — distinct from `SLSKD_URL`) |
 
 ### Lidarr
 

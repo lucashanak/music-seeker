@@ -10,6 +10,7 @@ services:
     environment:
       - NAVIDROME_URL=http://navidrome:4533
       - SLSKD_URL=http://slskd:5030
+      # SLSKD_DOWNLOAD_DIR defaults to /music/.slskd-downloads (bundled slskd layout)
     volumes:
       - ${MUSIC_DIR:-./music}:/music
       - ./data:/app/data
