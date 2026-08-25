@@ -2,16 +2,60 @@
 
 import asyncio
 import logging
+import math
+import os
 import random
 
 from app.services import bpm as bpm_service
+from app.services import cooccur
 from app.services import lastfm
 from app.services import library
 from app.services import search_providers
 from app.services import spotify
+from app.services import tagvec
 from app.services import settings as app_settings
 
 logger = logging.getLogger(__name__)
+
+# ── Track-level tag-vector scoring (see app/services/tagvec.py) ──────
+# Replaces the artist-level integer tag overlap with IDF-weighted cosine
+# similarity over per-TRACK tags. Off by default until the eval harness
+# (test_reco_eval.py) shows it beats the artist-overlap baseline on recall.
+TAGVEC_ENABLED = os.environ.get("RECO_TAG_VECTORS", "0") == "1"
+# Cosine is 0..1; the artist-overlap term it replaces contributed roughly
+# 1.5-4.5 in practice (1.5 per shared tag), so this keeps the term's influence
+# on the same scale as the other signals.
+TAGVEC_WEIGHT = 6.0
+# Tag vectors cost one Last.fm call per uncached track, so a request fetches
+# only the most promising candidates and warms the rest in the background.
+TAGVEC_CANDIDATE_BUDGET = 40
+# Tracks sampled from the queue/playlist to build the profile centroid.
+TAGVEC_PROFILE_BUDGET = 30
+
+# ── Playlist co-occurrence recall (see app/services/cooccur.py) ──────
+# The other arms together yield a pool of ~80 candidates per request, ~3% of
+# which belong to the playlist the seeds came from. Mining public playlists for
+# the same scene measured 13-17% recall on the same ground truth. Flagged so
+# test_reco_eval.py can A/B it.
+COOCCUR_ENABLED = os.environ.get("RECO_COOCCUR", "0") == "1"
+# co_count is a small integer (a track in 5 of 30 mined playlists is strong
+# evidence), so it is scored on a log scale to keep one very popular track from
+# dominating a whole page of results.
+# Tuned on the eval harness with a frozen candidate pool (test_reco_eval.py):
+# 0.3 and 0.6 tie at 12 hits@50 against a baseline of 8, and everything from 1.0
+# up is worse. co_count largely tracks how popular a track is WITHIN the scene,
+# so a high weight fills the page with the scene's greatest hits instead of
+# tracks that fit the specific playlist — 0.3 is the low end of the plateau.
+COOCCUR_WEIGHT = 0.3
+COOCCUR_LIMIT = 400
+
+# Max candidates kept per artist in the final diversify pass. Was hardcoded to 2;
+# hoisted because it interacts with pool size — with a large pool, capping at 2
+# discards genuine playlist members in favour of higher-scored tracks by the same
+# artist. Measured hits@20 by cap: 2->7, 3->8, 4->9, 6->10. 6 scored best but
+# lets one artist take 12% of a 50-track page; 4 takes most of the gain while
+# keeping the output varied, which the recall metric cannot see.
+DIVERSIFY_MAX_PER_ARTIST = 4
 
 
 def _dedup(tracks: list[dict]) -> list[dict]:
@@ -184,6 +228,106 @@ def _hash_playlist(tracks: list[dict]) -> str:
     return h.hexdigest()
 
 
+# ── Tag-vector prefetch ─────────────────────────────────────────────
+# Strong references to in-flight background warm tasks: asyncio only holds a
+# weak reference, so a task nobody keeps can be garbage-collected mid-flight.
+_warm_tasks: set[asyncio.Task] = set()
+
+
+def _warm_in_background(items: list[tuple[tuple[str, str], str, str]]) -> None:
+    """Fill tag vectors for candidates this request won't score with them.
+
+    Nothing awaits this: the point is that the NEXT request finds them cached.
+    Capped at one in-flight warm task so a burst of requests can't pile up
+    thousands of pending Last.fm calls (tagvec's own semaphore bounds
+    concurrency, but not the queue depth behind it).
+    """
+    if not items or _warm_tasks:
+        return
+    task = asyncio.create_task(tagvec.prefetch(items))
+    _warm_tasks.add(task)
+    task.add_done_callback(_warm_tasks.discard)
+
+
+def _prefetch_candidate_vectors(
+    candidates: dict[tuple[str, str], dict],
+    exclude_keys: set[tuple[str, str]],
+    budget: int = TAGVEC_CANDIDATE_BUDGET,
+) -> None:
+    """Warm tag vectors for the most promising candidates — off the request path.
+
+    Ranked by the two signals already known without scoring, source agreement
+    and Last.fm match, so the fetch budget goes to candidates that could
+    plausibly reach the output. Ties keep dict insertion order, so warming order
+    is deterministic.
+
+    Nothing is awaited. Fetching even the top 40 synchronously produced an
+    intermittent ~30s response: the candidate pool shifts every request (Deezer's
+    artist radio is randomized server-side), so most requests meet some uncached
+    candidates and would pay up to 40 Last.fm round trips before answering.
+    Measured over four identical requests: 2.1s, 3.0s, 31.0s, 3.2s. Scoring
+    instead uses whatever is already cached — the term contributes 0 for the
+    rest, exactly as it does when Last.fm is unavailable — and the cache
+    converges over a few requests.
+    """
+    ranked = [
+        (k, e) for k, e in candidates.items()
+        if k not in exclude_keys and e["sources"]
+    ]
+    ranked.sort(key=lambda kv: (-len(kv[1]["sources"]), -kv[1]["match"]))
+    items = [
+        (k, e["track"].get("name") or "", e["track"].get("artist") or "")
+        for k, e in ranked
+    ]
+    # Budget still matters: it bounds what one background pass will fetch.
+    _warm_in_background(items[:budget])
+
+
+
+def _spread_artists(tracks: list[dict]) -> list[dict]:
+    """Reorder so the same artist is not adjacent — without changing the set.
+
+    Selection stays strictly score-ordered because recall depends on it: picking
+    round-robin across artists instead (one each, then a second each) HALVED
+    recall in the eval harness, from 0.071 to 0.035, because curated playlists
+    cluster several tracks per artist and breadth-first selection drops exactly
+    those. So this reorders only within the already-chosen list, which leaves the
+    returned set — and therefore recall@limit — untouched.
+    """
+    out: list[dict] = []
+    pending = list(tracks)
+    while pending:
+        prev = _norm_artist(out[-1].get("artist") or "") if out else None
+        idx = 0
+        for i, t in enumerate(pending):
+            if _norm_artist(t.get("artist") or "") != prev:
+                idx = i
+                break
+        # If every remaining track is by `prev`, idx stays 0 and we emit anyway
+        # rather than looping forever.
+        out.append(pending.pop(idx))
+    return out
+
+
+def _diversify(scored: list[tuple[float, dict]], limit: int) -> list[dict]:
+    """Cap tracks per artist, then spread them so they do not sit adjacent.
+
+    The cap alone left up to DIVERSIFY_MAX_PER_ARTIST tracks by one artist at the
+    top of the page — in production, 4 of the top 6 recommendations were the same
+    artist — because it drops overflow without reordering.
+    """
+    per_artist: dict[str, int] = {}
+    picked: list[dict] = []
+    for _s, t in scored:
+        a = _norm_artist(t.get("artist") or "")
+        if per_artist.get(a, 0) >= DIVERSIFY_MAX_PER_ARTIST:
+            continue
+        per_artist[a] = per_artist.get(a, 0) + 1
+        picked.append(t)
+        if len(picked) >= limit:
+            break
+    return _spread_artists(picked)
+
 # Profile cache: playlist_hash -> (timestamp, profile)
 _profile_cache: dict[str, tuple[float, dict]] = {}
 _profile_locks: dict[str, asyncio.Lock] = {}
@@ -265,11 +409,25 @@ async def _build_profile_uncached(tracks: list[dict], key: str, now: float) -> d
 
     top_tags = sorted(tags.items(), key=lambda kv: -kv[1])[:5]
 
+    # Track-level tag centroid. Bounded to the first N tracks so a 200-track
+    # queue can't turn a cold cache into 200 serial-ish Last.fm calls; the rest
+    # of the queue's tracks get warmed as candidates on later requests.
+    tag_vector: dict[str, float] = {}
+    if TAGVEC_ENABLED:
+        head = tracks[:TAGVEC_PROFILE_BUDGET]
+        keys = [_norm_key(t) for t in head]
+        await tagvec.prefetch([
+            (k, t.get("name") or "", t.get("artist") or "")
+            for k, t in zip(keys, head)
+        ])
+        tag_vector = tagvec.centroid(keys)
+
     profile = {
         "artist_weights": artist_weights,
         "top_artists": top_artists,
         "tags": tags,
         "top_tags": top_tags,
+        "tag_vector": tag_vector,
     }
     _profile_cache[key] = (now, profile)
     _prune_profile_cache(now)
@@ -295,7 +453,7 @@ async def _gather_taste_tracks(user: dict | None) -> list[dict]:
     # (a) Spotify: liked + me/top/tracks (needs per-user OAuth or global token)
     creds = None
     have_spotify = False
-    if user is not None and spotify.SPOTIFY_CLIENT_ID:
+    if user is not None and spotify.SPOTIFY_CLIENT_ID and spotify.api_available():
         try:
             from app.dependencies import _user_spotify_creds
             creds = _user_spotify_creds(user)
@@ -403,18 +561,42 @@ def _merge_profiles(queue_profile: dict, taste_profile: dict | None,
     tags = _blend(queue_profile["tags"], taste_profile["tags"], taste_weight)
     top_tags = sorted(tags.items(), key=lambda kv: -kv[1])[:5]
 
+    # Same blend on the track-tag centroid. Skipping it here would silently
+    # drop the vector from the merged profile and disable tag-vector scoring
+    # for exactly the users who have a taste profile.
+    tag_vector = tagvec.blend(
+        [queue_profile.get("tag_vector") or {}, taste_profile.get("tag_vector") or {}],
+        [1.0, taste_weight],
+    )
+
     return {
         "artist_weights": artist_weights,
         "top_artists": top_artists,
         "tags": tags,
         "top_tags": top_tags,
+        "tag_vector": tag_vector,
     }
 
 
-def _weighted_sample_seeds(tracks: list[dict], profile: dict, k: int = 5) -> list[dict]:
-    """Pick seeds weighted by artist frequency, with light shuffling."""
+def _weighted_sample_seeds(tracks: list[dict], profile: dict, k: int = 5,
+                           rng: random.Random | None = None) -> list[dict]:
+    """Pick seeds weighted by artist frequency, with light shuffling.
+
+    `rng` must be a seeded random.Random, not the global `random` module. The
+    shuffling is deliberate — endless radio wants a different draw as its
+    re-seed window slides — but drawing from the global RNG made the whole
+    engine non-reproducible: two identical requests returned different
+    recommendations, and the eval harness measured a different pool on every
+    run, which made small A/B deltas indistinguishable from noise (a per-artist
+    cap sweep produced 7/10/6/7 hits, non-monotonic where it cannot be).
+    Callers derive the seed from the input, so variety comes from the input
+    changing rather than from ambient randomness — the same discipline as
+    djmix.js's salted djb2 jitter.
+    """
     if not tracks:
         return []
+    if rng is None:
+        rng = random.Random(_hash_playlist(tracks))
     weights = []
     for t in tracks:
         a = _norm_artist(t.get("artist") or "")
@@ -428,7 +610,7 @@ def _weighted_sample_seeds(tracks: list[dict], profile: dict, k: int = 5) -> lis
         total_w = sum(w for _, w in pool)
         if total_w <= 0:
             break
-        r = random.uniform(0, total_w)
+        r = rng.uniform(0, total_w)
         acc = 0.0
         idx = len(pool) - 1  # fallback to last (avoids index-0 bias on tiny rounding)
         for i, (_, w) in enumerate(pool):
@@ -441,7 +623,7 @@ def _weighted_sample_seeds(tracks: list[dict], profile: dict, k: int = 5) -> lis
         # Prefer artist diversity in seeds
         if a in seen_artists and len(pool) > 0:
             # 50% chance to skip a duplicate artist
-            if random.random() < 0.5:
+            if rng.random() < 0.5:
                 continue
         seen_artists.add(a)
         picked.append(track)
@@ -729,9 +911,25 @@ async def get_track_radio(
             logger.warning("Track radio: navidrome arm failed: %s", e)
             return []
 
-    arm_sources = ["similar", "tag", "deezer", "navidrome"]
+    async def _arm_cooccur() -> list[dict]:
+        # Anchored on the configured genres only: the arms run concurrently, so
+        # the seed's own tags (gathered by _arm_seed_tags) are not available
+        # here yet — and artist-name anchoring measured far worse than scene
+        # anchoring anyway (Deezer playlist search matches titles, not contents).
+        if not COOCCUR_ENABLED:
+            return []
+        try:
+            genres = cooccur.configured_genres()
+            cooccur.warm_in_background(genres)
+            return await cooccur.mine(genres, limit=COOCCUR_LIMIT, allow_network=False)
+        except Exception as e:
+            logger.warning("Track radio: cooccur arm failed: %s", e)
+            return []
+
+    arm_sources = ["similar", "tag", "deezer", "navidrome", "cooccur"]
     results = await asyncio.gather(
         _arm_similar(), _arm_seed_tags(), _arm_deezer(), _arm_navidrome(),
+        _arm_cooccur(),
         return_exceptions=True,
     )
 
@@ -749,12 +947,17 @@ async def get_track_radio(
                 continue
             entry = candidates.get(k)
             if entry is None:
-                entry = {"track": t, "sources": set(), "match": 0.0}
+                entry = {"track": t, "sources": set(), "match": 0.0, "co_count": 0}
                 candidates[k] = entry
             entry["sources"].add(src)
             m = float(t.get("match") or 0)
             if m > entry["match"]:
                 entry["match"] = m
+            # co_count rides on the track dict from the cooccur arm; keep it on
+            # the entry so it survives a track first seen via another arm.
+            co = int(t.get("co_count") or 0)
+            if co > entry.get("co_count", 0):
+                entry["co_count"] = co
 
     exclude_keys = {_norm_key(t) for t in (exclude or [])}
 
@@ -787,9 +990,20 @@ async def get_track_radio(
 
     seed_tags_lc = {s.lower().strip() for s in seed_tags if s}
 
+    # ── Tag vectors: seed + top candidates (replaces seed-tag overlap) ──
+    seed_key = _norm_key({"name": seed_name, "artist": seed_artist})
+    seed_vec: dict[str, float] = {}
+    if TAGVEC_ENABLED:
+        await tagvec.prefetch([(seed_key, seed_name, seed_artist)])
+        seed_vec = tagvec.vector(seed_key)
+        _prefetch_candidate_vectors(candidates, exclude_keys)
+
     # ── Pre-fetch distinct candidate-artist tags ONCE ──────────────
+    # Under TAGVEC_ENABLED these are still needed for the vibe steering below
+    # (which scores against artist-level CALM_TAGS/ENERGY_TAGS), but not for
+    # plain similarity — so with no vibe requested the calls are skipped.
     artist_tags: dict[str, set[str]] = {}
-    if lastfm.LASTFM_API_KEY:
+    if lastfm.LASTFM_API_KEY and (vibe or not TAGVEC_ENABLED):
         distinct_artists: set[str] = set()
         for key, entry in candidates.items():
             if key in exclude_keys or not entry["sources"]:
@@ -826,7 +1040,14 @@ async def get_track_radio(
         score = 0.0
         score += 3.5 * entry["match"]
         score += 2.0 * len(entry["sources"])
-        if seed_tags_lc and cand_tags:
+        if COOCCUR_ENABLED and entry.get("co_count"):
+            score += COOCCUR_WEIGHT * math.log(1 + entry["co_count"])
+        # Proximity to the SEED's own tags — per-track cosine under
+        # TAGVEC_ENABLED, legacy artist-tag overlap otherwise.
+        if TAGVEC_ENABLED:
+            if seed_vec:
+                score += TAGVEC_WEIGHT * tagvec.cosine(seed_vec, tagvec.vector(key))
+        elif seed_tags_lc and cand_tags:
             score += 1.5 * len(cand_tags & seed_tags_lc)
         if "navidrome" in entry["sources"]:
             score += 1.5
@@ -870,19 +1091,7 @@ async def get_track_radio(
 
     scored.sort(key=lambda x: -x[0])
 
-    # ── Diversify: max 2 per artist ────────────────────────────────
-    per_artist: dict[str, int] = {}
-    final: list[dict] = []
-    for _s, t in scored:
-        a = _norm_artist(t.get("artist") or "")
-        if per_artist.get(a, 0) >= 2:
-            continue
-        per_artist[a] = per_artist.get(a, 0) + 1
-        final.append(t)
-        if len(final) >= limit:
-            break
-
-    return final
+    return _diversify(scored, limit)
 
 
 async def get_playlist_recommendations(
@@ -894,6 +1103,8 @@ async def get_playlist_recommendations(
     accepted: list[dict] | None = None,
     user: dict | None = None,
     tempo_coherent: bool = False,
+    variation: int = 0,
+    anchors: list[str] | None = None,
 ) -> list[dict]:
     """Profile-driven recommendations.
 
@@ -912,7 +1123,11 @@ async def get_playlist_recommendations(
     queue_profile = await _build_profile(tracks)
     taste_profile = await _build_taste_profile(user)
     profile = _merge_profiles(queue_profile, taste_profile)
-    seeds = _weighted_sample_seeds(tracks, profile, k=5)
+    # Seeded from the input, so the same request is reproducible. `variation`
+    # lets a caller ask for a different draw from the SAME input (endless radio
+    # topping up without sliding its window yet).
+    seed_rng = random.Random(f"{_hash_playlist(tracks)}:{variation}")
+    seeds = _weighted_sample_seeds(tracks, profile, k=5, rng=seed_rng)
 
     playlist_artists = set(profile["artist_weights"].keys())
     skipped_artists = {_norm_artist(t.get("artist") or "") for t in (skipped or [])}
@@ -978,6 +1193,25 @@ async def get_playlist_recommendations(
             ))
             source_map.append("navidrome")
 
+    # G) Playlist co-occurrence — what other people group with this scene.
+    # Anchored on user-stated genres first, profile tags second: the scene is not
+    # inferable from the tracks themselves (see cooccur.py's module docstring).
+    if COOCCUR_ENABLED:
+        # Caller-supplied anchors first (a playlist name describes its scene far
+        # better than a tag centroid does), then the user's configured genres,
+        # and profile tags only as a last resort — for a playlist defined by how
+        # its tracks are USED rather than what genre they are, the tag centroid
+        # is generic pop and mines nothing useful.
+        mine_anchors = list(anchors or []) + cooccur.configured_genres()
+        if not mine_anchors:
+            mine_anchors = [t for t, _ in profile["top_tags"][:3]]
+        # Cache-only on the request path, mining off it: a cold anchor otherwise
+        # adds up to ~9s to the response, and the arm's value does not depend on
+        # being available the very first time it is asked for.
+        tasks.append(cooccur.mine(mine_anchors, limit=COOCCUR_LIMIT, allow_network=False))
+        source_map.append("cooccur")
+        cooccur.warm_in_background(mine_anchors)
+
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     # ── Aggregate candidates with source tracking ──────────────────
@@ -992,12 +1226,17 @@ async def get_playlist_recommendations(
                 continue
             entry = candidates.get(k)
             if entry is None:
-                entry = {"track": t, "sources": set(), "match": 0.0}
+                entry = {"track": t, "sources": set(), "match": 0.0, "co_count": 0}
                 candidates[k] = entry
             entry["sources"].add(src)
             m = float(t.get("match") or 0)
             if m > entry["match"]:
                 entry["match"] = m
+            # co_count rides on the track dict from the cooccur arm; keep it on
+            # the entry so it survives a track first seen via another arm.
+            co = int(t.get("co_count") or 0)
+            if co > entry.get("co_count", 0):
+                entry["co_count"] = co
 
     # ── Exclude already-in-playlist + skipped ──────────────────────
     exclude_keys = {_norm_key(t) for t in (exclude or [])}
@@ -1006,11 +1245,18 @@ async def get_playlist_recommendations(
     # ── Tempo context for DJ-style coherence (gated by tempo_coherent) ──
     seed_bpm, seed_camelot = (_seed_tempo_context(seeds) if tempo_coherent else (None, None))
 
+    # ── Tag vectors for the top candidates (replaces artist-tag overlap) ──
+    profile_vec: dict[str, float] = profile.get("tag_vector") or {}
+    if TAGVEC_ENABLED:
+        _prefetch_candidate_vectors(candidates, exclude_keys)
+
     # ── Pre-fetch candidate artist tags ONCE per distinct artist ────
     # (avoids an N+1 Last.fm lookup inside scoring; one call per distinct
     # non-excluded candidate artist that has >=1 source, run concurrently)
+    # Skipped entirely under TAGVEC_ENABLED: the cosine term supersedes this
+    # signal, so the per-artist calls would be pure cost.
     artist_tags: dict[str, set[str]] = {}
-    if top_tag_names and lastfm.LASTFM_API_KEY:
+    if top_tag_names and lastfm.LASTFM_API_KEY and not TAGVEC_ENABLED:
         distinct_artists: set[str] = set()
         for key, entry in candidates.items():
             if key in exclude_keys or not entry["sources"]:
@@ -1038,10 +1284,22 @@ async def get_playlist_recommendations(
         score = 0.0
         # Multi-source agreement (strongest signal)
         score += len(entry["sources"]) * 2.0
+        # Playlist co-occurrence: how many mined playlists group this track with
+        # the scene. Log-scaled — a track in 20 playlists is stronger evidence
+        # than one in 5, but not four times stronger, and a globally popular
+        # track must not sweep the whole page.
+        if COOCCUR_ENABLED and entry.get("co_count"):
+            score += COOCCUR_WEIGHT * math.log(1 + entry["co_count"])
         # Last.fm direct similarity score
         score += entry["match"] * 3.0
-        # Tag overlap with playlist centroid (uses pre-fetched artist tags)
-        if top_tag_names and lastfm.LASTFM_API_KEY and len(entry["sources"]) >= 1:
+        # Similarity to the playlist's tag centroid. Under TAGVEC_ENABLED this is
+        # IDF-weighted cosine over per-TRACK tags; otherwise the legacy integer
+        # overlap of per-ARTIST tags. Both contribute 0 when tags are unknown, so
+        # a cold cache or a missing Last.fm key degrades instead of misranking.
+        if TAGVEC_ENABLED:
+            if profile_vec:
+                score += TAGVEC_WEIGHT * tagvec.cosine(profile_vec, tagvec.vector(key))
+        elif top_tag_names and lastfm.LASTFM_API_KEY and len(entry["sources"]) >= 1:
             cand_tag_set = artist_tags.get(artist_n, set())
             overlap = len(cand_tag_set & top_tag_names)
             score += overlap * 1.5
@@ -1071,16 +1329,4 @@ async def get_playlist_recommendations(
 
     scored.sort(key=lambda x: -x[0])
 
-    # ── Diversify: max 2 per artist ────────────────────────────────
-    per_artist: dict[str, int] = {}
-    final: list[dict] = []
-    for _s, t in scored:
-        a = _norm_artist(t.get("artist") or "")
-        if per_artist.get(a, 0) >= 2:
-            continue
-        per_artist[a] = per_artist.get(a, 0) + 1
-        final.append(t)
-        if len(final) >= limit:
-            break
-
-    return final
+    return _diversify(scored, limit)

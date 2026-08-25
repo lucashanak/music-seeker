@@ -49,6 +49,7 @@ class SettingsUpdate(BaseModel):
     slskd_url: str | None = None
     slskd_api_key: str | None = None
     recommendation_source: str | None = None
+    discovery_genres: str | None = None
     spotify_refresh_token: str | None = None
     dlna_renderer_url: str | None = None
 
@@ -138,6 +139,11 @@ class RecommendationRequest(BaseModel):
     skipped: list[dict] = []
     accepted: list[dict] = []
     tempo_coherent: bool = False
+    # Scene anchors for co-occurrence mining — typically the source playlist's
+    # name. Measured to matter more than any scoring change: a playlist whose
+    # name names its scene had 49 of 53 held-out members reachable, one whose
+    # name does not had a fraction of that.
+    anchors: list[str] = Field(default_factory=list, max_length=8)
 
 
 class LikeRequest(BaseModel):

@@ -18,6 +18,10 @@ _defaults = {
     "slskd_url": os.environ.get("SLSKD_URL", "http://slskd:5030"),
     "slskd_api_key": os.environ.get("SLSKD_API_KEY", ""),
     "recommendation_source": os.environ.get("RECOMMENDATION_SOURCE", "combined"),
+    # Scene anchors for playlist co-occurrence mining (comma separated, e.g.
+    # "brazilian zouk, kizomba"). User-supplied on purpose: the scene is not
+    # inferable from track metadata — see app/services/cooccur.py.
+    "discovery_genres": os.environ.get("DISCOVERY_GENRES", ""),
     "spotify_refresh_token": "",
     "dlna_renderer_url": os.environ.get("DLNA_RENDERER_URL", ""),
 }

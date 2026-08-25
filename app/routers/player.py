@@ -247,6 +247,6 @@ async def get_playlist_recommendations(
     recs = await radio.get_playlist_recommendations(
         req.tracks, source, req.limit,
         exclude=req.tracks, skipped=req.skipped, accepted=req.accepted,
-        user=user, tempo_coherent=req.tempo_coherent,
+        user=user, tempo_coherent=req.tempo_coherent, anchors=req.anchors,
     )
     return {"tracks": recs}

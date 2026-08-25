@@ -20,6 +20,20 @@ let _playedWindow = [];       // recently played recs (sliding window of {name, 
 let _driftSteps = 0;          // how far we've drifted from the original seed
 let _toppingUp = false;       // guard against concurrent top-ups
 
+// ── Scene anchor for the co-occurrence recall arm ──
+// The backend mines public playlists named after a scene, and the single thing
+// that determines whether that works is the anchor. A playlist name is the best
+// anchor available client-side: it is what the user themselves called this music.
+// Temp and system contexts name no scene, so they contribute nothing.
+const _ANCHOR_SKIP = new Set(['up next', 'radio']);
+
+function _queueAnchors() {
+  const name = ((store.playlistMode && store.playlistMode.name) || '').trim();
+  if (!name || name.startsWith('__')) return [];
+  if (_ANCHOR_SKIP.has(name.toLowerCase())) return [];
+  return [name];
+}
+
 function _recordPlayedRec(track) {
   if (!track || !track.name) return;
   _playedWindow.push({ name: track.name, artist: track.artist || '', album: track.album || '', image: track.image || '' });
@@ -136,6 +150,7 @@ async function loadRecs() {
         limit: 20,
         skipped: fb.skipped.slice(-30),
         accepted: fb.accepted.slice(-30),
+        anchors: _queueAnchors(),
       },
     });
     recsCache = data.tracks || [];
@@ -186,6 +201,7 @@ async function _maybeTopUp() {
         limit: 15,
         skipped: fb.skipped.slice(-30),
         accepted: fb.accepted.slice(-30),
+        anchors: _queueAnchors(),
       },
     });
     const fresh = data.tracks || [];
