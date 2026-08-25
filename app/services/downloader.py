@@ -398,6 +398,19 @@ async def _slskd_api(method: str, path: str, json_data: dict = None) -> dict | l
         return resp.json()
 
 
+def _slskd_download_dir() -> str:
+    return os.environ.get("SLSKD_DOWNLOAD_DIR") or f"{MUSIC_DIR}/.slskd-downloads"
+
+
+def _find_completed_slskd_file(basename: str, download_dir: str | None = None) -> str | None:
+    """Walk download_dir (default: configured slskd completed-download root) for basename."""
+    root = download_dir or _slskd_download_dir()
+    for root_dir, _, files in os.walk(root):
+        if basename in files:
+            return os.path.join(root_dir, basename)
+    return None
+
+
 def _pick_best_slskd_file(responses: list, preferred_format: str = "flac") -> tuple[str, dict] | None:
     """Pick the best file from slskd search responses. Returns (username, file_info) or None."""
     candidates = []
@@ -487,14 +500,8 @@ async def _download_track_slskd(artist: str, title: str, album: str, username: s
                     dest_dir = f"{base}/{safe_artist}/{safe_album}"
                     os.makedirs(dest_dir, exist_ok=True)
                     # slskd saves to {downloads_dir}/{remote_dir}/{filename}
-                    # Find the file in slskd downloads directory
-                    slskd_dl_dir = f"{MUSIC_DIR}/.slskd-downloads"
                     basename = filename.rsplit("\\", 1)[-1] if "\\" in filename else os.path.basename(filename)
-                    found = None
-                    for root, _, files in os.walk(slskd_dl_dir):
-                        if basename in files:
-                            found = os.path.join(root, basename)
-                            break
+                    found = _find_completed_slskd_file(basename)
                     if found:
                         dest = os.path.join(dest_dir, f"{_sanitize(title)}.{basename.rsplit('.', 1)[-1]}")
                         shutil.move(found, dest)

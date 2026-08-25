@@ -8,7 +8,7 @@ soulseek:
 
 directories:
   incomplete: /music/.slskd-incomplete
-  downloads: /music/.slskd-downloads
+  downloads: /music/.slskd-downloads  # MusicSeeker must see this same completed dir (SLSKD_DOWNLOAD_DIR)
 
 web:
   authentication:
