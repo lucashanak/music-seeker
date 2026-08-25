@@ -27,6 +27,11 @@ let _activeLibTab = null;
 const _loadedLibTabs = new Set();
 
 function _spotifyHidden() {
+  // A known API outage hides the tab regardless of per-user OAuth: the 403 is
+  // app-level (expired Premium on the app owner's account), so a user's own
+  // refresh token does not rescue it. Only a *reported* outage counts — absent
+  // status means "no information", which must not hide anything.
+  if (store.spotifyStatus && store.spotifyStatus.available === false) return true;
   return !!(store.currentUser && store.currentUser.hide_spotify);
 }
 

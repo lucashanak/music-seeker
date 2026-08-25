@@ -55,8 +55,14 @@ def create_app() -> FastAPI:
             "search_provider": app_settings._settings.get("search_provider", "deezer"),
             "search_fallback": app_settings._settings.get("search_fallback", ""),
             "podcast_provider": app_settings._settings.get("podcast_provider", "itunes"),
-            "spotify_available": bool(spotify.SPOTIFY_CLIENT_ID and spotify.SPOTIFY_CLIENT_SECRET),
+            # Credentials being present is not the same as the API answering:
+            # an expired Premium subscription on the app owner's account 403s
+            # every endpoint. Report the health latch so the frontend greys the
+            # Spotify features out rather than showing them broken.
+            "spotify_available": bool(spotify.SPOTIFY_CLIENT_ID and spotify.SPOTIFY_CLIENT_SECRET
+                                      and spotify.api_available()),
             "spotify_user": bool(spotify._get_global_refresh_token()),
+            "spotify_status": spotify.api_status(),
         }
 
     # Static files

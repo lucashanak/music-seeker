@@ -7,6 +7,7 @@ export const store = {
   searchProvider: 'deezer',
   podcastProvider: 'itunes',
   spotifyAvailable: false,
+  spotifyStatus: null,
   spotifyUser: true,
 
   // ── Auth ──

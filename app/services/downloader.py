@@ -150,6 +150,27 @@ async def _resolve_tracks(job: Job) -> list[dict]:
         except Exception:
             pass
 
+    # Album whose URL-based resolution produced nothing — e.g. a Spotify album
+    # URL while the Spotify API is refusing requests. Find the same album on the
+    # configured search provider by title and expand it. Without this the
+    # title-parsing fallback below silently turns a whole album into ONE track
+    # named after the album.
+    if job.type == "album" and job.title:
+        try:
+            from app.services import search_providers as _sp
+            from app.services.settings import _settings
+            # Primary provider only, no fallback leg: search() does not report
+            # which provider answered, and an album id from one provider cannot
+            # be expanded by another.
+            provider = _settings.get("search_provider", "deezer")
+            hits = await _sp.search(job.title, "album", 1, provider=provider)
+            if hits and hits[0].get("id"):
+                album_tracks = await _sp.get_album_tracks(hits[0]["id"], provider=provider)
+                if album_tracks:
+                    return album_tracks
+        except Exception:
+            pass  # provider unavailable too — fall through to title parsing
+
     if " - " in job.title:
         artist, title = job.title.split(" - ", 1)
         return [{"name": title, "artist": artist, "album": ""}]

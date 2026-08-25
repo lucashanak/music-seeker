@@ -62,6 +62,23 @@ async def _favorites_release_check():
         await asyncio.sleep(RELEASE_CHECK_INTERVAL)
 
 
+async def _spotify_health_probe():
+    """One cheap call at startup so /api/version knows Spotify's real state.
+
+    The health latch in spotify.py only engages once a request has failed. Without
+    this probe the first page load after a restart reports Spotify as available,
+    shows the Spotify library tab, and the user has to click it and watch it fail
+    before a reload hides it. One request settles it up front instead.
+    """
+    if not spotify.SPOTIFY_CLIENT_ID or not spotify.SPOTIFY_CLIENT_SECRET:
+        return
+    try:
+        # Cheapest documented endpoint that still requires API access.
+        await spotify.spotify_get("browse/new-releases", {"limit": 1})
+    except Exception:
+        pass  # a failure has already set the latch; nothing else to do here
+
+
 async def startup():
     """Main startup function — called by app factory."""
     if not ADMIN_PASS:
@@ -71,6 +88,7 @@ async def startup():
         auth.init_admin(ADMIN_USER, ADMIN_PASS)
     asyncio.create_task(_podcast_auto_sync())
     asyncio.create_task(_favorites_release_check())
+    asyncio.create_task(_spotify_health_probe())
     # Start DLNA renderer discovery
     from app.services import dlna
     await dlna.start_discovery()

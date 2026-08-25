@@ -22,6 +22,9 @@ export async function checkVersion() {
     store.podcastProvider = d.podcast_provider || 'itunes';
     store.spotifyAvailable = d.spotify_available === true;
     store.spotifyUser = d.spotify_user !== false;
+    // Why Spotify is unavailable, when it is — credentials missing is a
+    // different situation from the API refusing every request.
+    store.spotifyStatus = d.spotify_status || null;
     const stored = localStorage.getItem('ms_version');
     if (stored && stored !== d.version) {
       // Reload to pick up new static assets, but KEEP the session token — the

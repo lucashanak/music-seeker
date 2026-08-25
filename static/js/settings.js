@@ -13,9 +13,14 @@ export async function loadSettings() {
     store.appSettings = data;
     // Show/hide Spotify option based on whether any creds exist
     const hasAnyCreds = store.spotifyAvailable || (store.currentUser && store.currentUser.has_spotify);
+    // Distinguish "never configured" from "configured but the API is refusing
+    // requests" — picking Spotify as a provider is wrong in both cases, but only
+    // the first is fixed by entering credentials.
+    const spDown = store.spotifyStatus && store.spotifyStatus.available === false;
+    const spSuffix = spDown ? ' (unavailable)' : ' (no creds)';
     $$('#settingSearchProvider option[value="spotify"], #settingSearchFallback option[value="spotify"], #settingPodcastProvider option[value="spotify"]').forEach(opt => {
-      opt.disabled = !hasAnyCreds;
-      if (!hasAnyCreds && opt.textContent.indexOf('no creds') === -1) opt.textContent += ' (no creds)';
+      opt.disabled = !hasAnyCreds || spDown;
+      if ((!hasAnyCreds || spDown) && opt.textContent.indexOf('(') === -1) opt.textContent += spSuffix;
     });
     $('#settingSearchProvider').value = data.search_provider || 'deezer';
     $('#settingSearchFallback').value = data.search_fallback || '';

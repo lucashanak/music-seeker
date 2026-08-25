@@ -123,7 +123,60 @@ async def get_user_token(creds: dict | None = None) -> str:
     return data["access_token"]
 
 
+class SpotifyUnavailable(RuntimeError):
+    """The Spotify API is refusing every request for an account-level reason.
+
+    Subclasses RuntimeError so the existing `except Exception` fallbacks around
+    every call site keep working unchanged — this only makes the failure fast
+    and named instead of slow and anonymous.
+    """
+
+
+# ── API health latch ────────────────────────────────────────────────
+# When the developer account's Premium subscription lapses, Spotify answers 403
+# "Active premium subscription required for the owner of the app" on EVERY
+# endpoint — search, track metadata, browse, the lot. The token endpoint still
+# issues tokens, so nothing upstream notices; each doomed call just costs a round
+# trip. That is not free: the taste profile alone fires two per recommendation
+# request, and _resolve_tracks fires one per download.
+#
+# So the first account-level 403 latches the API off for a while. The window is
+# short because the condition is externally recoverable — Spotify's own message
+# says a subscription change takes a few hours to propagate — so the latch must
+# expire and retry rather than require a restart.
+_API_DISABLED_TTL = 900  # 15 min
+_api_disabled_until = 0.0
+_api_disabled_reason = ""
+
+# 403s that are about the app/account, not about this particular request.
+_ACCOUNT_403_MARKERS = ("premium subscription", "subscription required")
+
+
+def api_available() -> bool:
+    """False while the account-level failure latch is held."""
+    return time.time() >= _api_disabled_until
+
+
+def api_status() -> dict:
+    """Health for the version endpoint and diagnostics."""
+    return {
+        "available": api_available(),
+        "reason": "" if api_available() else _api_disabled_reason,
+        "retry_in": max(0, int(_api_disabled_until - time.time())),
+    }
+
+
+def _latch_unavailable(reason: str) -> None:
+    global _api_disabled_until, _api_disabled_reason
+    if api_available():  # log the transition once, not once per call
+        logger.warning("Spotify API disabled for %ds: %s", _API_DISABLED_TTL, reason)
+    _api_disabled_until = time.time() + _API_DISABLED_TTL
+    _api_disabled_reason = reason
+
+
 async def spotify_get(endpoint: str, params: dict | None = None, user: bool = False, creds: dict | None = None) -> dict:
+    if not api_available():
+        raise SpotifyUnavailable(f"Spotify API unavailable: {_api_disabled_reason}")
     token = await (get_user_token(creds) if user else get_app_token(creds))
     async with httpx.AsyncClient() as client:
         resp = await client.get(
@@ -131,6 +184,11 @@ async def spotify_get(endpoint: str, params: dict | None = None, user: bool = Fa
             params=params,
             headers={"Authorization": f"Bearer {token}"},
         )
+        if resp.status_code == 403:
+            body = (resp.text or "")[:300]
+            if any(m in body.lower() for m in _ACCOUNT_403_MARKERS):
+                _latch_unavailable(body.strip())
+                raise SpotifyUnavailable(f"Spotify API unavailable: {body.strip()}")
         resp.raise_for_status()
         return resp.json()
 
