@@ -681,7 +681,7 @@ export async function editPerms(username) {
       <summary class="perm-section-title">Methods</summary>
       <div class="perm-section-body">
         <label class="perm-check" title="Stahuje audio z YouTube, metadata ze Spotify"><span>YouTube</span> <input type="checkbox" id="ep_ytdlp" ${meths.includes('yt-dlp') ? 'checked' : ''}></label>
-        <label class="perm-check" title="P2P stahování přes síť Soulseek, preferuje FLAC"><span>Soulseek</span> <input type="checkbox" id="ep_slskd" ${meths.includes('slskd') ? 'checked' : ''}></label>
+        <label class="perm-check" title="P2P stahování přes síť Soulseek, ve zvoleném formátu"><span>Soulseek</span> <input type="checkbox" id="ep_slskd" ${meths.includes('slskd') ? 'checked' : ''}></label>
         <label class="perm-check" title="Torrent stahování přes Lidarr, monitoruje diskografie"><span>Torrent</span> <input type="checkbox" id="ep_lidarr" ${meths.includes('lidarr') ? 'checked' : ''}></label>
       </div>
     </details>
