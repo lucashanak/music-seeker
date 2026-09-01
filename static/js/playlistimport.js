@@ -317,8 +317,8 @@ function onSearchInputChanged() {
   if (!input) return;
   const raw = input.value || '';
   const link = parseCollectionLink(raw);
-  clearTimeout(_debounceTimer);
   if (!link) {
+    clearTimeout(_debounceTimer);
     // A track link pasted into search isn't a collection — point at the modal
     // rather than silently doing nothing.
     if (TRACK_LINK_RE.test(raw)) {
@@ -330,7 +330,12 @@ function onSearchInputChanged() {
     return;
   }
   const key = `${link.source}:${link.kind}:${link.id}`;
-  if (key === _bannerKey) return;   // same link already shown/loading
+  // Same link already shown or in flight — return WITHOUT touching the pending
+  // timer. A real paste fires `input` and then `paste`, so this runs twice for
+  // one action; clearing the timer here (as it used to) cancelled the scheduled
+  // import and left the banner stuck on "Loading…" for every actual paste.
+  if (key === _bannerKey) return;
+  clearTimeout(_debounceTimer);
   // Cancel search.js's own debounced search for this value: it would run a real
   // query for the raw URL (finding nothing) and persist the whole link as a
   // recent-search chip. This is the one case where pre-empting it is correct.
