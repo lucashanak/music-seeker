@@ -156,9 +156,14 @@ function _ensureAudioContext() {
     // resample inside the graph (the FLAC/MP3 library is overwhelmingly 48 kHz). On a
     // 48 kHz output device this is fully transparent; on a 44.1 kHz device the single
     // unavoidable resample happens once at the OS output instead of twice.
-    _ctx = new _AC({ sampleRate: 48000, latencyHint: 'playback' });
+    // NOT on WebKit: Safari/WKWebView renders a MediaElementSource through a context
+    // whose rate differs from the output device unreliably — it can output pure silence
+    // while the element plays on (timer runs, nothing audible). Audio that plays beats
+    // audio that is resampled one time less, so WebKit gets the device's native rate.
+    _ctx = IS_WEBKIT ? new _AC({ latencyHint: 'playback' })
+                     : new _AC({ sampleRate: 48000, latencyHint: 'playback' });
   } catch (e) {
-    _ctx = new _AC(); // device can't honor 48 kHz → fall back to default
+    _ctx = new _AC(); // device can't honor the request → fall back to default
   }
   _nodesA = _createDeckNodes();
   _nodesB = _createDeckNodes();
@@ -186,6 +191,11 @@ function _ensureAudioContext() {
 
   _nodesA.gain.gain.value = 1;
   _nodesB.gain.gain.value = 0;
+
+  if (localStorage.getItem('ms_dj_debug')) {
+    console.log(`[DJ ctx] rate=${_ctx.sampleRate} state=${_ctx.state} webkit=${IS_WEBKIT}`);
+    _ctx.addEventListener?.('statechange', () => console.log(`[DJ ctx] → ${_ctx.state}`));
+  }
 }
 
 function _setDeckSrc(deck, src) {
@@ -253,6 +263,56 @@ function _finalizeCrossfadeOnPause() {
     n.sweep.Q.value = 0.7;
   }
   return active;
+}
+
+// Fail-safe against inaudible playback. The active deck advancing while its crossfade
+// gain sits at 0 means the listener hears absolutely nothing, and nothing in the engine
+// would ever correct it: that is the "timer runs but no sound" failure. It can arise
+// from a fade-in that never got scheduled (WKWebView resume() stalling) or a transition
+// torn down mid-ramp. Never repair during a live crossfade — the incoming gain
+// legitimately sits at 0 there — and only after ~1s of confirmed silent playback, so a
+// normal fade-in is never cut short.
+let _silentSince = 0;
+function _guardAudible(deck) {
+  if (_crossfading || !_ctx || deck.paused) { _silentSince = 0; return; }
+  const g = _activeGain();
+  if (!g || g.gain.value > 0.01) { _silentSince = 0; return; }
+  const now = Date.now();
+  if (!_silentSince) { _silentSince = now; return; }
+  if (now - _silentSince < 1000) return;
+  _silentSince = 0;
+  g.gain.cancelScheduledValues(0);
+  g.gain.value = 1;
+  if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
+  if (localStorage.getItem('ms_dj_debug')) {
+    console.warn(`[DJ guard] active deck played at gain 0 — forced audible (ctx=${_ctx.state})`);
+  }
+}
+
+// A deck that reports "playing" while its clock stands still is a dead transition: the
+// incoming deck never received enough data (the bounded _waitForCanPlay proceeds on
+// timeout by design) and nothing in the engine ever revisits it, so playback just stops.
+// This has to run on its own timer, not on timeupdate — a frozen deck emits no timeupdate,
+// so that handler is blind to exactly the failure we need to catch. Nudge first; only a
+// deck still frozen after 15s is written off and skipped.
+let _lastProgressT = -1, _lastProgressAt = 0;
+function _stallWatchdog() {
+  if (store.castDevice || store.remoteTarget) { _lastProgressAt = 0; return; }
+  const deck = _activeDeckEl();
+  if (!deck || deck.paused || !deck.src || deck.seeking) { _lastProgressAt = 0; return; }
+  const now = Date.now();
+  const t = deck.currentTime;
+  if (!_lastProgressAt || Math.abs(t - _lastProgressT) > 0.05) {
+    _lastProgressT = t; _lastProgressAt = now; return;
+  }
+  const stalledMs = now - _lastProgressAt;
+  if (stalledMs < 6000) return;
+  if (stalledMs < 15000) { deck.play().catch(() => {}); return; }
+  _lastProgressAt = 0;
+  if (localStorage.getItem('ms_dj_debug')) {
+    console.warn(`[DJ guard] active deck frozen at ${t.toFixed(1)}s (readyState=${deck.readyState}) — advancing`);
+  }
+  nextTrack();
 }
 
 function _startCrossfade(seekable = true) {
@@ -952,14 +1012,32 @@ async function _loadAndPlayImpl() {
         // at the start of every track. Schedule the ramp only once the clock is live.
         g.cancelScheduledValues(0);
         g.value = 0;
+        let _ramped = false;
         const _rampIn = () => {
+          if (_ramped) return;
+          _ramped = true;
           const t0 = _ctx.currentTime;
           g.cancelScheduledValues(t0);
           g.setValueAtTime(0, t0);
           g.linearRampToValueAtTime(1, t0 + 0.05);
         };
-        if (_ctx.state === 'suspended') _ctx.resume().then(_rampIn).catch(_rampIn);
-        else _rampIn();
+        // 'running' — not '!== suspended' — because WebKit also has an 'interrupted'
+        // state, which used to take the else branch and ramp against a frozen clock.
+        if (_ctx.state === 'running') _rampIn();
+        else {
+          // WKWebView/Safari can leave resume() PENDING INDEFINITELY once the user
+          // activation has been spent (playTracks awaits several times before reaching
+          // here). Hanging the fade-in on that promise left the gain at 0 with the deck
+          // playing — silence with a running timer, from the very first track. Ask for
+          // the resume, but never let audibility depend on the answer.
+          _ctx.resume().then(_rampIn).catch(_rampIn);
+          setTimeout(() => {
+            if (_ramped) return;
+            _ramped = true;
+            g.cancelScheduledValues(0);
+            g.value = 1; // straight to audible — a 50 ms fade is not worth silence
+          }, 300);
+        }
       }
       // DJ data for current track (needed for crossfade timing). Resolve SYNCHRONOUSLY
       // from the bpm cache first so the very first timeupdate trigger computes triggerAt
@@ -1556,6 +1634,17 @@ export { _deckA as audio };
 
 // ── Init ──
 export function init() {
+  // WKWebView/Safari only start an AudioContext from inside a user-activated task, and
+  // the engine reaches _ctx.resume() several awaits after the click that caused playback
+  // — by then the activation may be spent. Resume straight from the raw gesture too, so
+  // the graph is already live by the time a deck plays. Not `once`: the context is created
+  // later than this listener and can be re-suspended (tab hidden, audio interruption).
+  for (const evName of ['pointerdown', 'touchend', 'keydown']) {
+    document.addEventListener(evName, () => {
+      if (_ctx && _ctx.state !== 'running') _ctx.resume().catch(() => {});
+    }, { capture: true });
+  }
+  setInterval(_stallWatchdog, 2000);
   // Audio events
   [_deckA, _deckB].forEach(deck => {
     deck.addEventListener('play', () => {
@@ -1704,6 +1793,7 @@ export function init() {
   [_deckA, _deckB].forEach(deck => {
     deck.addEventListener('timeupdate', () => {
       if (deck !== _activeDeckEl()) return;
+      _guardAudible(deck);
       const dur = _getDuration();
       if (!dur) return;
       const pct = (deck.currentTime / dur) * 100;
