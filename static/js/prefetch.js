@@ -258,6 +258,11 @@ async function _startFetch(entry) {
         received += value.length;
         state.progress = Math.round((received / total) * 100);
       }
+      // A body that ends early WITHOUT throwing (proxy cut, server-side stream
+      // giving up) would otherwise be cached as a complete track. The container
+      // header still declares the full duration, so playback would run out of
+      // audio partway and play silence to the shown end — never cache a short read.
+      if (received !== total) { _fetching.delete(entry.key); _processNext(); return; }
       blob = new Blob(chunks);
     } else {
       blob = await res.blob();

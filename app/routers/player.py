@@ -39,8 +39,10 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
         if not is_mp3 and not lossless:
             # Non-blocking: report cached MP3 size/MIME if already built;
             # otherwise report raw file (HEAD must never trigger/await a transcode).
+            # Mirrors GET's raw pin so a renderer's HEAD and GET agree on which
+            # representation (and therefore which Content-Length) it is getting.
             cached = player.local_transcode_cached_path(path)
-            if cached:
+            if cached and not player.raw_pinned(path):
                 mime = "audio/mpeg"
                 headers["Content-Length"] = str(os.path.getsize(cached))
             else:
@@ -80,10 +82,14 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
         # shrink — unless lossless was requested (audiophile/DLNA path → raw FLAC).
         if not is_mp3 and not lossless:
             # Non-blocking check: serve cached MP3 if already built (warm path).
+            # `raw_pinned` vetoes it while a playback that started on the raw file
+            # may still be range-requesting its tail — swapping the shorter MP3 in
+            # under that play 416s the remaining bytes and silences the track's
+            # last stretch (see pin_raw_local in services/player.py).
             cached = player.local_transcode_cached_path(path)
-            if cached:
+            if cached and not player.raw_pinned(path):
                 return FileResponse(cached, media_type="audio/mpeg", headers=file_headers)
-            # Cold path: build the compact MP3 cache in the background (so the NEXT
+            # Cold path: build the compact MP3 cache in the background (so a LATER
             # play gets the smaller cached MP3) but serve the RAW file NOW via
             # FileResponse. A raw file carries a Content-Length + Range support, so
             # the browser learns the real, FINITE duration up front. The old chunked
@@ -94,9 +100,13 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
             # Correctness beats the one-time larger cold transfer; Range keeps it
             # progressive+seekable, and `headers` (no long max-age) lets the next
             # play revalidate and pick up the cached MP3.
-            t = asyncio.create_task(player.cache_local_transcode(path))
-            _prewarm_tasks.add(t)
-            t.add_done_callback(_prewarm_tasks.discard)
+            if not cached:
+                t = asyncio.create_task(player.cache_local_transcode(path))
+                _prewarm_tasks.add(t)
+                t.add_done_callback(_prewarm_tasks.discard)
+            # Pin BEFORE responding so a concurrent request for the same path
+            # cannot pick the MP3 while this one hands out raw byte offsets.
+            player.pin_raw_local(path)
             return FileResponse(path, media_type=_mime_for_path(path), headers=headers)
         mime = _mime_for_path(path)
         # FileResponse supports Range requests (required by Safari for duration/seek)

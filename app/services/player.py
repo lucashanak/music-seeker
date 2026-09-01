@@ -378,6 +378,47 @@ async def cache_navidrome_stream(song_id: str, lossless: bool = False) -> str | 
         _release_build_lock(lock_key)
 
 
+# ── Raw-representation pins (local files) ──
+# One stream URL must keep answering with the SAME file for as long as a playback
+# of it can still be in flight. The local path would otherwise flip mid-track: a
+# cold GET answers with the raw FLAC (e.g. 27 MB) while the background transcode
+# builds a 320k MP3 (9 MB) that the SAME URL starts serving ~3s later. When the
+# browser then comes back with `Range: bytes=21797613-` to finish the track, that
+# offset does not exist in the now-current MP3 → 416, and no more audio data ever
+# arrives. The FLAC's STREAMINFO already told the decoder the full duration, so
+# the timeline keeps running to the end over silence — the track audibly cuts out
+# somewhere in its last stretch. `_prewarmFirst()` (upnext.js) prewarms the track
+# it is about to play, so this raced every cold local play, not just rare ones.
+#
+# Fix: once raw has been served for a path, keep serving raw until the pin lapses.
+# Every raw response refreshes the pin, so a play in progress can never have the
+# file swapped underneath it. The cached MP3 takes over on the next play that
+# starts more than RAW_PIN_SEC after the last raw byte was served.
+_raw_pins: dict[str, float] = {}
+RAW_PIN_SEC = 15 * 60  # comfortably longer than the longest single track
+
+
+def pin_raw_local(path: str) -> None:
+    """Mark *path* as currently being served raw (refreshes an existing pin)."""
+    now = time.time()
+    _raw_pins[path] = now + RAW_PIN_SEC
+    if len(_raw_pins) > 64:  # opportunistic prune — keeps the dict bounded
+        for p, expiry in list(_raw_pins.items()):
+            if expiry <= now:
+                _raw_pins.pop(p, None)
+
+
+def raw_pinned(path: str) -> bool:
+    """True while *path* must keep being served raw (see pin_raw_local)."""
+    expiry = _raw_pins.get(path)
+    if expiry is None:
+        return False
+    if expiry <= time.time():
+        _raw_pins.pop(path, None)
+        return False
+    return True
+
+
 def local_transcode_cached_path(path: str) -> str | None:
     """Return the ms-local-cache path for *path* IFF it already exists and is
     non-empty. Never builds, never awaits — safe to call from HEAD or the GET
