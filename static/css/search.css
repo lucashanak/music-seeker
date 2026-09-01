@@ -302,6 +302,38 @@
 }
 .import-btn-primary:hover { background: var(--accent); color: #000; opacity: .88; }
 
+/* ── Truncation escape hatches (banner note + playlist detail note) ──
+   "Get all tracks automatically" drives the server-side headless harvest; it is
+   the primary action, so the manual console helper next to it is a text link.
+   The job takes minutes, hence the live status line underneath. */
+.import-harvest {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 8px;
+}
+.import-harvest-btn {
+  font-size: 12px; padding: 7px 14px; max-width: 100%; white-space: normal;
+}
+.import-harvest-btn:disabled { opacity: .6; cursor: default; }
+.import-harvest-btn:disabled:hover { background: var(--accent); color: #000; }
+.import-harvest-manual { margin-left: 0; }
+/* Full-width own row so a long "Collecting… 120 tracks" never widens the note. */
+.import-harvest-status {
+  flex: 1 1 100%; display: flex; align-items: center; gap: 8px; min-width: 0;
+  font-size: 12px; color: var(--text-muted);
+}
+.import-harvest-status--error { color: var(--text); }
+.import-harvest-text { min-width: 0; overflow-wrap: anywhere; }
+.import-harvest-spin {
+  width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%;
+  background: var(--accent); animation: import-harvest-pulse 1s ease-in-out infinite;
+}
+@keyframes import-harvest-pulse {
+  0%, 100% { opacity: .25; transform: scale(.8); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .import-harvest-spin { animation: none; opacity: .8; }
+}
+
 /* ── "Grab the whole playlist" helper (import modal) ──
    Collapsed by default: it is the answer to the 100-track ceiling, but it costs
    a console paste, so it must not compete with just pasting a link. */

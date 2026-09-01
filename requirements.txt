@@ -1,6 +1,9 @@
 fastapi>=0.135,<1.0
 uvicorn>=0.42,<1.0
 httpx>=0.28,<1.0
+# CDP client for the headless-Chromium sidecar (playlist_harvest). 17.1 is what the
+# image already resolves to; pinned so `additional_headers=` (15+ API) stays valid.
+websockets>=15,<18
 shazamio>=0.8,<1.0
 python-multipart>=0.0.22
 # yt-dlp installed separately in the Dockerfile from the NIGHTLY channel (see Dockerfile)

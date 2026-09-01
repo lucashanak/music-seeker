@@ -9,7 +9,7 @@
 
 import { store } from './store.js';
 import { $, esc, escAttr, showToast, autoFocus } from './utils.js';
-import { apiJson } from './api.js';
+import { apiFetch, apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { getPlayerModule } from './player_active.js';
 import { showImportedPlaylist } from './spotify.js';
@@ -54,6 +54,13 @@ function sourceLabel(data) {
 let _bannerKey = '';
 let _bannerGen = 0;
 let _debounceTimer = null;
+
+// Bumped by every fresh import RESULT (banner render or a modal/paste import).
+// The auto-harvest job outlives the view that started it (it takes minutes), so
+// it captures this and refuses to paint anything once it no longer matches —
+// same discipline as _bannerGen, one level up.
+let _importSeq = 0;
+function markNewImport() { _importSeq++; }
 
 function bannerEl() { return $('#importBanner'); }
 
@@ -114,6 +121,7 @@ function renderBannerHint(msg) {
 function renderBanner(data) {
   const el = bannerEl();
   if (!el) return;
+  markNewImport();
   const count = data.tracks ? data.tracks.length : 0;
   el.innerHTML = `
     ${data.image
@@ -122,8 +130,8 @@ function renderBanner(data) {
     <div class="import-banner-info">
       <div class="import-banner-title">${esc(data.name || 'Imported playlist')}</div>
       <div class="import-banner-meta">${count} track${count === 1 ? '' : 's'} &middot; ${esc(sourceLabel(data))}</div>
-      ${data.truncated && data.note
-        ? `<div class="import-banner-note"><span>${esc(data.note)}</span><button type="button" class="import-banner-notebtn">Paste track links…</button></div>`
+      ${data.truncated
+        ? `<div class="import-banner-note"><span>${esc(data.note || TRUNCATED_NOTE)}</span></div>`
         : ''}
     </div>
     <div class="import-banner-actions">
@@ -138,8 +146,8 @@ function renderBanner(data) {
   el.querySelectorAll('[data-import-act]').forEach(btn => {
     btn.addEventListener('click', () => runBannerAction(btn.dataset.importAct, data));
   });
-  const noteBtn = el.querySelector('.import-banner-notebtn');
-  if (noteBtn) noteBtn.addEventListener('click', () => openImportModalForTruncated(data));
+  const note = el.querySelector('.import-banner-note');
+  if (note) note.appendChild(buildTruncatedActions(data));
 }
 
 // Player-shaped tracks. Nothing here downloads: playTracks / addToQueue only
@@ -183,13 +191,230 @@ async function runBannerAction(act, data) {
 
 // Render an import in the shared playlist detail view, wiring the truncation
 // escape hatch so it's one click from there too.
+//
+// The detail hero's note (spotify.js #_setPlaylistNote) renders at most ONE
+// action button, and a truncated import now needs two (automatic + manual), so
+// we pass no action and append our own widget into #plDetailNote instead.
 function openImported(data, fromPage) {
   showImportedPlaylist({
     ...data,
-    note: data.truncated ? data.note : '',
-    onImportMore: data.truncated ? () => openImportModalForTruncated(data) : null,
-    importMoreLabel: 'Paste track links…',
+    note: data.truncated ? (data.note || TRUNCATED_NOTE) : '',
+    onImportMore: null,
   }, fromPage);
+  if (data.truncated) {
+    const note = $('#plDetailNote');
+    if (note) note.appendChild(buildTruncatedActions(data));
+  }
+}
+
+// Which page the detail view should fall back to on Back. Re-rendering an
+// already-open detail view must not repoint it at itself.
+function importFromPage() {
+  const detail = $('#playlistDetail');
+  const open = detail && detail.style.display !== 'none';
+  return open ? (store.playlistDetailSource || store.currentPage) : store.currentPage;
+}
+
+// ── Automatic full-playlist harvest ──
+// The server can drive a headless browser over the public playlist page and
+// scroll the whole (virtualised) list, which is what the console helper below
+// does by hand. It takes 1.5-3 minutes, so the API is job-based: POST to start,
+// then poll. Only one harvest runs at a time, and progress is painted into
+// whichever truncation widget is currently on screen (the banner and the detail
+// note can both host one).
+const HARVEST_POLL_MS = 2000;
+const HARVEST_TIMEOUT_MS = 4 * 60 * 1000;
+const TRUNCATED_NOTE = 'The public playlist page only gave us the first 100 tracks.';
+
+// Short, toast-sized wording per refusal. 503 = this server has no browser
+// helper installed, which is not a failure of anything the user did, so it must
+// not read like one; 409 = the single harvester is busy; 429 = rate limited.
+const HARVEST_REFUSAL = {
+  409: 'Another full-playlist collection is running — try again shortly',
+  429: 'Too many collections — try again in a few minutes',
+  503: 'Automatic collecting isn\'t available on this server',
+};
+
+let _harvestBusy = false;
+let _harvestUI = null;         // the widget showing progress right now
+let _harvestStatusText = '';   // so a mid-job re-render can restore the line
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The link to hand the harvester. `data.url` may be the whole pasted blob (the
+// banner stores the raw input), so pull the URL back out of it; a spotify: URI
+// carries no http(s) and passes through unchanged.
+function harvestUrl(data) {
+  return firstUrlIn(data.url) || String(data.url || '').trim();
+}
+
+// The truncation escape hatches: automatic first (when we have a link to feed
+// it), the console helper demoted to a plain text link underneath. Built with
+// DOM APIs so it can be dropped into either host after its innerHTML is set.
+function buildTruncatedActions(data) {
+  const wrap = document.createElement('div');
+  wrap.className = 'import-harvest';
+
+  if (harvestUrl(data)) {
+    const auto = document.createElement('button');
+    auto.type = 'button';
+    auto.className = 'import-btn import-btn-primary import-harvest-btn';
+    auto.textContent = 'Get all tracks automatically';
+    auto.addEventListener('click', () => { _harvestUI = wrap; runHarvest(data); });
+    wrap.appendChild(auto);
+  }
+
+  const manual = document.createElement('button');
+  manual.type = 'button';
+  manual.className = 'import-banner-notebtn import-harvest-manual';
+  manual.textContent = 'or paste track links yourself…';
+  manual.addEventListener('click', () => openImportModalForTruncated(data));
+  wrap.appendChild(manual);
+
+  const status = document.createElement('div');
+  status.className = 'import-harvest-status';
+  status.hidden = true;
+  status.innerHTML = '<span class="import-harvest-spin"></span>' +
+    '<span class="import-harvest-text"></span>';
+  wrap.appendChild(status);
+
+  // A re-render mid-job (the banner repaints on any import result) must not hand
+  // the user a fresh, enabled button for a job that is already running.
+  if (_harvestBusy) {
+    _harvestUI = wrap;
+    setHarvestRunning(true);
+    setHarvestStatus(_harvestStatusText);
+  }
+  return wrap;
+}
+
+function setHarvestRunning(running) {
+  const btn = _harvestUI && _harvestUI.querySelector('.import-harvest-btn');
+  if (!btn) return;
+  btn.disabled = running;
+  btn.textContent = running ? 'Collecting…' : 'Get all tracks automatically';
+}
+
+function setHarvestStatus(text, { error = false } = {}) {
+  _harvestStatusText = text || '';
+  const ui = _harvestUI;
+  if (!ui) return;
+  const box = ui.querySelector('.import-harvest-status');
+  if (!box) return;
+  if (!text) { box.hidden = true; return; }
+  box.hidden = false;
+  box.classList.toggle('import-harvest-status--error', !!error);
+  const spin = box.querySelector('.import-harvest-spin');
+  if (spin) spin.hidden = error;
+  box.querySelector('.import-harvest-text').textContent = text;
+}
+
+// FastAPI's `detail`, defensively (it can be an array of validation errors).
+function detailOf(body, fallback) {
+  const d = body && body.detail;
+  if (Array.isArray(d)) return d[0]?.msg || fallback;
+  return (typeof d === 'string' && d) ? d : fallback;
+}
+
+async function runHarvest(data) {
+  if (_harvestBusy) return;                 // one job at a time, no double-start
+  const url = harvestUrl(data);
+  if (!url) { showToast('No playlist link to collect from', true); return; }
+  const seq = _importSeq;
+  _harvestBusy = true;
+  setHarvestRunning(true);
+  setHarvestStatus('Opening the playlist page…');
+  try {
+    const res = await apiFetch('/api/import/harvest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const body = await res.json().catch(() => ({}));
+    // Every refusal reads the same way: the server's own (often long)
+    // explanation in the status line, which wraps inside the note, and a SHORT
+    // toast — showToast renders one unwrapped line, so a 160-character detail
+    // there would overflow the viewport on a phone.
+    if (!res.ok) {
+      setHarvestStatus(detailOf(body, HARVEST_REFUSAL[res.status] || 'Could not start collecting'), { error: true });
+      showToast(HARVEST_REFUSAL[res.status] || 'Could not collect the full list', true);
+      return;
+    }
+    // A cached harvest comes back finished on the POST itself.
+    if (body.status === 'done') { finishHarvest(data, body, seq); return; }
+    if (!body.job_id) throw new Error('The server did not return a job');
+    const done = await pollHarvest(body.job_id);
+    finishHarvest(data, done, seq);
+  } catch (e) {
+    // The partial import stays exactly as it was — this only reports.
+    setHarvestStatus(e.message || 'Collecting failed', { error: true });
+    showToast(e.toast || e.message || 'Collecting the full list failed', true);
+  } finally {
+    _harvestBusy = false;
+    setHarvestRunning(false);
+  }
+}
+
+// Poll until the job reports done; throws on error, on a dead server, or when
+// the cap is reached. Resolves with the final status payload.
+async function pollHarvest(jobId) {
+  const deadline = Date.now() + HARVEST_TIMEOUT_MS;
+  let misses = 0;
+  while (Date.now() < deadline) {
+    await sleep(HARVEST_POLL_MS);
+    let st;
+    try {
+      st = await apiJson(`/api/import/harvest/${encodeURIComponent(jobId)}`);
+      misses = 0;
+    } catch (e) {
+      // A blip mid-harvest shouldn't throw away a 2-minute job.
+      if (++misses >= 3) throw new Error(e.message || 'Lost contact with the server');
+      continue;
+    }
+    if (!st) continue;
+    if (st.status === 'done') return st;
+    if (st.status === 'error') throw new Error(st.error || 'Collecting the full list failed');
+    // The live number arrives as `progress` (an absolute track count, updated as
+    // the sidecar scrolls) while `count` stays 0 until the job finishes — read
+    // whichever is populated so a swap on either side can't blank the line.
+    const n = Math.max(Number(st.count) || 0, Number(st.progress) || 0);
+    setHarvestStatus(n > 0
+      ? `Collecting… ${n} track${n === 1 ? '' : 's'}`
+      : (st.status === 'queued' ? 'Waiting for a free browser…' : 'Scrolling the playlist page…'));
+  }
+  // Long form in the (wrapping) status line, short form in the one-line toast.
+  const err = new Error('Still collecting after 4 minutes — your imported tracks are untouched. Try again in a moment.');
+  err.toast = 'Collecting is taking too long — try again in a moment';
+  throw err;
+}
+
+// Swap the partial import for the full list. Everything downstream (Play all /
+// + Add to queue / Download all) reads the same shapes, so re-opening through
+// openImported is the whole integration.
+function finishHarvest(data, res, seq) {
+  const tracks = res.tracks || [];
+  if (!tracks.length) throw new Error('Collecting finished but found no tracks');
+  const full = {
+    ...data,
+    name: res.name || data.name,
+    image: res.image || data.image,
+    tracks,
+    total: tracks.length,
+    truncated: false,
+    note: '',
+  };
+  // A newer import happened while we were collecting — never paint over it. The
+  // result is cached server-side, so re-importing the link is instant.
+  if (seq !== _importSeq) {
+    showToast(`Collected all ${tracks.length} tracks — import that link again to open them`);
+    return;
+  }
+  const banner = bannerEl();
+  const bannerUp = banner && banner.style.display !== 'none' && _bannerKey;
+  const fromPage = importFromPage();
+  if (bannerUp) renderBanner(full);
+  showToast(`Imported all ${tracks.length} tracks`);
+  openImported(full, fromPage);
 }
 
 // ── The "grab the whole playlist" helper ──
@@ -323,13 +548,15 @@ function buildHarvestHelper() {
 
   const summary = document.createElement('summary');
   summary.className = 'import-helper-summary';
-  summary.textContent = 'More than 100 tracks? Grab the whole list…';
+  summary.textContent = 'More than 100 tracks? …or do it yourself in your browser';
   box.appendChild(summary);
 
   const why = document.createElement('p');
   why.className = 'import-helper-why';
   why.textContent = 'A Spotify playlist link alone gives at most 100 tracks. ' +
-    'This helper grabs the whole list from the playlist page in your own browser.';
+    'Normally “Get all tracks automatically” on the import handles the rest for you — ' +
+    'this is the manual alternative for when that isn’t available: it grabs the whole ' +
+    'list from the playlist page in your own browser.';
   box.appendChild(why);
 
   const steps = document.createElement('ol');
@@ -435,6 +662,7 @@ function openImportModalForTruncated(data) {
 // lines) → the per-track import.
 export async function runImport(text) {
   const link = parseCollectionLink(text);
+  markNewImport();   // any harvest still running is now for the previous import
   showToast('Importing…');
   try {
     if (link) {
