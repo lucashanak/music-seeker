@@ -105,8 +105,24 @@ _HARVEST_JS = r"""
     if (b) { b.click(); await sleep(800); break; }
   }
   const seen = new Map();
+  // Scope every read to the playlist's OWN grid. Spotify appends a "Recommended"
+  // section below the list whose rows carry the SAME data-testid, so an unscoped
+  // query silently mixes ~10 suggestions into the playlist (that is where an
+  // earlier 165 came from on a list the page itself calls 155 songs).
+  const grid = () => document.querySelector('[data-testid="playlist-tracklist"]')
+    || document.querySelector('[role="grid"]');
+  // The rows carry their playlist position in aria-rowindex (1 = header row), so
+  // the highest index is the real length — a reliable stop condition instead of
+  // "no new rows for a while", which quits early whenever a fetch stalls.
+  let expected = 0;
   const grab = () => {
-    document.querySelectorAll('[data-testid="tracklist-row"]').forEach(r => {
+    const g = grid();
+    if (!g) return;
+    g.querySelectorAll('[aria-rowindex]').forEach(e => {
+      const i = parseInt(e.getAttribute('aria-rowindex')) || 0;
+      if (i - 1 > expected) expected = i - 1;
+    });
+    g.querySelectorAll('[data-testid="tracklist-row"]').forEach(r => {
       const a = r.querySelector('a[href*="/track/"]');
       const m = (a && a.getAttribute('href') || '').match(/\/track\/([A-Za-z0-9]{22})/);
       const name = (r.querySelector('[data-testid="internal-track-link"]')?.innerText || '').trim();
@@ -126,6 +142,9 @@ _HARVEST_JS = r"""
   grab();
   let stagnant = 0, prev = 0;
   for (let i = 0; i < 400 && stagnant < 12; i++) {
+    // Complete: we hold every row the grid claims to have. Stops on a fact
+    // rather than on a timeout, so a long list finishes as soon as it's done.
+    if (expected && seen.size >= expected) break;
     const el = scroller();
     if (el) el.scrollTop += el.clientHeight * 0.5; else window.scrollBy(0, 500);
     await sleep(700);
@@ -133,11 +152,12 @@ _HARVEST_JS = r"""
     if (seen.size === prev) stagnant++; else stagnant = 0;
     prev = seen.size;
   }
-  for (let i = 0; i < 3; i++) { await sleep(900); grab(); }
+  for (let i = 0; i < 3 && (!expected || seen.size < expected); i++) { await sleep(900); grab(); }
   const meta = p => document.querySelector('meta[property="' + p + '"]')?.getAttribute('content') || '';
   const title = meta('og:title') || (document.querySelector('h1')?.innerText || '').trim()
     || document.title.replace(/\s*\|\s*Spotify\s*$/, '').trim();
-  return JSON.stringify({count: seen.size, tracks: [...seen.values()], name: title, image: meta('og:image')});
+  return JSON.stringify({count: seen.size, expected: expected, tracks: [...seen.values()],
+                         name: title, image: meta('og:image')});
 })()
 """
 
@@ -402,11 +422,16 @@ async def _run_harvest(url: str, on_progress=None) -> dict:
             t["image"] = cover
     # Never log the payload itself, only its shape.
     logger.info("Harvested %d tracks from %s", len(tracks), url)
+    # `expected` is what the grid itself claims (highest aria-rowindex). Reporting
+    # it lets a short harvest be visible instead of passing for the whole list.
+    expected = int(data.get("expected") or 0)
     return {
         "name": name,
         "image": data.get("image") or "",
         "tracks": tracks,
         "count": len(tracks),
+        "expected": expected,
+        "complete": (not expected) or len(tracks) >= expected,
         "via": "browser",
     }
 
