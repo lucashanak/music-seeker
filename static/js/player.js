@@ -245,6 +245,65 @@ export function hidePlayerBar() {
   if (_ab()) _ab().onStop();
 }
 
+// ── Stall recovery ──
+// A deck that reports playing while its clock stands still is dead playback that
+// nothing in this engine ever revisits. It is what a hung stream request looks like:
+// `ended` fires, loadAndPlay sets src and calls play(), and if that request never
+// answers there is no error to react to — `error` only fires on a real failure, not
+// on a request that simply hangs. Reported from a phone playing over Bluetooth with
+// the screen off: playback stopped between tracks and only a screen wake brought it
+// back, because waking restores the radio and the pending request finally completes.
+//
+// This has to run on its own timer, not on timeupdate: a frozen element emits no
+// timeupdate, so that handler is blind to exactly the failure it would need to catch.
+//
+// Recovery ladder, so the cheap fix is tried first and a track is only abandoned last:
+//   6s   nudge play() — enough for a decode/buffer hiccup
+//   12s  re-arm the source, which re-issues the HTTP request and restores position.
+//        Skipped for blob: sources — those are already local, so a re-load fixes
+//        nothing and would only throw away a decoded buffer.
+//   20s  give up on the track and advance
+let _progressT = -1, _progressAt = 0, _rearmedAt = 0;
+function _stallWatchdog() {
+  if (store.castDevice || store.remoteTarget) { _progressAt = 0; return; }
+  // Deliberately NOT excluding audio.seeking: a seek whose request never answers
+  // leaves the element seeking forever with the clock parked on the target, which is
+  // precisely a stall to recover from. A seek that IS progressing moves currentTime,
+  // and the position check below resets the clock on its own.
+  if (!audio || audio.paused || !audio.src) { _progressAt = 0; return; }
+  const now = Date.now();
+  const t = audio.currentTime;
+  if (!_progressAt || Math.abs(t - _progressT) > 0.05) {
+    _progressT = t; _progressAt = now; _rearmedAt = 0; return;
+  }
+  const stalledMs = now - _progressAt;
+  if (stalledMs < 6000) return;
+  if (stalledMs < 12000) { audio.play().catch(() => {}); return; }
+  if (stalledMs < 20000) {
+    // One re-arm per stall — re-issuing every 2s would restart the request forever
+    // and guarantee it never finishes.
+    if (_rearmedAt || String(audio.src).startsWith('blob:')) { audio.play().catch(() => {}); return; }
+    _rearmedAt = now;
+    const src = audio.src, pos = t;
+    if (localStorage.getItem('ms_dj_debug')) console.warn(`[stall] re-arming stream at ${pos.toFixed(1)}s`);
+    const onMeta = () => {
+      audio.removeEventListener('loadedmetadata', onMeta);
+      if (pos > 0.05) { try { audio.currentTime = pos; } catch {} }
+      audio.play().catch(() => {});
+    };
+    audio.addEventListener('loadedmetadata', onMeta);
+    audio.src = src;
+    audio.load();
+    audio.play().catch(() => {});
+    return;
+  }
+  _progressAt = 0; _rearmedAt = 0;
+  if (localStorage.getItem('ms_dj_debug')) {
+    console.warn(`[stall] frozen at ${t.toFixed(1)}s (readyState=${audio.readyState}) — advancing`);
+  }
+  nextTrack();
+}
+
 // ── Next / Prev ──
 let _lastNextTime = 0;
 export function nextTrack() {
@@ -551,6 +610,7 @@ export function pauseLocal() { try { audio.pause(); } catch {} updatePlayPauseIc
 
 // ── Init ──
 export function init() {
+  setInterval(_stallWatchdog, 2000);
   // Audio events
   audio.addEventListener('play', () => {
     updatePlayPauseIcon(true);
