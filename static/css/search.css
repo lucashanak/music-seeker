@@ -250,3 +250,70 @@
   .song-list-numbered .song-row .like-btn,
   .song-list-numbered .song-row .bpm-badge { display: none; }
 }
+
+/* ── Playlist import banner (search page) ──
+   Shown when a Spotify/Deezer playlist/album link is pasted into the search
+   box. Deliberately reads as a result, not an error: cover thumb + name +
+   actions. The imported list is playable without downloading anything, so
+   "Play all" is the primary action and "Download all" is just one more button. */
+.import-banner {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; margin-bottom: 20px;
+}
+.import-banner-thumb {
+  width: 72px; height: 72px; flex-shrink: 0;
+  border-radius: var(--radius-sm); object-fit: cover;
+  background: var(--bg-elevated);
+}
+.import-banner-thumb--empty { border: 1px solid var(--border); }
+.import-banner-info { flex: 1 1 200px; min-width: 0; }
+.import-banner-title {
+  font-size: 15px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.import-banner-meta { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.import-banner-note {
+  font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-top: 8px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  background: var(--accent-dim); border: 1px solid var(--border);
+}
+.import-banner-hint { font-size: 13px; color: var(--text-muted); }
+
+/* Note action ("Paste track links…") — the documented way past Spotify's
+   100-track ceiling, so it must look tappable, not like body copy. Shared with
+   the same note rendered into the playlist detail hero (.import-note). */
+.import-banner-notebtn,
+.import-note .pl-note-btn {
+  background: none; border: none; padding: 0; margin-left: 6px;
+  color: var(--accent); font-family: inherit; font-size: 12px; font-weight: 600;
+  cursor: pointer; text-decoration: underline;
+}
+.import-banner-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.import-btn {
+  background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text);
+  padding: 9px 16px; border-radius: 20px; cursor: pointer;
+  font-family: inherit; font-size: 13px; font-weight: 500;
+  transition: all var(--transition); white-space: nowrap;
+}
+.import-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.import-btn-primary {
+  background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600;
+}
+.import-btn-primary:hover { background: var(--accent); color: #000; opacity: .88; }
+
+/* Truncation note inside the playlist detail hero. */
+.import-note {
+  font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-top: 8px;
+  max-width: 520px;
+}
+
+@media (max-width: 640px) {
+  /* Stack: thumb + title on one row, actions full-width underneath. Nothing may
+     overflow horizontally at 390px, so the buttons share the row and wrap. */
+  .import-banner { gap: 12px; padding: 12px; }
+  .import-banner-thumb { width: 56px; height: 56px; }
+  .import-banner-info { flex-basis: calc(100% - 68px); }
+  .import-banner-actions { flex-basis: 100%; }
+  .import-banner-actions .import-btn { flex: 1 1 auto; padding: 9px 12px; text-align: center; }
+}

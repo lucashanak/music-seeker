@@ -220,6 +220,9 @@
       </div>
     </div>
   </div>
+  <!-- Shown by playlistimport.js when a Spotify/Deezer playlist or album link is
+       pasted into the search box (it also hides #searchResults while it's up). -->
+  <div id="importBanner" class="import-banner" style="display:none;"></div>
   <div id="searchResults" class="grid"></div>
   <div id="searchLoadMore" style="text-align:center; padding:20px; display:none;">
     <div class="skeleton" style="height:40px; width:200px; margin:0 auto;"></div>
@@ -328,7 +331,10 @@
   <div id="libraryList">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
       <h2 class="page-title" style="margin:0;">My Library</h2>
-      <button id="newLibPlaylist" class="btn-check-new">+ New Playlist</button>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="importPlaylistBtn" class="btn-check-new">Import playlist&hellip;</button>
+        <button id="newLibPlaylist" class="btn-check-new">+ New Playlist</button>
+      </div>
     </div>
     <p class="page-subtitle">Playlists saved on this server.</p>
     <div class="card lib-card" id="likedSongsTile" style="margin-bottom:18px;">
@@ -424,6 +430,9 @@
       <div class="playlist-hero-info">
         <h2 id="plDetailName"></h2>
         <p id="plDetailCount"></p>
+        <!-- Import provenance / truncation note + its one-click escape hatch
+             (filled by spotify.js showImportedPlaylist, hidden otherwise). -->
+        <div id="plDetailNote" class="import-note" style="display:none;"></div>
       </div>
       <div class="playlist-hero-actions">
         <button class="btn-download btn-hero-primary" id="playPlaylist">&#9654; Play All</button>

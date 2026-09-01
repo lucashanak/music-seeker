@@ -227,12 +227,10 @@ export async function fetchPlaylistTracks(id, url, provider) {
 }
 
 // ── Playlist Detail ──
-// `opts` is optional and accepts either a provider string or
-// { provider, name, image } — callers that already know those (search cards)
-// get an instantly-populated hero; older 3-arg callers still work via url
-// inference.
-export async function loadPlaylistDetail(id, url, fromPage, opts) {
-  const o = typeof opts === 'string' ? { provider: opts } : (opts || {});
+// Reveal #playlistDetail and reset its hero. Shared by loadPlaylistDetail (which
+// then fetches the tracks) and showImportedPlaylist (which already has them), so
+// page reveal, history layer and back navigation behave identically for both.
+function _openPlaylistDetail({ id, url, fromPage, name, image, liked }) {
   store.currentPlaylistId = id;
   store.currentPlaylistUrl = url;
   store.playlistDetailSource = fromPage || null;
@@ -249,32 +247,101 @@ export async function loadPlaylistDetail(id, url, fromPage, opts) {
   $('#spotifyLibrary').style.display = 'none';
   $('#playlistDetail').style.display = '';
   history.pushState({ layer: 'playlistDetail' }, '');
-  const tracksEl = $('#playlistTracks');
-  tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   // Paint whatever the caller already knows so the hero isn't blank while loading.
-  if (id === 'liked') {
+  if (liked) {
     $('#plDetailImg').style.background = 'linear-gradient(135deg,#604be8,#1db954)';
     $('#plDetailImg').src = '';
   } else {
     $('#plDetailImg').style.background = '';
-    $('#plDetailImg').src = o.image || '';
+    $('#plDetailImg').src = image || '';
   }
-  $('#plDetailName').textContent = o.name || '';
+  $('#plDetailName').textContent = name || '';
   $('#plDetailCount').textContent = '';
+  const note = $('#plDetailNote');
+  if (note) { note.innerHTML = ''; note.style.display = 'none'; }
+}
+
+// Publish a track list as "the playlist on screen" and render it. Everything the
+// hero buttons act on (Play All / Shuffle / Add All / Add to playlist / Download
+// All) reads store.currentPlaylistTracks or the rendered cards, so this is the
+// only wiring an imported playlist needs.
+function _paintPlaylistTracks(tracks) {
+  store.currentPlaylistTracks = tracks.map(t => ({ name: t.name, artist: t.artist, album: t.album || '', image: t.image || '', url: t.url }));
+  $('#plDetailCount').textContent = `${tracks.length} tracks`;
+  renderResults(tracks, '#playlistTracks');
+  _mountTempoFilter(tracks, '#playlistTracks');
+}
+
+// Truncation / provenance line under the hero title. `onAction`, when given,
+// renders the one-click way out (the paste-track-links import).
+function _setPlaylistNote(text, onAction, actionLabel) {
+  const el = $('#plDetailNote');
+  if (!el || !text) return;
+  el.innerHTML = `<span>${esc(text)}</span>`;
+  if (typeof onAction === 'function') {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pl-note-btn';
+    btn.textContent = actionLabel || 'Import all tracks…';
+    btn.addEventListener('click', onAction);
+    el.appendChild(btn);
+  }
+  el.style.display = '';
+}
+
+// `opts` is optional and accepts either a provider string or
+// { provider, name, image } — callers that already know those (search cards)
+// get an instantly-populated hero; older 3-arg callers still work via url
+// inference.
+export async function loadPlaylistDetail(id, url, fromPage, opts) {
+  const o = typeof opts === 'string' ? { provider: opts } : (opts || {});
+  _openPlaylistDetail({ id, url, fromPage, name: o.name, image: o.image, liked: id === 'liked' });
+  const tracksEl = $('#playlistTracks');
+  tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
     const data = await fetchPlaylistTracks(id, url, o.provider);
     const tracks = data.tracks || [];
-    store.currentPlaylistTracks = tracks.map(t => ({ name: t.name, artist: t.artist, album: t.album || '', image: t.image || '', url: t.url }));
     // Caller-supplied values win; the response fills the gaps.
     if (id !== 'liked' && !o.image && data.image) $('#plDetailImg').src = data.image;
     $('#plDetailName').textContent = o.name || data.name || '';
-    $('#plDetailCount').textContent = `${tracks.length} tracks`;
-    renderResults(tracks, '#playlistTracks');
-    _mountTempoFilter(tracks, '#playlistTracks');
+    _paintPlaylistTracks(tracks);
   } catch (e) {
     store.currentPlaylistTracks = [];
     tracksEl.innerHTML = `<div class="empty-state"><p>Failed to load tracks: ${esc(e.message || 'unknown error')}</p></div>`;
   }
+}
+
+// Paint an already-resolved playlist (a playlist import) into #playlistDetail
+// with NO network call. `data` is the /api/import/* payload plus an optional
+// `url` (the link it was imported from) and `onImportMore` callback for the
+// truncation escape hatch.
+//
+// The id is synthetic — `import:<source>:<id>` — so nothing mistakes it for a
+// real Spotify/Deezer playlist id. Nothing fetches by it: fetchPlaylistTracks()
+// is only reached from loadPlaylistDetail(), and the hero buttons all read
+// store.currentPlaylistTracks / the rendered cards instead.
+export function showImportedPlaylist(data, fromPage) {
+  const source = data.source || 'import';
+  _openPlaylistDetail({
+    id: `import:${source}:${data.id || 'paste'}`,
+    // The real source link, so Download All sends something meaningful (it may
+    // legitimately be empty for a pasted list of track links).
+    url: data.url || '',
+    fromPage,
+    name: data.name || 'Imported tracks',
+    image: data.image || '',
+  });
+  const tracks = (data.tracks || []).map(t => ({
+    name: t.name,
+    artist: t.artist || '',
+    album: t.album || '',
+    image: t.image || '',
+    duration_ms: t.duration_ms || 0,
+    type: 'track',
+  }));
+  _paintPlaylistTracks(tracks);
+  _setPlaylistNote(data.note, data.onImportMore, data.importMoreLabel);
+  return tracks;
 }
 
 export function closePlaylistDetail(fromPopstate) {
@@ -493,10 +560,14 @@ export function closeAlbumDetail(fromPopstate) {
 // ── Init ──
 export function init() {
   // Tab switching
-  $$('.sp-tab').forEach(tab => {
+  // Bind ONLY the Spotify sub-tabs. The Library sub-tabs (#libraryTabs) reuse the
+  // .sp-tab class but carry data-lib-tab, so an unqualified binding set
+  // store.activeSpTab = undefined and then threw on .charAt(0) — i.e. every
+  // Library sub-tab click raised a TypeError and cleared the Spotify sections.
+  $$('.sp-tab[data-sp-tab]').forEach(tab => {
     tab.addEventListener('click', () => {
       if (tab.dataset.spTab === store.activeSpTab) return;
-      $$('.sp-tab').forEach(t => t.classList.remove('active'));
+      $$('.sp-tab[data-sp-tab]').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
       store.activeSpTab = tab.dataset.spTab;
       $$('.sp-section').forEach(s => s.style.display = 'none');
@@ -509,13 +580,19 @@ export function init() {
 
   $('#downloadPlaylist').addEventListener('click', () => {
     if (!store.currentPlaylistId) return;
+    // Liked Songs and imported playlists have no id Spotify would recognise, so
+    // the open.spotify.com fallback below must not be built for them — an import
+    // carries its real source link in store.currentPlaylistUrl (which is empty
+    // for a pasted list of track links, and that's fine: the job only needs
+    // playlist_tracks).
+    const synthetic = store.currentPlaylistId === 'liked' || String(store.currentPlaylistId).startsWith('import:');
     openModal({
       name: $('#plDetailName').textContent,
       artist: 'Playlist',
       image: store.currentPlaylistId === 'liked' ? '' : $('#plDetailImg').src,
       // Prefer the real playlist url — non-Spotify playlists (Deezer, YT Music)
       // would otherwise be sent as a bogus open.spotify.com link.
-      url: store.currentPlaylistId === 'liked' ? '' : (store.currentPlaylistUrl || `https://open.spotify.com/playlist/${store.currentPlaylistId}`),
+      url: store.currentPlaylistUrl || (synthetic ? '' : `https://open.spotify.com/playlist/${store.currentPlaylistId}`),
       type: 'playlist',
     });
   });

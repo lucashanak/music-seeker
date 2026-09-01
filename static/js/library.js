@@ -1055,6 +1055,13 @@ export function init() {
     }
   });
 
+  // Import playlist — a shared Spotify/Deezer link, or a pasted list of track
+  // links. Lands in the playlist detail view; nothing is downloaded.
+  const importBtn = $('#importPlaylistBtn');
+  if (importBtn) importBtn.addEventListener('click', () => {
+    import('./playlistimport.js').then(m => m.openImportModal());
+  });
+
   // New Playlist
   const newBtn = $('#newLibPlaylist');
   if (newBtn) newBtn.addEventListener('click', async () => {

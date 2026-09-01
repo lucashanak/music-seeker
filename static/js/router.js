@@ -28,7 +28,26 @@ export function switchPage(page, fromPopstate) {
     import('./library.js').then(m => m.switchLibraryTab && m.switchLibraryTab(legacyLibTab[page]));
     return;
   }
-  if (page === store.currentPage) return;
+  if (page === store.currentPage) {
+    // Opening a playlist from search reveals #playlistDetail *inside* Library and
+    // sets currentPage='library', so a later "Library" nav click used to hit this
+    // early return and do nothing — the button looked dead. Dismiss that overlay
+    // and re-run the page loader instead. We deliberately don't call
+    // closePlaylistDetail(): that would navigate back to the detail's source page
+    // (e.g. Search), which is not what clicking "Library" asks for.
+    const pd = $('#playlistDetail');
+    if (page === 'library' && pd && pd.offsetParent !== null) {
+      pd.style.display = 'none';
+      if ($('#spotifyLibrary')) $('#spotifyLibrary').style.display = '';
+      store.playlistDetailSource = null;
+      // Consume the detail's pushed {layer:'playlistDetail'} entry. Without this
+      // the next Back press lands on it, finds the overlay already closed and
+      // does nothing — i.e. one swallowed Back.
+      history.replaceState({ page }, '');
+      if (pageLoaders[page]) pageLoaders[page]();
+    }
+    return;
+  }
   if (!fromPopstate) history.pushState({ page }, '');
   // Update desktop nav
   $$('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
@@ -68,6 +87,10 @@ export function searchFor(query, type) {
   if ($('#albumDetail')) $('#albumDetail').style.display = 'none';
   $('#searchResults').style.display = '';
   $('#searchInput').value = query;
+  // Setting .value fires no `input` event, so the playlist-import banner would
+  // otherwise stay up (with live Play/Download buttons for the old import)
+  // above these unrelated results.
+  import('./playlistimport.js').then(m => m.hideBanner && m.hideBanner()).catch(() => {});
   $('#searchClear').style.display = 'block';
   store.searchType = type;
   $$('.type-btn[data-type]').forEach(b => b.classList.remove('active'));

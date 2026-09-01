@@ -23,6 +23,7 @@ import { init as initParty } from './party.js';
 import { init as initLibrary, loadLibraryPage, closeLibraryDetail, closeLikedSongs } from './library.js';
 import { init as initRecommendations } from './recommendations.js';
 import { init as initFeedback } from './feedback.js';
+import { init as initPlaylistImport } from './playlistimport.js';
 import { initVirtualKeyboard } from './utils.js';
 
 // ── Wire up cross-module references ──
@@ -71,6 +72,10 @@ initParty();
 initLibrary();
 initRecommendations();
 initFeedback();
+// After initSearch(): both attach an #searchInput 'input' listener and this one
+// must see the value search.js already reacted to (order is cosmetic — neither
+// cancels the other).
+initPlaylistImport();
 initVirtualKeyboard();
 
 // Auth init last (triggers initApp which depends on everything above)
