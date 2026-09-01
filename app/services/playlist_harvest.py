@@ -111,7 +111,12 @@ _HARVEST_JS = r"""
       const m = (a && a.getAttribute('href') || '').match(/\/track\/([A-Za-z0-9]{22})/);
       const name = (r.querySelector('[data-testid="internal-track-link"]')?.innerText || '').trim();
       const art = [...r.querySelectorAll('a[href*="/artist/"]')].map(x => x.innerText.trim()).join(', ');
-      if (m && name) seen.set(m[1], {id: m[1], name, artist: art});
+      // Each row carries its album art as a 64px thumbnail; the CDN encodes the
+      // size in the path, so ask for the 300px variant instead of shipping a
+      // thumbnail into a 200px card grid. Costs nothing — no extra request.
+      const img = (r.querySelector('img')?.getAttribute('src') || '')
+        .replace('/ab67616d00004851', '/ab67616d00001e02');
+      if (m && name) seen.set(m[1], {id: m[1], name, artist: art, image: img});
     });
     window.__msHarvestCount = seen.size;
   };
@@ -389,6 +394,12 @@ async def _run_harvest(url: str, on_progress=None) -> dict:
             "The playlist page loaded but showed no tracks — it may be private, "
             "empty, or Spotify changed its page.")
     name = (data.get("name") or "").replace(" | Spotify", "").strip()
+    # A row whose thumbnail hadn't loaded when we scrolled past yields no art;
+    # the playlist cover beats a blank tile in the card grid.
+    cover = data.get("image") or ""
+    for t in tracks:
+        if not t.get("image"):
+            t["image"] = cover
     # Never log the payload itself, only its shape.
     logger.info("Harvested %d tracks from %s", len(tracks), url)
     return {
@@ -401,7 +412,7 @@ async def _run_harvest(url: str, on_progress=None) -> dict:
 
 
 async def harvest_collection(url: str, on_progress=None) -> dict:
-    """`{name, image, tracks: [{name, artist, id}], count, via}` for a public
+    """`{name, image, tracks: [{name, artist, id, image}], count, via}` for a public
     Spotify playlist/album, read from a real browser's rendered DOM.
 
     Raises ValueError for an unsupported link and a `HarvestError` subclass for
