@@ -529,11 +529,11 @@
         <div class="setting-group dj-cf-only" style="display:none;">
           <label class="setting-label">Smart Queue</label>
           <select class="setting-select" id="settingDjSmartQueue">
-            <option value="off" selected>Off — play queue in order</option>
+            <option value="off" selected>Playlist order — play the queue as it is</option>
             <option value="bpm">BPM Match — pick next track with closest BPM</option>
             <option value="bpm_key">BPM + Key — closest BPM with harmonic compatibility</option>
           </select>
-          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Picks the best next track from the remaining queue by BPM similarity (and optionally harmonic key). Only considers analyzed tracks. Does not reorder the queue.</p>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Chooses only which track plays <em>next</em> — the DJ crossfades and beat-sync apply either way. Playlist order keeps your queue exactly as it is; the BPM modes instead pick the best-matching track from the ones still unplayed (analyzed tracks only). Neither reorders the queue.</p>
         </div>
         <div class="setting-group dj-cf-only" style="display:none;">
           <label class="setting-label">Tempo</label>
@@ -1317,7 +1317,7 @@
       <div class="setting-group">
         <label class="setting-label" for="fpDjSmartQueue">Smart Queue</label>
         <select class="setting-select" id="fpDjSmartQueue">
-          <option value="off">Off — play queue in order</option>
+          <option value="off">Playlist order — queue as it is</option>
           <option value="bpm">BPM Match — closest BPM</option>
           <option value="bpm_key">BPM + Key — harmonic match</option>
         </select>
