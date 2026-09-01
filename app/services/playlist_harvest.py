@@ -111,9 +111,11 @@ _HARVEST_JS = r"""
   // earlier 165 came from on a list the page itself calls 155 songs).
   const grid = () => document.querySelector('[data-testid="playlist-tracklist"]')
     || document.querySelector('[role="grid"]');
-  // The rows carry their playlist position in aria-rowindex (1 = header row), so
-  // the highest index is the real length — a reliable stop condition instead of
-  // "no new rows for a while", which quits early whenever a fetch stalls.
+  // Highest aria-rowindex SEEN so far (1 = header row). This is only meaningful
+  // once scrolling has finished — the grid is virtualised, so early on it just
+  // reflects the handful of rendered rows. It is therefore a completeness CHECK
+  // at the end, never a stop condition: using it as one ended the loop after the
+  // first four rows.
   let expected = 0;
   const grab = () => {
     const g = grid();
@@ -142,9 +144,6 @@ _HARVEST_JS = r"""
   grab();
   let stagnant = 0, prev = 0;
   for (let i = 0; i < 400 && stagnant < 12; i++) {
-    // Complete: we hold every row the grid claims to have. Stops on a fact
-    // rather than on a timeout, so a long list finishes as soon as it's done.
-    if (expected && seen.size >= expected) break;
     const el = scroller();
     if (el) el.scrollTop += el.clientHeight * 0.5; else window.scrollBy(0, 500);
     await sleep(700);
@@ -152,7 +151,7 @@ _HARVEST_JS = r"""
     if (seen.size === prev) stagnant++; else stagnant = 0;
     prev = seen.size;
   }
-  for (let i = 0; i < 3 && (!expected || seen.size < expected); i++) { await sleep(900); grab(); }
+  for (let i = 0; i < 3; i++) { await sleep(900); grab(); }
   const meta = p => document.querySelector('meta[property="' + p + '"]')?.getAttribute('content') || '';
   const title = meta('og:title') || (document.querySelector('h1')?.innerText || '').trim()
     || document.title.replace(/\s*\|\s*Spotify\s*$/, '').trim();

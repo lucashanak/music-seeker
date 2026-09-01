@@ -117,6 +117,11 @@ def _harvest_view(job: dict) -> dict:
         "name": job["name"],
         "image": job["image"],
         "tracks": job["tracks"],
+        # `expected` is what the playlist grid itself claimed; when it exceeds
+        # `count` the harvest came back short and the caller must not present it
+        # as the whole playlist.
+        "expected": job.get("expected") or 0,
+        "complete": job.get("complete", True),
         "error": job["error"],
     }
 
@@ -130,7 +135,8 @@ async def _run_harvest_job(job: dict):
     try:
         data = await playlist_harvest.harvest_collection(job["url"], on_progress=on_progress)
         job.update(status="done", name=data["name"], image=data["image"],
-                   tracks=data["tracks"], count=data["count"], progress=data["count"])
+                   tracks=data["tracks"], count=data["count"], progress=data["count"],
+                   expected=data.get("expected") or 0, complete=data.get("complete", True))
     except playlist_harvest.HarvestError as e:
         job.update(status="error", error=str(e))
     except asyncio.CancelledError:
@@ -156,7 +162,8 @@ async def start_harvest(req: HarvestRequest, response: Response,
     if cached:
         job = _new_harvest_job(req.url)
         job.update(status="done", name=cached["name"], image=cached["image"],
-                   tracks=cached["tracks"], count=cached["count"], progress=cached["count"])
+                   tracks=cached["tracks"], count=cached["count"], progress=cached["count"],
+                   expected=cached.get("expected") or 0, complete=cached.get("complete", True))
         response.status_code = 200
         return {"cached": True, **_harvest_view(job)}
 
