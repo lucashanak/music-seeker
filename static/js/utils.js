@@ -114,6 +114,22 @@ export function historyBack() {
   history.back();
 }
 
+// ── Focus without popping the on-screen keyboard on touch devices ──
+// Calling .focus() on an <input>/<textarea> raises the virtual keyboard. That's
+// jarring on a phone/tablet when it happens on its own — on load, on navigating to
+// a screen, or when a modal opens the user didn't tap into. Only auto-focus when the
+// primary pointer is fine (mouse/trackpad); on touch, the user taps the field when
+// they actually want to type. Buttons don't need this (focusing a button opens no
+// keyboard), so those .focus() calls are left as-is.
+export function isFinePointer() {
+  try { return !window.matchMedia || window.matchMedia('(pointer: fine)').matches; }
+  catch { return true; }  // unknown → behave like before (focus)
+}
+export function autoFocus(el, { select = false } = {}) {
+  if (!el || !isFinePointer()) return;
+  try { el.focus(); if (select && typeof el.select === 'function') el.select(); } catch (e) {}
+}
+
 // ── Virtual keyboard: hide bottom nav + player bar when keyboard is open ──
 export function initVirtualKeyboard() {
   const inputTags = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
@@ -260,7 +276,7 @@ export function showInputModal(title, defaultValue = '', { okLabel = 'OK', place
     modal.querySelector('.input-modal-ok').addEventListener('click', submit);
     modal.querySelector('.input-modal-cancel').addEventListener('click', () => done(null));
     overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
-    setTimeout(() => { input.focus(); input.select(); }, 30);
+    setTimeout(() => autoFocus(input, { select: true }), 30);
   });
 }
 
@@ -291,7 +307,7 @@ export function showPlaylistFormModal({ title = 'Playlist', name = '', descripti
     const done = (val) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(val); };
     const submit = () => {
       const n = nameEl.value.trim();
-      if (!n) { nameEl.focus(); return; } // name is required — keep the modal open
+      if (!n) { autoFocus(nameEl); return; } // name is required — keep the modal open
       done({ name: n, description: descEl.value.trim() });
     };
     const onKey = (e) => {
@@ -302,7 +318,7 @@ export function showPlaylistFormModal({ title = 'Playlist', name = '', descripti
     modal.querySelector('.pl-form-ok').addEventListener('click', submit);
     modal.querySelector('.pl-form-cancel').addEventListener('click', () => done(null));
     overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
-    setTimeout(() => { nameEl.focus(); nameEl.select(); }, 30);
+    setTimeout(() => autoFocus(nameEl, { select: true }), 30);
   });
 }
 

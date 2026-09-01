@@ -1,7 +1,7 @@
 // settings.js — Settings page, user management, disk usage
 
 import { store } from './store.js';
-import { $, $$, esc, escAttr, formatSize, showToast, showConfirmModal } from './utils.js';
+import { $, $$, esc, escAttr, formatSize, showToast, showConfirmModal, autoFocus } from './utils.js';
 import { apiJson, apiFetch } from './api.js';
 import { switchPage } from './router.js';
 import { getPlayerModule } from './player_active.js';
@@ -508,7 +508,7 @@ function confirmDeleteTypeName(name) {
     });
     btn.addEventListener('click', () => { if (!btn.disabled) { overlay.remove(); resolve(true); } });
     input.addEventListener('keydown', e => { if (e.key === 'Enter' && !btn.disabled) { overlay.remove(); resolve(true); } });
-    setTimeout(() => input.focus(), 100);
+    setTimeout(() => autoFocus(input), 100);
   });
 }
 

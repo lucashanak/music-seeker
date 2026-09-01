@@ -184,7 +184,17 @@ export function renderQueue() {
 export function scrollToNowPlaying(el) {
   if (!el) return;
   const np = el.querySelector('.now-playing');
-  if (np) np.scrollIntoView({ block: 'center', behavior: 'instant' });
+  if (!np) return;
+  // Scroll ONLY this container to center the now-playing row. scrollIntoView() walks
+  // up and scrolls EVERY scrollable ancestor to reveal the target — including the
+  // overflow:hidden fixed .full-player. On desktop WebKit that shifted the whole
+  // full-player overlay up (both columns) and left a black band at the bottom when
+  // the now-playing track sat near the end of a long queue. Setting el.scrollTop
+  // directly touches only this list. Rects make it robust to offsetParent.
+  const elRect = el.getBoundingClientRect();
+  const npRect = np.getBoundingClientRect();
+  const delta = (npRect.top - elRect.top) - (el.clientHeight / 2) + (npRect.height / 2);
+  el.scrollTop = Math.max(0, el.scrollTop + delta);
 }
 
 // ── Queue Panel (small player) ──

@@ -1,7 +1,7 @@
 // search.js — doSearch, renderResults, checkLibrary, renderCards, infinite scroll, card helpers
 
 import { store } from './store.js';
-import { $, $$, esc, escAttr, formatDuration } from './utils.js';
+import { $, $$, esc, escAttr, formatDuration, autoFocus } from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { loadPlaylistDetail, loadShowDetail, loadArtistDetail, loadAlbumDetail } from './spotify.js';
@@ -726,7 +726,7 @@ export function init() {
     store.searchHasMore = false;
     _setKbdActive(-1);
     saveSearchState();
-    $('#searchInput').focus();
+    autoFocus($('#searchInput'));
     renderRecentSearches();
   });
 

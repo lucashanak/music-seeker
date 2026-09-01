@@ -4,7 +4,7 @@
 
 import { store } from './store.js';
 import { apiJson } from './api.js';
-import { $, showToast } from './utils.js';
+import { $, showToast, autoFocus } from './utils.js';
 
 let _lastScreenshot = ''; // data:image/jpeg;base64,... or '' if capture failed/unchecked
 let _busy = false; // re-entrancy guard — capture can take seconds; ignore taps while in flight
@@ -222,7 +222,7 @@ function _openModal({ captureFailed = false } = {}) {
   async function submit() {
     if (submitting) return; // Enter key (repeat) bypasses submitBtn.disabled — guard here too
     const title = titleEl.value.trim();
-    if (!title) { titleEl.focus(); return; } // required — keep the modal open
+    if (!title) { autoFocus(titleEl); return; } // required — keep the modal open
     submitting = true;
     const screenshot = (hasThumb && attachEl && attachEl.checked) ? _lastScreenshot : '';
     submitBtn.disabled = true;
@@ -261,7 +261,7 @@ function _openModal({ captureFailed = false } = {}) {
   submitBtn.addEventListener('click', submit);
   modal.querySelector('.fb-cancel').addEventListener('click', done);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) done(); });
-  setTimeout(() => titleEl.focus(), 30);
+  setTimeout(() => autoFocus(titleEl), 30);
 }
 
 export function init() {

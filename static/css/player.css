@@ -46,9 +46,9 @@ body.player-active .player-bar { display: flex; }
 .full-player.open { transform: translateY(0); }
 .fp-drag-handle { width: 40px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.25); margin: 10px auto 0; flex-shrink: 0; }
 .fp-player-side { flex: 1; display: flex; flex-direction: column; align-items: center; min-height: 0; overflow: hidden; }
-.fp-queue-side { display: none; flex-direction: column; border-left: 1px solid var(--border); background: rgba(10,10,16,0.6); }
+.fp-queue-side { display: none; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: rgba(10,10,16,0.6); }
 .fp-queue-side .panel-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; font-weight: 600; flex-shrink: 0; }
-.fp-queue-side .queue-list { flex: 1; overflow-y: auto; padding: 8px; }
+.fp-queue-side .queue-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
 .fp-header { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; flex-shrink: 0; }
 .fp-header button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
 .fp-header button:hover { color: var(--text); background: rgba(255,255,255,.05); }

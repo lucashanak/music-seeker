@@ -1,7 +1,7 @@
 // auth.js — Login, logout, initApp, checkVersion, token management
 
 import { store } from './store.js';
-import { $, $$ } from './utils.js';
+import { $, $$, autoFocus } from './utils.js';
 import { apiJson, refreshStreamToken } from './api.js';
 import { showToast, historyBack } from './utils.js';
 import { requestNotificationPermission } from './utils.js';
@@ -179,7 +179,7 @@ export async function initApp() {
     // Restore previous search if any
     restoreSearch();
 
-    $('#searchInput').focus();
+    autoFocus($('#searchInput'));
     requestNotificationPermission();
   } catch {
     logout();
