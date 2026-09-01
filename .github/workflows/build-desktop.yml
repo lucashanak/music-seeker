@@ -476,6 +476,7 @@ jobs:
               inner class AndroidBridge {
                   @JavascriptInterface
                   fun onPlay(title: String, artist: String) {
+                      audioActive = true
                       val intent = Intent(this@MainActivity, AudioService::class.java).apply {
                           action = "ACTION_PLAY"
                           putExtra("title", title)
@@ -487,6 +488,7 @@ jobs:
 
                   @JavascriptInterface
                   fun onPause() {
+                      audioActive = false
                       startService(Intent(this@MainActivity, AudioService::class.java).apply {
                           action = "ACTION_PAUSE"
                       })
@@ -494,6 +496,7 @@ jobs:
 
                   @JavascriptInterface
                   fun onStop() {
+                      audioActive = false
                       startService(Intent(this@MainActivity, AudioService::class.java).apply {
                           action = "ACTION_STOP"
                       })
@@ -576,6 +579,34 @@ jobs:
                   }
 
                   injectBridge()
+              }
+
+              // True while the web player is actually playing audio.
+              //
+              // wry's TauriActivity.onPause() calls mWebView.onPause(), which backgrounds the
+              // page and lets Chromium throttle it. The CURRENT track keeps playing, because
+              // that is the native media pipeline — but the track TRANSITION is pure JS: the
+              // `ended` handler has to swap src and call play(). A throttled page therefore
+              // stalls exactly in the gap between two tracks, and only continues when the
+              // screen wakes the activity back up. That is the "stops between tracks in my
+              // pocket, wake the phone and it resumes" report.
+              //
+              // While audio is active we undo that pause and keep the page fully alive. The
+              // foreground service and its PARTIAL_WAKE_LOCK are already holding the process
+              // and CPU for playback, so this adds no new battery class. When nothing is
+              // playing the flag is false and wry's pause stands, so an idle backgrounded app
+              // still gets throttled normally.
+              @Volatile private var audioActive = false
+
+              override fun onPause() {
+                  super.onPause()   // wry: mWebView.onPause()
+                  if (audioActive) {
+                      webViewRef?.get()?.let { wv ->
+                          wv.post {
+                              try { wv.onResume(); wv.resumeTimers() } catch (e: Exception) {}
+                          }
+                      }
+                  }
               }
 
               override fun onResume() {
@@ -690,6 +721,10 @@ jobs:
                           schedulePauseStop()
                       }
                       "ACTION_PROGRESS" -> {
+                          // acquire() carries a 1h safety timeout and was only re-armed by
+                          // ACTION_PLAY, so a long unattended session lost the wake lock
+                          // mid-track. This is a no-op while the lock is still held.
+                          acquireWakeLock()
                           currentPosition = intent.getLongExtra("position", 0L)
                           currentDuration = intent.getLongExtra("duration", 0L)
                           updatePlaybackState(true)
