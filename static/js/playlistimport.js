@@ -192,6 +192,187 @@ function openImported(data, fromPage) {
   }, fromPage);
 }
 
+// ── The "grab the whole playlist" helper ──
+// A Spotify link alone can never give us more than 100 tracks: the public embed
+// page carries only the first 100 and ignores offset/limit. The web player gets
+// the rest from a private, TOTP-signed endpoint whose own response says using it
+// is "not permitted under the Spotify Developer Terms" — so we don't replicate
+// it server-side. Instead the USER runs this in their own browser, on the page
+// they legitimately opened, and pastes the resulting links into the import box.
+//
+// Shipped as source text (via Function.prototype.toString) rather than a string
+// literal so there is nothing to escape and `node --check` validates it. It runs
+// on open.spotify.com, so it must stay 100% self-contained — no imports, no
+// globals of ours, no throwing on a page that isn't a playlist.
+async function harvestSpotifyPlaylist() {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const seen = new Set();
+
+  const grab = () => document.querySelectorAll('a[href*="/track/"]').forEach(a => {
+    const m = (a.getAttribute('href') || '').match(/\/track\/([A-Za-z0-9]{22})/);
+    if (m) seen.add('https://open.spotify.com/track/' + m[1]);
+  });
+
+  // The track list is virtualised: only the visible rows exist in the DOM, so
+  // the tallest scrollable element has to be scrolled to page the rest in.
+  const scroller = () => [...document.querySelectorAll('*')]
+    .filter(e => e.scrollHeight > e.clientHeight + 200 && e.clientHeight > 200)
+    .sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
+
+  const hud = document.createElement('div');
+  hud.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;' +
+    'padding:10px 14px;border-radius:10px;background:#1db954;color:#000;' +
+    'font:600 13px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4)';
+  const say = (text) => { hud.textContent = 'MusicSeeker: ' + text; };
+  say('scanning…');
+  document.body.appendChild(hud);
+
+  grab();
+  let stagnant = 0, prev = 0;
+  for (let i = 0; i < 200 && stagnant < 8; i++) {
+    const el = scroller();
+    if (el) el.scrollTop += el.clientHeight * 0.85; else window.scrollBy(0, 900);
+    await sleep(550);
+    grab();
+    if (seen.size === prev) stagnant++; else stagnant = 0;
+    prev = seen.size;
+    say('collected ' + seen.size + ' tracks…');
+  }
+  hud.remove();
+
+  if (!seen.size) {
+    alert('MusicSeeker: no track links found on this page.\n\n' +
+      'Open a Spotify playlist or album page, let it load, then run this again.');
+    return;
+  }
+
+  const list = [...seen].join('\n');
+  // Clipboard fallback: a readonly textarea, focused and selected, so Ctrl+C works.
+  const manualCopy = () => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;inset:0;z-index:2147483647;padding:24px;' +
+      'background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#121212;color:#fff;border-radius:12px;padding:16px;' +
+      'width:640px;max-width:100%;font:13px/1.5 system-ui,sans-serif';
+    const label = document.createElement('div');
+    label.style.cssText = 'font-weight:600;margin-bottom:10px';
+    label.textContent = 'MusicSeeker: ' + seen.size + ' track links. Press Ctrl+C ' +
+      '(Cmd+C on a Mac) to copy, then click outside this box to close it.';
+    const field = document.createElement('textarea');
+    field.readOnly = true;
+    field.value = list;
+    field.style.cssText = 'width:100%;height:40vh;background:#000;color:#eee;' +
+      'border:1px solid #333;border-radius:8px;padding:10px;font:12px/1.4 monospace';
+    box.appendChild(label);
+    box.appendChild(field);
+    wrap.appendChild(box);
+    wrap.addEventListener('click', (e) => { if (e.target === wrap) wrap.remove(); });
+    document.body.appendChild(wrap);
+    field.focus();
+    field.select();
+  };
+
+  try {
+    await navigator.clipboard.writeText(list);
+    alert('MusicSeeker: copied ' + seen.size + ' track links to the clipboard.\n\n' +
+      'Paste them into the MusicSeeker import box.');
+  } catch (e) {
+    manualCopy();
+  }
+}
+
+// Console form: paste, press Enter. Bookmarklet form: `void` keeps the returned
+// promise from replacing the page in browsers that navigate on a truthy result.
+const HARVEST_SNIPPET = '(' + String(harvestSpotifyPlaylist) + ')();';
+const HARVEST_BOOKMARKLET = 'javascript:' + encodeURIComponent('void (' + String(harvestSpotifyPlaylist) + ')();');
+
+const HARVEST_STEPS = [
+  'Copy the helper below.',
+  'Open the playlist on open.spotify.com in a browser tab and let the page load.',
+  'Open the browser console (F12 → Console), paste the helper and press Enter.',
+  'Wait — it scrolls the list itself and reports how many tracks it found.',
+  'Come back here and paste the copied links into the box above.',
+];
+
+// Reveal `field` with `text` pre-selected. The manual path for every clipboard
+// refusal (no permission, no secure context, an older browser).
+function revealForManualCopy(field, text) {
+  field.value = text;
+  field.style.display = '';
+  autoFocus(field, { select: true });
+}
+
+async function copyHelper(text, label, field) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('no clipboard API');
+    await navigator.clipboard.writeText(text);
+    field.style.display = 'none';
+    showToast(`${label} copied to the clipboard`);
+  } catch (e) {
+    revealForManualCopy(field, text);
+    showToast(`Couldn't reach the clipboard — the ${label.toLowerCase()} is selected below, press Ctrl+C`, true);
+  }
+}
+
+// Built with DOM APIs on purpose: the snippet and the bookmarklet both contain
+// quotes, so interpolating them into innerHTML would break out of the attribute.
+function buildHarvestHelper() {
+  const box = document.createElement('details');
+  box.className = 'import-helper';
+
+  const summary = document.createElement('summary');
+  summary.className = 'import-helper-summary';
+  summary.textContent = 'More than 100 tracks? Grab the whole list…';
+  box.appendChild(summary);
+
+  const why = document.createElement('p');
+  why.className = 'import-helper-why';
+  why.textContent = 'A Spotify playlist link alone gives at most 100 tracks. ' +
+    'This helper grabs the whole list from the playlist page in your own browser.';
+  box.appendChild(why);
+
+  const steps = document.createElement('ol');
+  steps.className = 'import-helper-steps';
+  HARVEST_STEPS.forEach((text) => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    steps.appendChild(li);
+  });
+  box.appendChild(steps);
+
+  const field = document.createElement('textarea');
+  field.className = 'import-helper-field';
+  field.readOnly = true;
+  field.rows = 4;
+  field.style.display = 'none';
+
+  const actions = document.createElement('div');
+  actions.className = 'import-helper-actions';
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'import-btn';
+  copyBtn.textContent = 'Copy helper';
+  copyBtn.addEventListener('click', () => copyHelper(HARVEST_SNIPPET, 'Helper', field));
+  const markBtn = document.createElement('button');
+  markBtn.type = 'button';
+  markBtn.className = 'import-btn';
+  markBtn.textContent = 'Copy as bookmarklet';
+  markBtn.addEventListener('click', () => copyHelper(HARVEST_BOOKMARKLET, 'Bookmarklet', field));
+  actions.appendChild(copyBtn);
+  actions.appendChild(markBtn);
+  box.appendChild(actions);
+
+  const markHint = document.createElement('p');
+  markHint.className = 'import-helper-why';
+  markHint.textContent = 'The bookmarklet is the same helper as a bookmark: paste it as a ' +
+    'new bookmark’s address, then it’s one click on the playlist page next time.';
+  box.appendChild(markHint);
+
+  box.appendChild(field);
+  return box;
+}
+
 // ── Import modal (link OR pasted track links / "Artist - Title" lines) ──
 // utils.js has no multi-line modal (showInputModal is single-line and
 // showPlaylistFormModal is a name+description form), so this is a local one in
@@ -209,12 +390,15 @@ function showImportModal({ hint = '', prefill = '' } = {}) {
         ${hint ? `${esc(hint)}<br>` : ''}Paste a Spotify or Deezer playlist/album link — or the playlist's track links (in Spotify: select all &rarr; Copy links), one per line. Plain <em>Artist - Title</em> lines work too.
       </div>
       <textarea class="import-modal-field" rows="6" placeholder="https://open.spotify.com/playlist/…" style="padding:11px 12px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);border-radius:10px;font-size:13px;outline:none;resize:vertical;font-family:inherit;"></textarea>
-      <div style="display:flex;gap:8px;margin-top:14px;">
+      <div class="import-modal-actions" style="display:flex;gap:8px;margin-top:14px;">
         <button class="import-modal-ok" style="flex:1;padding:10px;border:none;background:var(--accent);color:#000;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;">Import</button>
         <button class="import-modal-cancel" style="flex:1;padding:10px;border:1px solid var(--border);background:none;color:var(--text-muted);border-radius:10px;cursor:pointer;font-size:13px;">Cancel</button>
       </div>`;
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
+    // Secondary and collapsed, but always available: the 100-track ceiling isn't
+    // visible until after an import, and the user may want it before pasting.
+    modal.insertBefore(buildHarvestHelper(), modal.querySelector('.import-modal-actions'));
     const field = modal.querySelector('.import-modal-field');
     field.value = prefill || '';
     const done = (val) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(val); };

@@ -52,8 +52,18 @@ _EMBED_TRACK_CAP = 100
 
 # Bounds for the paste path: one HTTP call per track, so cap width, depth AND the
 # product of the two. Worst case (every request burning its full timeout) is
-# ceil(200 / 10) * 4s = 80s, which fits under the 90s wall-clock deadline; past the
-# deadline the caller gets the partial result it has collected so far.
+# ceil(200 / 10) * 4s = 80s for the first pass, plus one retry pass over only the
+# entries that came back empty: at the measured failure rate (6 of 165 ≈ 4%) that
+# is ceil(8 / 10) * 4s = 4s, so 84s, still under the 90s wall-clock deadline. Past
+# the deadline the caller gets the partial result it has collected so far.
+#
+# _TEXT_MAX_ENTRIES stays at 200 deliberately: 200 covers a 165-track playlist,
+# and 200 is already the largest depth the guarantee above survives. 220 entries
+# would be ceil(220 / 10) * 4s = 88s + 4s retry = 92s, i.e. over the deadline. So
+# a longer paste keeps reporting `capped` instead of buying a bigger cap with a
+# broken deadline promise. (The measured rate — 165 links in 12s at concurrency
+# 10 — is ~14x faster than that worst case, but the cap is sized for the worst
+# case, not the median.)
 _TRACK_CONCURRENCY = 10
 _TEXT_MAX_ENTRIES = 200
 _TEXT_DEADLINE = 90
@@ -441,6 +451,23 @@ async def _resolve_deezer_ids(ids: list[str], out: dict[str, dict]) -> None:
     await asyncio.gather(*(one(i) for i in ids))
 
 
+async def _retry_missing(resolver, ids: list[str], out: dict[str, dict]) -> None:
+    """One extra pass over the ids `resolver` produced nothing for.
+
+    Per-track resolution fails transiently (a measured 165-link run lost 6 to
+    embed fetch failures, ~4%), and a single retry recovers most of them. Exactly
+    one extra attempt, never a loop: same `resolver`, so the same concurrency
+    bound, and it runs inside the coroutine `import_from_text` wraps in the
+    `_TEXT_DEADLINE` wait_for, so it borrows the existing wall clock rather than
+    extending it. Whatever is still missing afterwards stays `failed`.
+    """
+    missing = [i for i in ids if i not in out]
+    if not missing:
+        return
+    logger.info("Retrying %d of %d unresolved track(s)", len(missing), len(ids))
+    await resolver(missing, out)
+
+
 async def import_from_text(text: str, creds: dict | None = None) -> dict:
     """Resolve pasted per-track links (and `Artist - Title` lines) to
     `{tracks, requested, resolved, failed, capped, timed_out, via}`.
@@ -449,6 +476,10 @@ async def import_from_text(text: str, creds: dict | None = None) -> dict:
     `_TEXT_MAX_ENTRIES` (depth, reported as `capped`), `_TRACK_CONCURRENCY` (width)
     and `_TEXT_DEADLINE` (wall clock, reported as `timed_out`): past the deadline the
     partial result is returned instead of the request hanging or failing outright.
+
+    Per-track resolution gets exactly one retry pass over the entries that came back
+    empty (see `_retry_missing`) — inside the same deadline, so a bad upstream still
+    can't stretch the request.
     """
     entries = _extract_entries(text)
     spotify_ids = [v for k, v in entries if k == "spotify"]
@@ -475,8 +506,11 @@ async def import_from_text(text: str, creds: dict | None = None) -> dict:
                 sources.discard("api")
                 sources.add("embed")
                 await _resolve_spotify_ids_embed(unique_ids, spotify_map)
+                await _retry_missing(_resolve_spotify_ids_embed, unique_ids, spotify_map)
         if deezer_ids:
-            await _resolve_deezer_ids(list(dict.fromkeys(deezer_ids)), deezer_map)
+            unique_deezer_ids = list(dict.fromkeys(deezer_ids))
+            await _resolve_deezer_ids(unique_deezer_ids, deezer_map)
+            await _retry_missing(_resolve_deezer_ids, unique_deezer_ids, deezer_map)
 
     try:
         await asyncio.wait_for(resolve_all(), timeout=_TEXT_DEADLINE)
