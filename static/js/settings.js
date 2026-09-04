@@ -1037,7 +1037,14 @@ export function init() {
   // DLNA dropdown selects URL into manual field
   $('#settingDlnaDevice').addEventListener('change', () => {
     const val = $('#settingDlnaDevice').value;
-    $('#settingDlnaUrl').value = val;
+    const urlEl = $('#settingDlnaUrl');
+    urlEl.value = val;
+    // Assigning .value does NOT fire `input`, and the auto-save for this setting is
+    // bound to that event — so picking a renderer from the dropdown filled the box and
+    // then silently discarded the choice. Every other control on this page saves
+    // itself, so it looked saved and wasn't: casting kept falling back to whichever
+    // renderer was discovered first. Dispatch the event the auto-save listens for.
+    urlEl.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
   // Update checker is now in inline script in index.html (no module dependency)
