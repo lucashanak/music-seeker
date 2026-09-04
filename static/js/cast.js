@@ -29,6 +29,46 @@ async function _getDevicesOrScan() {
   return devices;
 }
 
+// Resolve the renderer the user actually chose.
+//
+// The stored preference is a descriptor URL (the backend also accepts it as a manual
+// renderer, so the field has to stay a URL) — and that URL embeds the renderer's IP.
+// A DHCP lease change therefore invalidates the setting: the Onkyo moved from
+// 192.168.1.95 to 192.168.1.45 and the saved URL matched nothing, so casting silently
+// fell through to devices[0] — the projector. Picking a DIFFERENT device than the one
+// the user chose is never a reasonable answer, so this resolves generously and then
+// refuses rather than guessing.
+//
+// The per-device URL only counts in dlna_only mode: that is the only mode whose UI
+// shows the field (#deviceDlnaRow is hidden otherwise), and an invisible value must not
+// override the app-wide picker the user CAN see.
+function _savedRendererPref() {
+  const perDevice = store.deviceOutputMode === 'dlna_only' ? (store.deviceDlnaRendererUrl || '') : '';
+  return perDevice || (store.appSettings && store.appSettings.dlna_renderer_url) || '';
+}
+
+function _resolveRenderer(devices, saved) {
+  if (!saved) return null;
+  // Stable UPnP UDN, if the preference was ever stored as an id.
+  let d = devices.find(x => x.id === saved);
+  if (d) return d;
+  // Exact descriptor URL — the normal case, while the IP still holds.
+  d = devices.find(x => x.location === saved);
+  if (d) return d;
+  // Same port and descriptor path on another host: the renderer moved to a new IP.
+  // Only accept it when exactly one device matches, so a pair of identical renderers
+  // can never be silently confused for one another.
+  try {
+    const want = new URL(saved);
+    const hits = devices.filter(x => {
+      try { const u = new URL(x.location); return u.port === want.port && u.pathname === want.pathname; }
+      catch { return false; }
+    });
+    if (hits.length === 1) return hits[0];
+  } catch { /* not a URL — nothing more to try */ }
+  return null;
+}
+
 // ── Shared flags ──
 // Set by the ENGINE's loadAndPlay/nextTrack/prevTrack cast branches and read by the
 // poll. Must be a shared object (live binding) so cross-module writes are visible here.
@@ -67,8 +107,12 @@ export async function autoCastAndPlay(item, cleanName, cleanArtist) {
   try {
     const devices = await _getDevicesOrScan();
     if (!devices.length) { showToast('No DLNA devices found. Configure in Settings.'); return; }
-    const savedUrl = store.deviceDlnaRendererUrl || store.appSettings.dlna_renderer_url || '';
-    const device = (savedUrl && devices.find(d => d.location === savedUrl)) || devices[0];
+    const savedUrl = _savedRendererPref();
+    const device = savedUrl ? _resolveRenderer(devices, savedUrl) : devices[0];
+    if (!device) {
+      showToast('Chosen DLNA renderer not found on the network — check Settings');
+      return;
+    }
     store.castDevice = device;
     castState.skipAutoAdvance = true;
     markCastTransition(); // arms a 20s safety clear so a stuck transition can't block forever
@@ -122,12 +166,17 @@ async function handleCastClick() {
     showToast('Searching for cast devices…');
     const devices = await _getDevicesOrScan();
     if (!devices.length) { showToast('No DLNA devices found. Configure in Settings.'); return; }
-    if (devices.length === 1) {
-      castToDevice(devices[0]);
+    const savedUrl = _savedRendererPref();
+    if (savedUrl) {
+      const savedDevice = _resolveRenderer(devices, savedUrl);
+      if (!savedDevice) {
+        showToast('Chosen DLNA renderer not found on the network — check Settings');
+        return;
+      }
+      castToDevice(savedDevice);
     } else {
-      const savedUrl = store.deviceDlnaRendererUrl || store.appSettings.dlna_renderer_url || '';
-      const savedDevice = savedUrl ? devices.find(d => d.location === savedUrl) : null;
-      castToDevice(savedDevice || devices[0]);
+      // No stated preference — unchanged behaviour: take the first renderer found.
+      castToDevice(devices[0]);
     }
   } catch (e) {
     showToast('Cast failed: ' + (e.message || ''));
