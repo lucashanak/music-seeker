@@ -4,7 +4,8 @@ import fs from 'fs';
 
 const BASE = 'http://192.168.1.22:8090';
 const USER = 'claude_test';
-const PASS = 'TestPass2026!';
+const PASS = process.env.MS_TEST_PASS;
+if (!PASS) { console.error('Set MS_TEST_PASS before running this harness.'); process.exit(1); }
 const SHOTS = '/tmp/lib-shots';
 fs.mkdirSync(SHOTS, { recursive: true });
 

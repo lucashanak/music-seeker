@@ -27,13 +27,20 @@ import time
 import httpx
 
 # ── Connections ──
-NAVIDROME_URL = "http://192.168.1.22:4533"
-NAVIDROME_USER = "lucas"
-NAVIDROME_PASSWORD = "Poiwer3122."
+NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://192.168.1.22:4533")
+NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "lucas")
+NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "")
 
-PROD_URL = "https://musicseeker.hanaktech.org"
-PROD_USER = "claude_test"
-PROD_PASSWORD = "TestPass2026!"
+PROD_URL = os.environ.get("PROD_URL", "https://musicseeker.hanaktech.org")
+PROD_USER = os.environ.get("MS_TEST_USER", "claude_test")
+PROD_PASSWORD = os.environ.get("MS_TEST_PASS", "")
+
+# Secrets come from the environment — this file is public. Fail loudly rather
+# than half-running against an unauthenticated API.
+for _name, _val in (("NAVIDROME_PASSWORD", NAVIDROME_PASSWORD),
+                    ("MS_TEST_PASS", PROD_PASSWORD)):
+    if not _val:
+        sys.exit(f"{_name} is not set — export it before running this harness.")
 
 PLAYLIST_NAME = "MyZouk"
 

@@ -165,7 +165,13 @@ echo "  Navidrome started"
 sleep 3
 echo ""
 echo "Triggering Navidrome scan..."
-curl -s "http://localhost:4533/rest/startScan?v=1.16.1&c=migrate&u=lucas&p=Poiwer3122." > /dev/null 2>&1 || true
+# Navidrome credentials come from the environment — this script is public.
+# Skip the rescan rather than embedding a password.
+if [ -n "${NAVIDROME_PASSWORD:-}" ]; then
+  curl -s "http://localhost:4533/rest/startScan?v=1.16.1&c=migrate&u=${NAVIDROME_USER:-lucas}&p=${NAVIDROME_PASSWORD}" > /dev/null 2>&1 || true
+else
+  echo "NAVIDROME_PASSWORD not set — skipping Navidrome rescan; trigger it manually."
+fi
 
 echo ""
 echo "=== Migration complete ==="
