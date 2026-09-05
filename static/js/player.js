@@ -128,7 +128,10 @@ export async function loadAndPlay() {
   // Cast mode: send to DLNA renderer (unless local-only)
   } else if (store.castDevice && mode !== 'local') {
     cast.castState.skipAutoAdvance = true;
-    cast.castState.transitioning = true;
+    // markCastTransition (not a bare flag) so both latches carry a hard expiry — see
+    // cast.js. A raw `transitioning = true` here could only ever be cleared by a
+    // PLAYING state, which a renderer that never starts the track does not send.
+    cast.markCastTransition();
     const castBody = {
       device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
       album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
@@ -410,7 +413,10 @@ export function playRecTrack(item) {
   // Cast mode: send to DLNA renderer
   if (store.castDevice) {
     cast.castState.skipAutoAdvance = true;
-    cast.castState.transitioning = true;
+    // markCastTransition (not a bare flag) so both latches carry a hard expiry — see
+    // cast.js. A raw `transitioning = true` here could only ever be cleared by a
+    // PLAYING state, which a renderer that never starts the track does not send.
+    cast.markCastTransition();
     apiJson('/api/dlna/cast', { method: 'POST', body: {
       device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
       album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,

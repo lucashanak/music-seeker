@@ -74,11 +74,27 @@ function _resolveRenderer(devices, saved) {
 // poll. Must be a shared object (live binding) so cross-module writes are visible here.
 export const castState = { skipAutoAdvance: false, transitioning: false };
 let _castTransitionTimer = null;
-// Suppress the disconnect branch for a window while a track change is in flight.
+// Cast-stall tracking: when the last cast was issued, and whether the renderer has
+// actually reported PLAYING since. A renderer that silently never starts the track is
+// the "DLNA stops between tracks" failure — the app told it to play and then waited
+// forever, because BOTH latches below are only released by seeing PLAYING.
+let _castIssuedAt = 0, _castSawPlaying = false, _castRetried = false;
+
+// Suppress the disconnect branch for a window while a track change is in flight, and
+// arm the stall clock. Both latches get a hard expiry: skipAutoAdvance in particular
+// used to be released ONLY by a PLAYING state, so one track the renderer never started
+// disabled auto-advance for the rest of the session — every later track then "ended"
+// with nothing happening.
 export function markCastTransition(ms = 20000) {
   castState.transitioning = true;
+  _castIssuedAt = Date.now();
+  _castSawPlaying = false;
+  _castRetried = false;
   clearTimeout(_castTransitionTimer);
-  _castTransitionTimer = setTimeout(() => { castState.transitioning = false; }, ms);
+  _castTransitionTimer = setTimeout(() => {
+    castState.transitioning = false;
+    castState.skipAutoAdvance = false;
+  }, ms);
 }
 
 // ── Private poll state ──
@@ -235,16 +251,52 @@ export function startCastPoll() {
       if (state.includes('playing')) {
         castState.skipAutoAdvance = false;
         castState.transitioning = false;
+        _castSawPlaying = true;
+        _castIssuedAt = 0;   // it started; the stall clock is done
         _castWasPlaying = true;
         if (dur > 0) _castLastDur = dur;
         if (pos > 0) _castLastPos = pos;
+      }
+      // A cast was issued and the renderer never reached PLAYING. Nothing else in the
+      // poll reacts to that: end-of-track detection needs a preceding PLAYING, so the
+      // session just sits there and the queue stops. Re-issue once (the renderer may
+      // have dropped the SetAVTransportURI), then give the track up and move on.
+      if (_castIssuedAt && !_castSawPlaying && store.castDevice) {
+        const waited = Date.now() - _castIssuedAt;
+        if (waited > 15000 && !_castRetried) {
+          _castRetried = true;
+          const it = store.playerQueue[store.playerIndex];
+          if (it) {
+            apiJson('/api/dlna/cast', { method: 'POST', body: {
+              device_id: store.castDevice.id, name: it.name || '', artist: it.artist || '',
+              album: it.album || '', image: it.image || '', duration_ms: it.duration_ms || 0,
+            }}).catch(() => {});
+          }
+        } else if (waited > 30000) {
+          _castIssuedAt = 0;
+          _castWasPlaying = false; _castLastPos = 0; _castLastDur = 0;
+          castState.skipAutoAdvance = false;
+          _ctx.nextTrack();
+          return;
+        }
       }
       // Auto-advance on a real end-of-track: we were playing (possibly via TRANSITIONING),
       // now stopped/no_media, observed real progress, and reached near the end. If the
       // duration is unknown, advance on any playing→stopped after progress.
       const ended = _castWasPlaying && (state.includes('stopped') || state.includes('no_media'));
       const sawProgress = _castLastPos > 1;
-      const nearEnd = _castLastDur === 0 || _castLastPos >= _castLastDur - 12;
+      // "Near the end" has to tolerate a stale tail. The last position we can observe is
+      // whatever the renderer reported on the last successful poll, and that sample can
+      // be far from the real end: each status query makes three UPnP calls with 3s
+      // timeouts, and a `stale` tick updates nothing at all — precisely what happens at
+      // the end of a track, when the renderer is busy finishing and loading. A fixed 12s
+      // window therefore missed real end-of-track stops and the queue simply halted.
+      // A percentage floor covers the long gap; the absolute one still covers short
+      // tracks. Stopping the renderer by hand inside the last 15% now advances instead
+      // of stopping — a far cheaper mistake than silently ending the session.
+      const nearEnd = _castLastDur === 0
+        || _castLastPos >= _castLastDur - 12
+        || _castLastPos >= _castLastDur * 0.85;
       if (!castState.skipAutoAdvance && ended && sawProgress && nearEnd) {
         _castWasPlaying = false; _castLastPos = 0; _castLastDur = 0;
         _ctx.nextTrack();
