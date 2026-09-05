@@ -19,7 +19,21 @@ logger = logging.getLogger(__name__)
 # statuses={500,502,503,504,429}), which can retry for minutes — far longer than the
 # frontend's 30s abort. Use a handful of quick attempts instead, and drop 429: retrying
 # a rate limit inside a single request cannot succeed and only deepens the rate limit.
+# The frontend records 12s clips, but shazamio fingerprints only the first
+# `segment_duration_seconds` of what it is given — the default 10 silently threw
+# away the last 2 seconds of every recording. Measured on 16 real library tracks
+# (clean 12s clips, 2026-09): segment=10 → 14/16 matched; segment=12 recovered
+# BOTH misses (Paulo Mac "Toda Noite", Kaysha "Forever") → 16/16. Keep this equal
+# to the clip length the client records (see CLIP_MS in static/js/party.js and the
+# 12s recorder in static/js/recognize.js).
+# Also measured and rejected in the same run, so nobody re-litigates them: a
+# multi-window retry (0-10s + 2-12s) recovered 0/2, and region endpoints
+# fr-FR/FR and pt-BR/BR recovered 0/2 — the catalogue is not region-gated here.
+# A segment longer than the clip is safe: verified 4s/6s/8s clips still match.
+_SEGMENT_SECONDS = 12
+
 _shazam = Shazam(
+    segment_duration_seconds=_SEGMENT_SECONDS,
     http_client=HTTPClient(
         retry_options=ExponentialRetry(
             attempts=3,

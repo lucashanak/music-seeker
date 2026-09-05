@@ -1,7 +1,7 @@
 // party.js — Continuous "party" song recognition.
 //
 // Turn it on at a party: it keeps the mic open and recognises the room every
-// ~15s, collecting each unique match into a live, curated list (nothing is
+// ~20s, collecting each unique match into a live, curated list (nothing is
 // downloaded while it runs). When you stop, you tick the keepers and they are
 // downloaded into an auto-created "Party <date>" playlist. Session is persisted
 // to localStorage so an accidental reload / screen-off doesn't lose the finds.
@@ -10,8 +10,12 @@ import { $, showToast, escAttr } from './utils.js';
 import { apiFetch, apiJson } from './api.js';
 
 const SESSION_KEY = 'ms_party_session';
-const CLIP_MS = 10000;  // record 10s per attempt
-const GAP_MS = 5000;    // pause between attempts (one recognise per ~17-20s)
+// 12s per clip: the server fingerprints up to _SEGMENT_SECONDS (12) of what it
+// receives, so a 10s clip left 2s of that window unused. Matches the single-shot
+// recorder in recognize.js. Measured: the extra audio recovered 2 of 16 tracks
+// that a 10s fingerprint missed.
+const CLIP_MS = 12000;
+const GAP_MS = 5000;    // pause between attempts (one recognise per ~19-22s)
 
 let active = false;
 let starting = false;    // synchronous guard: getUserMedia is async, so a double-tap must not open two streams
