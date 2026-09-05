@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 
 from app.models import QueueState, AddToQueueRequest, RecommendationRequest, PrewarmRequest
 from app.services import auth, player, radio, settings as app_settings
-from app.dependencies import _stream_auth, _get_device_id
+from app.dependencies import _stream_auth, _get_device_id, bind_navidrome_creds
 
 router = APIRouter(prefix="/api/player", tags=["player"])
 
@@ -166,7 +166,7 @@ async def _prewarm_track(track: dict, lossless: bool) -> None:
 
 @router.post("/prewarm")
 async def player_prewarm(req: PrewarmRequest, quality: str = "standard",
-                          user: dict = Depends(auth.get_current_user)):
+                          user: dict = Depends(bind_navidrome_creds)):
     """Pre-warm the server stream cache for the upcoming first track(s) so its
     first GET /stream pays no cold-start transcode latency. Fire-and-forget:
     returns 202 immediately and never blocks on the build. Local-file tracks are
@@ -181,27 +181,27 @@ async def player_prewarm(req: PrewarmRequest, quality: str = "standard",
 
 
 @router.get("/stream-token")
-async def get_stream_token(user: dict = Depends(auth.get_current_user)):
+async def get_stream_token(user: dict = Depends(bind_navidrome_creds)):
     """Mint a short-lived, stream-scoped token for <audio>/prefetch stream URLs,
     so the full session JWT never appears in a URL/log/Referer."""
     return {"token": auth.create_stream_token(user["username"])}
 
 
 @router.get("/queue")
-async def get_player_queue(request: Request, user: dict = Depends(auth.get_current_user)):
+async def get_player_queue(request: Request, user: dict = Depends(bind_navidrome_creds)):
     device_id = _get_device_id(request)
     return player.load_queue(user["username"], device_id)
 
 
 @router.put("/queue")
-async def save_player_queue(state: QueueState, request: Request, user: dict = Depends(auth.get_current_user)):
+async def save_player_queue(state: QueueState, request: Request, user: dict = Depends(bind_navidrome_creds)):
     device_id = _get_device_id(request)
     player.save_queue(user["username"], state.model_dump(), device_id)
     return {"status": "saved"}
 
 
 @router.post("/queue/add")
-async def add_to_queue(req: AddToQueueRequest, request: Request, user: dict = Depends(auth.get_current_user)):
+async def add_to_queue(req: AddToQueueRequest, request: Request, user: dict = Depends(bind_navidrome_creds)):
     device_id = _get_device_id(request)
     state = player.load_queue(user["username"], device_id)
     state["queue"].extend(req.tracks)
@@ -213,14 +213,14 @@ async def add_to_queue(req: AddToQueueRequest, request: Request, user: dict = De
 
 
 @router.delete("/queue")
-async def clear_player_queue(request: Request, user: dict = Depends(auth.get_current_user)):
+async def clear_player_queue(request: Request, user: dict = Depends(bind_navidrome_creds)):
     device_id = _get_device_id(request)
     player.clear_queue(user["username"], device_id)
     return {"status": "cleared"}
 
 
 @router.get("/resolve-source")
-async def resolve_source(name: str, artist: str = "", user: dict = Depends(auth.get_current_user)):
+async def resolve_source(name: str, artist: str = "", user: dict = Depends(bind_navidrome_creds)):
     """Resolve stream source without streaming. Returns source type."""
     result = await player.resolve_stream(name, artist)
     if not result:
@@ -232,7 +232,7 @@ async def resolve_source(name: str, artist: str = "", user: dict = Depends(auth.
 async def get_queue_recommendations(
     request: Request,
     limit: int = Query(15, ge=1, le=50),
-    user: dict = Depends(auth.get_current_user),
+    user: dict = Depends(bind_navidrome_creds),
 ):
     """Get recommendations based on the user's current queue."""
     device_id = _get_device_id(request)
@@ -248,7 +248,7 @@ async def get_queue_recommendations(
 @router.post("/recommendations")
 async def get_playlist_recommendations(
     req: RecommendationRequest,
-    user: dict = Depends(auth.get_current_user),
+    user: dict = Depends(bind_navidrome_creds),
 ):
     """Get recommendations based on an explicit track list."""
     if not req.tracks:

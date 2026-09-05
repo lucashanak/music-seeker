@@ -2,8 +2,13 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from app.services import auth, bpm, library
+from app.dependencies import bind_navidrome_creds
 
-router = APIRouter(prefix="/api/bpm", tags=["bpm"])
+# Router-level so it cannot be forgotten on a new endpoint: every handler here
+# can reach Navidrome (directly or through a service), and without the binding
+# it silently acts as the shared `lucas` service account.
+router = APIRouter(prefix="/api/bpm", tags=["bpm"],
+                   dependencies=[Depends(bind_navidrome_creds)])
 
 # Cap on bulk lookup list size to avoid unbounded work / huge payloads.
 LOOKUP_MAX = 500

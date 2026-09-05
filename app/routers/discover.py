@@ -2,8 +2,13 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.models import ResolveRequest
 from app.services import auth, lastfm, library, search_providers, settings as app_settings, radio
+from app.dependencies import bind_navidrome_creds
 
-router = APIRouter(prefix="/api", tags=["discover"])
+# Router-level so it cannot be forgotten on a new endpoint: every handler here
+# can reach Navidrome (directly or through a service), and without the binding
+# it silently acts as the shared `lucas` service account.
+router = APIRouter(prefix="/api", tags=["discover"],
+                   dependencies=[Depends(bind_navidrome_creds)])
 
 
 @router.get("/discover/tags")

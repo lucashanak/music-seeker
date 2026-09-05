@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 from app.services import auth, player, remote
-from app.dependencies import _get_device_id, _DEVICE_ID_RE
+from app.dependencies import _get_device_id, _DEVICE_ID_RE, bind_navidrome_creds
 
 router = APIRouter(prefix="/api/remote", tags=["remote"])
 
@@ -71,12 +71,12 @@ async def remote_events(token: str = "", device_id: str = ""):
 
 
 @router.get("/devices")
-async def get_devices(user: dict = Depends(auth.get_current_user)):
+async def get_devices(user: dict = Depends(bind_navidrome_creds)):
     return {"devices": remote.snapshot(user["username"])}
 
 
 @router.post("/command")
-async def send_command(req: RemoteCommandRequest, request: Request, user: dict = Depends(auth.get_current_user)):
+async def send_command(req: RemoteCommandRequest, request: Request, user: dict = Depends(bind_navidrome_creds)):
     controller_id = _get_device_id(request)
     if req.action not in _ACTIONS:
         raise HTTPException(400, "Invalid action")
@@ -108,7 +108,7 @@ async def send_command(req: RemoteCommandRequest, request: Request, user: dict =
 
 
 @router.post("/state")
-async def update_state(req: RemoteStateRequest, request: Request, user: dict = Depends(auth.get_current_user)):
+async def update_state(req: RemoteStateRequest, request: Request, user: dict = Depends(bind_navidrome_creds)):
     device_id = _get_device_id(request)
     remote.update_state(user["username"], device_id, {
         "playing": req.playing,

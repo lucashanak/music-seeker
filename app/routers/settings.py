@@ -6,14 +6,18 @@ from fastapi import APIRouter, HTTPException, Depends, Request, UploadFile, File
 
 from app.models import SettingsUpdate, LibraryCheckRequest, DeviceSettingRequest
 from app.services import auth, settings as app_settings, recognize, search_providers, library, recognize_history
-from app.dependencies import _get_device_id
+from app.dependencies import _get_device_id, bind_navidrome_creds
 
 logger = logging.getLogger(__name__)
 
 _DEVICE_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 _VALID_OUTPUT_MODES = {"default", "local", "dlna_only"}
 
-router = APIRouter(prefix="/api", tags=["settings"])
+# Router-level so it cannot be forgotten on a new endpoint: every handler here
+# can reach Navidrome (directly or through a service), and without the binding
+# it silently acts as the shared `lucas` service account.
+router = APIRouter(prefix="/api", tags=["settings"],
+                   dependencies=[Depends(bind_navidrome_creds)])
 
 
 def _title_matches(candidate_name: str, shazam_name: str) -> bool:

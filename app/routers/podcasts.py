@@ -5,8 +5,13 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.models import PodcastSubRequest, PodcastSubUpdate
 from app.services import auth, podcasts, search_providers, jobs, downloader
+from app.dependencies import bind_navidrome_creds
 
-router = APIRouter(prefix="/api/podcasts", tags=["podcasts"])
+# Router-level so it cannot be forgotten on a new endpoint: these handlers reach
+# Navidrome through the services they call, and without the binding they act as
+# the shared `lucas` service account.
+router = APIRouter(prefix="/api/podcasts", tags=["podcasts"],
+                   dependencies=[Depends(bind_navidrome_creds)])
 
 
 def _safe_path_component(name: str) -> str:

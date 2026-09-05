@@ -69,8 +69,16 @@ def _get_device_id(request: Request) -> str:
     return device_id
 
 
-def _stream_auth(request: Request, token: str = ""):
-    """Auth for stream endpoint — accepts token as query param (for <audio> element)."""
+async def _stream_auth(request: Request, token: str = ""):
+    """Auth for stream endpoint — accepts token as query param (for <audio> element).
+
+    Binds the user's Navidrome credentials too. A stream fetched from Navidrome
+    is counted as a play by whichever account fetched it, so leaving this unbound
+    put every user's listening history — and the play counts the taste profile
+    reads back — on the shared service account. This cannot use
+    `bind_navidrome_creds`, which resolves the user from the Authorization
+    header; an <audio> element cannot send one, hence the query token.
+    """
     if token:
         payload = auth_service._decode_token(token)
         if not payload:
@@ -80,8 +88,11 @@ def _stream_auth(request: Request, token: str = ""):
         if user_data is None:
             # Mirror get_current_user: a deleted user's still-unexpired token is rejected.
             raise HTTPException(401, "User no longer exists")
-        return {"username": payload["sub"], "is_admin": user_data.get("is_admin", False), **auth_service._user_perms(user_data)}
-    return auth_service.get_current_user(request)
+        user = {"username": payload["sub"], "is_admin": user_data.get("is_admin", False), **auth_service._user_perms(user_data)}
+    else:
+        user = auth_service.get_current_user(request)
+    library_service.set_request_creds(await _resolve_navidrome_creds(user))
+    return user
 
 
 def _get_dir_size(path: str) -> tuple[int, int]:

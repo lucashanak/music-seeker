@@ -4,9 +4,13 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from app.models import CreateUserRequest, UpdateUserPermsRequest
 from app.services import auth, downloader
-from app.dependencies import _get_dir_size
+from app.dependencies import _get_dir_size, bind_navidrome_creds
 
-router = APIRouter(prefix="/api", tags=["admin"])
+# Router-level so it cannot be forgotten on a new endpoint: these handlers reach
+# Navidrome through the services they call, and without the binding they act as
+# the shared `lucas` service account.
+router = APIRouter(prefix="/api", tags=["admin"],
+                   dependencies=[Depends(bind_navidrome_creds)])
 
 
 @router.get("/users")
