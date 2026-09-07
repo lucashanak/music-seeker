@@ -1,6 +1,11 @@
 # Native Apps (macOS & Android)
 
-MusicSeeker has native app wrappers built with [Tauri](https://tauri.app/) v2. The apps are thin WebView wrappers that load the MusicSeeker web interface — all features are served from your server, so the apps stay up to date automatically without reinstallation.
+MusicSeeker has native app wrappers built with [Tauri](https://tauri.app/) v2. The apps are thin WebView wrappers that load a MusicSeeker web interface over the network, so features stay up to date without reinstalling the app.
+
+> [!IMPORTANT]
+> **The published DMG and APK point at the author's own instance** (`https://musicseeker.hanaktech.org`), which is baked into `desktop/src-tauri/tauri.conf.json` at build time. They are not usable against your own server: login will fail every time even though the same credentials work in your browser, because the app is talking to a different server where you have no account.
+>
+> If you self-host, **build the apps yourself** with your own URL — see [Pointing the apps at your own server](#pointing-the-apps-at-your-own-server).
 
 ## Download
 
@@ -109,6 +114,25 @@ Both platforms build in parallel:
 4. `npx tauri android build --apk --target aarch64`
 5. Sign with persistent keystore (GitHub secret)
 6. Upload to GitHub Release
+
+### Pointing the apps at your own server
+
+The window URL is static configuration, not a runtime setting. Edit
+`desktop/src-tauri/tauri.conf.json` before building:
+
+```json
+{ "app": { "windows": [{ "url": "https://music.example.com/?app_version=__APP_VERSION__" }] } }
+```
+
+Keep the `?app_version=__APP_VERSION__` query intact — CI substitutes it, and the
+in-app update check compares it against the server's reported version.
+
+Then build via GitHub Actions in your own fork (push a `v*` tag), or locally with
+`npx tauri build` / `npx tauri android build --apk --target aarch64` from
+`desktop/`. Android additionally needs the signing keystore described below.
+
+A first-run "server address" screen would remove this step entirely; it does not
+exist yet.
 
 ### Version management
 
