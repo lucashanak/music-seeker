@@ -98,8 +98,10 @@ function _offerServerSwitch() {
   btn.addEventListener('click', () => {
     btn.disabled = true;
     window.__TAURI__.core.invoke('reset_server_url').catch(() => {
+      // An app built before this command existed cannot switch servers, and the
+      // useful thing to say is how to get one that can — not that it failed.
       btn.disabled = false;
-      btn.textContent = 'Could not open the server setup';
+      btn.textContent = 'Update the app first — this version cannot switch servers';
     });
   });
   $('#loginError').insertAdjacentElement('afterend', btn);
