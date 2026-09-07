@@ -1076,6 +1076,7 @@
         The app connects to the server — no updates needed when the backend changes.
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;" id="appDownloadButtons"></div>
+      <p class="setting-hint" id="appIpcStatus" style="display:none;margin-top:8px;"></p>
       <p class="setting-hint" id="macQuarantineHint" style="display:none;margin-top:8px;">
         Installing from inside the app replaces the bundle and clears macOS
         quarantine for you. A copy downloaded through a browser instead opens as
@@ -1571,11 +1572,17 @@ function _getApp(key, spec, btn) {
     btn.disabled = true;
     btn.textContent = 'Installing…';
     window.__TAURI__.core.invoke('install_macos_update', { url: url })
-      .catch(function() {
+      .catch(function(e) {
         // An older app without the command, or a failed install: fall back to
-        // the browser rather than leaving the button stuck.
+        // the browser rather than leaving the button stuck — but say why first.
         btn.disabled = false;
         btn.textContent = orig;
+        var st = document.getElementById('appIpcStatus');
+        if (st) {
+          st.style.display = '';
+          st.style.color = '#e74c3c';
+          st.textContent = 'Install failed: ' + (e && e.message ? e.message : String(e));
+        }
         downloadApp(spec.file, btn);
       });
     return;
@@ -1605,6 +1612,30 @@ function downloadApp(filename, btn) {
 }
 
 try { _renderAppDownloads(); } catch (e) {}
+
+// Report whether the app's IPC bridge actually works. window.__TAURI__ is
+// injected by withGlobalTauri regardless of whether a capability matches this
+// origin, so "the API exists" and "invoke is permitted" are different facts —
+// and with no devtools in a release build a denied invoke is otherwise silent.
+// current_server_url is the cheapest real command: no arguments, no side effects.
+try {
+  (function() {
+    var el = document.getElementById('appIpcStatus');
+    if (!el) return;
+    el.style.display = '';
+    if (!(window.__TAURI__ && window.__TAURI__.core)) {
+      el.textContent = 'App bridge: not present (running in a browser, or withGlobalTauri is off).';
+      return;
+    }
+    el.textContent = 'App bridge: checking…';
+    window.__TAURI__.core.invoke('current_server_url')
+      .then(function(url) { el.textContent = 'App bridge: OK — server ' + url; })
+      .catch(function(e) {
+        el.textContent = 'App bridge: BLOCKED — ' + (e && e.message ? e.message : String(e));
+        el.style.color = '#e74c3c';
+      });
+  })();
+} catch (e) {}
 
 // Update checker
 try {
@@ -1679,8 +1710,12 @@ try {
               link.textContent = 'Installing...';
               window.__TAURI__.core.invoke('install_macos_update', { url: downloadUrl })
                 .catch(function(e) {
+                  // Show what actually went wrong — a generic "Failed" for three
+                  // seconds hid the one piece of information worth having.
                   link.textContent = 'Failed';
-                  setTimeout(function() { link.textContent = 'Install'; link.disabled = false; }, 3000);
+                  var se = document.getElementById('appUpdateSize');
+                  if (se) se.textContent = (e && e.message ? e.message : String(e)).slice(0, 200);
+                  setTimeout(function() { link.textContent = 'Install'; link.disabled = false; }, 8000);
                 });
               return false;
             };
