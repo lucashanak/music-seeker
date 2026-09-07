@@ -132,6 +132,38 @@ fn current_server_url(app: tauri::AppHandle) -> String {
     stored_server_url(&app).unwrap_or_else(|| DEFAULT_SERVER_URL.to_string())
 }
 
+/// Hand a release download to the system browser.
+///
+/// `window.location.href = <binary url>` is what the web app used to do, and it
+/// cannot work inside a webview: there is no download manager, so it either does
+/// nothing or navigates the app away from itself. The clipboard fallback was
+/// gated to Android, which left desktop users with a button that silently did
+/// nothing.
+///
+/// Restricted to this project's release URLs on purpose. Any origin holding IPC
+/// can call this, so it must not become a general "open any URL" primitive.
+#[cfg(desktop)]
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    const RELEASES: &str = "https://github.com/lucashanak/music-seeker/releases/";
+    if !url.starts_with(RELEASES) {
+        return Err("Refusing to open a URL outside the project's releases".into());
+    }
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "linux")]
+    let program = "xdg-open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+
+    Command::new(program)
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open the browser: {e}"))
+}
+
+
 #[cfg(desktop)]
 #[tauri::command]
 async fn install_macos_update(url: String) -> Result<String, String> {
@@ -240,6 +272,7 @@ pub fn run() {
     {
         builder = builder.invoke_handler(tauri::generate_handler![
             install_macos_update,
+            open_external,
             set_server_url,
             reset_server_url,
             current_server_url

@@ -1069,6 +1069,12 @@
         The app connects to the server — no updates needed when the backend changes.
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;" id="appDownloadButtons"></div>
+      <p class="setting-hint" id="macQuarantineHint" style="display:none;margin-top:8px;">
+        The macOS build is unsigned, so a manually downloaded copy is quarantined and
+        opens as <em>"MusicSeeker is damaged"</em>. Clear it once after installing:
+        <code>sudo xattr -cr /Applications/MusicSeeker.app</code><br>
+        Updates installed from the banner below do this for you.
+      </p>
       <div id="appUpdateBanner" style="display:none;margin-top:12px;padding:12px;background:var(--accent-dim);border:1px solid var(--accent);border-radius:12px;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
           <div>
@@ -1503,15 +1509,14 @@ function _renderAppDownloads() {
     btn.addEventListener('click', function() { downloadApp(spec.file, btn); });
     host.appendChild(btn);
   });
+  var hint = document.getElementById('macQuarantineHint');
+  if (hint) hint.style.display = here === 'macos' ? '' : 'none';
 }
 
-function downloadApp(filename, btn) {
-  var url = 'https://github.com/lucashanak/music-seeker/releases/latest/download/' + filename;
-  var isAndroid = /android/i.test(navigator.userAgent);
-  if (!isAndroid) {
-    window.location.href = url;
-    return;
-  }
+// Last-resort handoff: put the link somewhere the user can act on it. Used
+// whenever neither the system browser nor a real download is available, so no
+// platform is left with a button that does nothing.
+function _copyDownloadLink(url, btn) {
   navigator.clipboard.writeText(url).then(function() {
     var orig = btn.textContent;
     btn.textContent = 'Link copied! Open in browser';
@@ -1519,6 +1524,27 @@ function downloadApp(filename, btn) {
   }).catch(function() {
     prompt('Copy this link and open in your browser:', url);
   });
+}
+
+function downloadApp(filename, btn) {
+  var url = 'https://github.com/lucashanak/music-seeker/releases/latest/download/' + filename;
+  var isAndroid = /android/i.test(navigator.userAgent);
+  var inApp = !!(window.__TAURI__ && window.__TAURI__.core);
+
+  // Inside a webview `window.location.href = <binary>` cannot download anything —
+  // there is no download manager, so it either does nothing at all or navigates
+  // the app away from itself. On desktop hand the URL to the real browser; the
+  // clipboard fallback covers Android (no open_external there) and any failure.
+  if (inApp) {
+    window.__TAURI__.core.invoke('open_external', { url: url })
+      .catch(function() { _copyDownloadLink(url, btn); });
+    return;
+  }
+  if (!isAndroid) {
+    window.location.href = url;
+    return;
+  }
+  _copyDownloadLink(url, btn);
 }
 
 try { _renderAppDownloads(); } catch (e) {}
