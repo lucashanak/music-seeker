@@ -11,6 +11,11 @@
     ]
   },
   "permissions": [
-    "core:default"
+    "core:default",
+    "allow-install_macos_update",
+    "allow-open_external",
+    "allow-set_server_url",
+    "allow-reset_server_url",
+    "allow-current_server_url"
   ]
 }

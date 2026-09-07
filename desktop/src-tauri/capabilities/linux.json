@@ -1,0 +1,19 @@
+{
+  "identifier": "linux-updater",
+  "description": "In-app update on Linux (portable binary swap or distro package)",
+  "platforms": [
+    "linux"
+  ],
+  "windows": [
+    "main",
+    "setup"
+  ],
+  "remote": {
+    "urls": [
+      "https://musicseeker.hanaktech.org/*"
+    ]
+  },
+  "permissions": [
+    "allow-install_linux_update"
+  ]
+}

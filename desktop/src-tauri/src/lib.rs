@@ -49,10 +49,22 @@ fn validate_server_url(url: &str) -> Result<String, String> {
 /// the address the user entered — no wildcard, so nothing else gains access, and
 /// the in-app updater keeps working on a self-hosted instance too.
 fn grant_server_ipc<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str) {
-    let capability = tauri::ipc::CapabilityBuilder::new("configured-server")
+    let mut capability = tauri::ipc::CapabilityBuilder::new("configured-server")
         .remote(format!("{}/*", url.trim_end_matches('/')))
         .window(MAIN_WINDOW)
-        .permission("core:default");
+        .permission("core:default")
+        // Same grants as capabilities/default.json: a configured server has to
+        // reach the same commands the default one does, or self-hosters get the
+        // "not allowed by ACL" rejection instead of working updates.
+        .permission("allow-install_macos_update")
+        .permission("allow-open_external")
+        .permission("allow-set_server_url")
+        .permission("allow-reset_server_url")
+        .permission("allow-current_server_url");
+    #[cfg(target_os = "linux")]
+    {
+        capability = capability.permission("allow-install_linux_update");
+    }
     if let Err(e) = app.add_capability(capability) {
         eprintln!("MusicSeeker: could not grant IPC to {url}: {e}");
     }
