@@ -227,8 +227,13 @@ async def _spotify_embed_import(kind: str, spotify_id: str) -> dict:
     name = _clean(entity.get("name")) or _clean(entity.get("title"))
     image = _embed_image(entity)
     # An album embed's entity name IS the album title; a playlist has no per-track album.
+    # The cover is passed for playlists too. It is only a placeholder there (a
+    # playlist mosaic is not a track's album art), but the embed's trackList
+    # carries no per-track image, and withholding it rendered a grid of blank
+    # tiles. Real per-track art arrives with the browser harvest, which reads it
+    # off each row.
     tracks = _embed_tracks(entity, album_name=name if kind == "album" else "",
-                           image=image if kind == "album" else "")
+                           image=image)
     raw = entity.get("trackList") or []
     if raw and not tracks:
         # Never hand back a successful-looking empty playlist: that is the silent-empty
