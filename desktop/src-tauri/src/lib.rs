@@ -53,17 +53,20 @@ fn grant_server_ipc<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str) {
         .remote(format!("{}/*", url.trim_end_matches('/')))
         .window(MAIN_WINDOW)
         .permission("core:default")
+        // Identifiers are kebab-case even though the commands are snake_case:
+        // the ACL validator rejects underscores ("identifiers can only include
+        // lowercase ASCII, hyphens ...").
         // Same grants as capabilities/default.json: a configured server has to
         // reach the same commands the default one does, or self-hosters get the
         // "not allowed by ACL" rejection instead of working updates.
-        .permission("allow-install_macos_update")
-        .permission("allow-open_external")
-        .permission("allow-set_server_url")
-        .permission("allow-reset_server_url")
-        .permission("allow-current_server_url");
+        .permission("allow-install-macos-update")
+        .permission("allow-open-external")
+        .permission("allow-set-server-url")
+        .permission("allow-reset-server-url")
+        .permission("allow-current-server-url");
     #[cfg(target_os = "linux")]
     {
-        capability = capability.permission("allow-install_linux_update");
+        capability = capability.permission("allow-install-linux-update");
     }
     if let Err(e) = app.add_capability(capability) {
         eprintln!("MusicSeeker: could not grant IPC to {url}: {e}");
