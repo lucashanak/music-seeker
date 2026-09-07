@@ -320,6 +320,9 @@
   flex: 1 1 100%; display: flex; align-items: center; gap: 8px; min-width: 0;
   font-size: 12px; color: var(--text-muted);
 }
+/* `display: flex` above beats the [hidden] attribute, so hiding this row in JS
+   left an empty status line whose spinner pulsed forever. */
+.import-harvest-status[hidden] { display: none; }
 .import-harvest-status--error { color: var(--text); }
 .import-harvest-text { min-width: 0; overflow-wrap: anywhere; }
 .import-harvest-spin {

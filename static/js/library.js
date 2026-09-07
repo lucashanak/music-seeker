@@ -10,6 +10,10 @@ import { getPlayerModule } from './player_active.js';
 import { loadLikes, getLikedTracks, likedCount } from './likes.js';
 
 let libraryCache = null;
+// Saved imported playlists (app-side store, NOT Navidrome). The render reads
+// this array by index rather than a closure, so re-rendering after a
+// rename/delete can never act on a stale copy.
+let savedImportsCache = null;
 
 // ── Library sub-tabs (Downloaded / Spotify / Podcasts / Favorites) ──
 // The former "My Spotify", "My Podcasts" and "Favorites" pages now live as
@@ -25,6 +29,10 @@ const _LIB_TABS = {
 };
 let _activeLibTab = null;
 const _loadedLibTabs = new Set();
+// One-shot: the sub-tab loadLibraryPage should restore next time Library is
+// (re)entered. Set by showLibrarySubView when a detail overlay borrows another
+// sub-view's container. See showLibrarySubView / loadLibraryPage.
+let _returnLibTab = null;
 
 function _spotifyHidden() {
   // A known API outage hides the tab regardless of per-user OAuth: the 403 is
@@ -62,6 +70,13 @@ function _setActiveLibTab(name, bypassGate = false) {
 export function showLibrarySubView(name) {
   const page = $('#pageLibrary');
   if (page) page.style.display = '';
+  // Revealing a sub-view to host a detail overlay must not permanently move the
+  // user's sub-tab: an imported playlist renders into #playlistDetail, which
+  // lives inside the Spotify sub-view, so without this an import opened from
+  // Downloaded (or from Search) would leave Library sitting on Spotify's tab.
+  // `|| 'downloaded'`: with no sub-tab opened yet the user's place is the
+  // default one, NOT the container we're about to borrow.
+  if (name !== _activeLibTab) _returnLibTab = _activeLibTab || 'downloaded';
   // bypassGate: a caller is about to render detail into this container, so show
   // it even if its tab is gated (e.g. Spotify hidden) — else detail renders hidden.
   _setActiveLibTab(name, true);
@@ -79,11 +94,29 @@ export function switchLibraryTab(name, force) {
   else if (name === 'favorites') import('./favorites.js').then(m => m.loadFavorites());
 }
 
+// Restore the borrowed sub-tab after a detail overlay closes via Back.
+// closePlaylistDetail re-enters an already-current 'library' page, and
+// switchPage early-returns there WITHOUT running the page loader — so
+// loadLibraryPage never gets the chance to put the sub-tab back. Same
+// discipline as playlistimport.js's popstate re-assert.
+function _restoreLibTabAfterOverlay() {
+  if (!_returnLibTab) return;
+  const page = $('#pageLibrary');
+  if (!page || page.offsetParent === null) return;   // not on Library right now
+  const pd = $('#playlistDetail');
+  if (pd && pd.offsetParent !== null) return;        // overlay still open
+  const back = _returnLibTab;
+  _returnLibTab = null;
+  switchLibraryTab(back);
+}
+
 // Page loader registered with the router for 'library'. Applies the Spotify-tab
 // visibility gate, then shows the active sub-tab (defaulting to Downloaded).
 export function loadLibraryPage() {
   _applySpotifyTabVisibility();
-  switchLibraryTab(_activeLibTab || 'downloaded');
+  const back = _returnLibTab;
+  _returnLibTab = null;
+  switchLibraryTab(back || _activeLibTab || 'downloaded');
 }
 
 // Format a total duration (seconds) coarsely: "1 h 23 min" / "42 min".
@@ -129,6 +162,9 @@ export async function loadLibrary() {
   if (likedDetail) likedDetail.style.display = 'none';
   $('#libraryList').style.display = '';
   _refreshLikedCount();
+  // Its own section, its own store — loaded in parallel so a Navidrome outage
+  // doesn't take the imported playlists down with it (or vice versa).
+  loadSavedImports();
   grid.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
   try {
     const data = await apiJson('/api/library/playlists');
@@ -136,6 +172,155 @@ export async function loadLibrary() {
     renderLibraryGrid(libraryCache, grid);
   } catch (e) {
     grid.innerHTML = `<div class="empty-state"><p>Failed to load library playlists</p></div>`;
+  }
+}
+
+// ── Saved imported playlists ──
+// An imported playlist can't be a Navidrome playlist (Navidrome only holds
+// tracks the user owns), so saved imports live in an app-side store and get
+// their own clearly-labelled section under the Navidrome grid. They stream;
+// they enter Navidrome only via the explicit "Download All" on the playlist.
+const _IMPORT_SOURCE_LABEL = { spotify: 'Spotify', deezer: 'Deezer', paste: 'Pasted links' };
+
+async function loadSavedImports() {
+  if (!$('#importedGrid')) return;
+  try {
+    const data = await apiJson('/api/import/saved');
+    savedImportsCache = data.playlists || [];
+  } catch (e) {
+    // Nothing saved / no store on this server: the section simply isn't there.
+    savedImportsCache = [];
+  }
+  renderImportedGrid();
+}
+
+function renderImportedGrid() {
+  const section = $('#importedSection');
+  const grid = $('#importedGrid');
+  if (!section || !grid) return;
+  const playlists = savedImportsCache || [];
+  // No saved imports → the whole section (heading and subtitle included) is out.
+  if (!playlists.length) {
+    section.style.display = 'none';
+    grid.innerHTML = '';
+    return;
+  }
+  section.style.display = '';
+  const countEl = $('#importedCount');
+  if (countEl) countEl.textContent = playlists.length === 1 ? '1 playlist' : `${playlists.length} playlists`;
+  grid.innerHTML = playlists.map((pl, i) => `
+    <div class="card lib-card imported-card" data-imp-idx="${i}">
+      ${pl.image ? `<img class="card-img" src="${escAttr(pl.image)}" alt="" loading="lazy">` : `<div class="card-img" style="background:linear-gradient(135deg,var(--accent),#1a1a2e);display:flex;align-items:center;justify-content:center;font-size:28px;color:var(--text);">&#9835;</div>`}
+      <div class="imported-badge">Imported</div>
+      <div class="card-body">
+        <div class="card-title">${esc(pl.name)}</div>
+        <div class="card-sub">${pl.count || 0} track${pl.count === 1 ? '' : 's'}${pl.source ? ' · ' + esc(_IMPORT_SOURCE_LABEL[pl.source] || pl.source) : ''}</div>
+      </div>
+    </div>`).join('');
+
+  $$('.imported-card', grid).forEach(card => {
+    const at = () => (savedImportsCache || [])[parseInt(card.dataset.impIdx)];
+    card.addEventListener('click', () => {
+      if (wasLongPress(card)) return;
+      const pl = at();
+      if (pl) _openSavedImport(pl);
+    });
+    // Visible kebab: the same menu right-click / long-press gives.
+    card.appendChild(makeKebabButton(() => _savedImportMenu(at())));
+  });
+  // #importedGrid is persistent and attachContextMenu binds once, so the
+  // handler must read the cache by index — never a captured array.
+  attachContextMenu(grid, {
+    selector: '.imported-card',
+    getItem: (targetEl) => _savedImportMenu((savedImportsCache || [])[parseInt(targetEl.dataset.impIdx)]),
+  });
+}
+
+function _savedImportMenu(pl) {
+  if (!pl) return null;
+  return {
+    title: pl.name,
+    actions: [
+      { label: 'Open', icon: '&#128194;', onClick: () => _openSavedImport(pl) },
+      { label: 'Play all', icon: '&#9654;', onClick: () => _playSavedImport(pl, true) },
+      { label: 'Queue all', icon: '+', onClick: () => _playSavedImport(pl, false) },
+      { divider: true },
+      { label: 'Rename…', icon: '&#9998;', onClick: () => _renameSavedImport(pl) },
+      { label: 'Remove from Library', icon: '&times;', danger: true, onClick: () => _deleteSavedImport(pl) },
+    ],
+  };
+}
+
+// The list endpoint carries no tracks — the detail one does.
+function _fetchSavedImport(id) {
+  return apiJson(`/api/import/saved/${encodeURIComponent(id)}`);
+}
+
+async function _openSavedImport(pl) {
+  try {
+    const full = await _fetchSavedImport(pl.id);
+    const m = await import('./playlistimport.js');
+    m.openSavedImport(full, 'library');
+  } catch (e) {
+    showToast(e.message || 'Failed to open imported playlist', true);
+  }
+}
+
+async function _playSavedImport(pl, playNow) {
+  try {
+    const full = await _fetchSavedImport(pl.id);
+    // Player-shaped, and deliberately WITHOUT the source track id — these are
+    // Spotify/Deezer ids, not Navidrome song ids, and the stream resolver must
+    // match by name/artist (falling back to YouTube) as it does for any import.
+    const tracks = (full.tracks || []).map(t => ({
+      name: t.name,
+      artist: t.artist || '',
+      album: t.album || '',
+      image: t.image || '',
+      duration_ms: t.duration_ms || 0,
+      type: 'track',
+    }));
+    if (!tracks.length) { showToast('Empty playlist'); return; }
+    // Not a Navidrome playlist — clear any playlist mode so nothing tries to
+    // write the queue back to one.
+    store.playlistMode = null;
+    if (playNow) {
+      const u = await import('./upnext.js');
+      u.playTracks(tracks);
+    } else {
+      const m = await getPlayerModule();
+      m.addToQueue(tracks);
+    }
+  } catch (e) {
+    showToast('Failed: ' + (e.message || ''), true);
+  }
+}
+
+async function _renameSavedImport(pl) {
+  const name = await showInputModal('Rename imported playlist', pl.name, { okLabel: 'Rename' });
+  if (!name || name === pl.name) return;
+  try {
+    await apiJson(`/api/import/saved/${encodeURIComponent(pl.id)}`, { method: 'PUT', body: { name } });
+    pl.name = name;            // the cache is what renderImportedGrid reads
+    renderImportedGrid();
+    showToast('Renamed');
+  } catch (e) {
+    showToast('Rename failed', true);
+  }
+}
+
+async function _deleteSavedImport(pl) {
+  const ok = await showConfirmModal('Remove imported playlist?',
+    `"${pl.name}" will be removed from your Library. Any tracks you already downloaded stay in Navidrome.`,
+    { okLabel: 'Remove' });
+  if (!ok) return;
+  try {
+    await apiJson(`/api/import/saved/${encodeURIComponent(pl.id)}`, { method: 'DELETE' });
+    savedImportsCache = (savedImportsCache || []).filter(p => p.id !== pl.id);
+    renderImportedGrid();
+    showToast(`Removed "${pl.name}"`);
+  } catch (e) {
+    showToast('Remove failed', true);
   }
 }
 
@@ -823,6 +1008,13 @@ export function init() {
 
   const backBtn = $('#backToLibrary');
   if (backBtn) backBtn.addEventListener('click', () => closeLibraryDetail());
+
+  // "Save to Library" on an imported playlist fires this — refresh the section
+  // so the new entry is there when the user backs out to the Library.
+  window.addEventListener('savedimportschange', () => loadSavedImports());
+
+  // Back out of a detail overlay hosted in another sub-view → restore the tab.
+  window.addEventListener('popstate', () => setTimeout(_restoreLibTabAfterOverlay, 0));
 
   // ── Liked Songs tile / view ──
   const likedTile = $('#likedSongsTile');

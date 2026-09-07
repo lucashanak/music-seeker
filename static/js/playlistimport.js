@@ -146,6 +146,10 @@ function renderBanner(data) {
   el.querySelectorAll('[data-import-act]').forEach(btn => {
     btn.addEventListener('click', () => runBannerAction(btn.dataset.importAct, data));
   });
+  // Keeping the import is a one-click action from here too; the wordier
+  // explanation stays on the detail view, where there's room for it.
+  const actions = el.querySelector('.import-banner-actions');
+  if (actions) actions.appendChild(buildSaveAction(data, { hint: false }));
   const note = el.querySelector('.import-banner-note');
   if (note) note.appendChild(buildTruncatedActions(data));
 }
@@ -198,13 +202,41 @@ async function runBannerAction(act, data) {
 function openImported(data, fromPage) {
   showImportedPlaylist({
     ...data,
-    note: data.truncated ? (data.note || TRUNCATED_NOTE) : '',
+    // `savedNote` is the provenance line for an already-saved import; a
+    // truncation note always wins over it.
+    note: data.truncated ? (data.note || TRUNCATED_NOTE) : (data.savedNote || ''),
     onImportMore: null,
   }, fromPage);
-  if (data.truncated) {
-    const note = $('#plDetailNote');
-    if (note) note.appendChild(buildTruncatedActions(data));
+  const note = $('#plDetailNote');
+  if (!note) return;
+  if (data.truncated) note.appendChild(buildTruncatedActions(data));
+  // A transient import can be kept; one that IS a saved playlist already is.
+  if (!data.saved) {
+    note.appendChild(buildSaveAction(data));
+    // _setPlaylistNote only reveals the note when there's note TEXT, and an
+    // untruncated import has none — so reveal it ourselves for the button.
+    note.style.display = '';
   }
+}
+
+// Open a saved import (Library → Downloaded → Imported playlists) in the same
+// detail view a fresh import lands in: Play All / Shuffle / + Add All stream,
+// Download All stays available. `saved` is the GET /api/import/saved/{id} body.
+export function openSavedImport(saved, fromPage) {
+  markNewImport();   // a harvest still running belongs to a previous import
+  openImported({
+    source: saved.source || 'import',
+    kind: 'playlist',
+    id: saved.id,
+    name: saved.name || 'Imported playlist',
+    image: saved.image || '',
+    tracks: saved.tracks || [],
+    total: (saved.tracks || []).length,
+    truncated: false,
+    url: saved.source_url || '',
+    saved: true,
+    savedNote: 'Saved import — these tracks stream. They only enter Navidrome once you download them.',
+  }, fromPage || store.currentPage);
 }
 
 // Which page the detail view should fall back to on Back. Re-rendering an
@@ -213,6 +245,102 @@ function importFromPage() {
   const detail = $('#playlistDetail');
   const open = detail && detail.style.display !== 'none';
   return open ? (store.playlistDetailSource || store.currentPage) : store.currentPage;
+}
+
+// ── Save an import into the Library ──
+// A Navidrome playlist can only hold tracks the user owns, so a kept import
+// lives in an app-side store (/api/import/saved) and streams from there;
+// getting it into Navidrome stays the explicit "Download All". Nothing here
+// auto-saves — it is always the user's click.
+
+// Every import the user has already saved this session, so a re-render (the
+// banner repaints on any import result) can't hand back an enabled Save button
+// for something that is already in the Library. The track count is part of the
+// identity on purpose: a harvested full list is a different thing to save than
+// the 100-track partial it replaced.
+const _savedKeys = new Set();
+let _saving = false;
+
+function importKey(data) {
+  return [data.source || 'import', data.id || 'paste', (data.tracks || []).length].join(':');
+}
+
+// The POST body. Tracks come from the payload we already hold (what openImported
+// was given) — nothing is re-fetched, and the FULL list is sent.
+function savePayload(data) {
+  return {
+    name: data.name || 'Imported playlist',
+    source: data.source || 'import',
+    source_url: harvestUrl(data),
+    image: data.image || '',
+    tracks: (data.tracks || []).map(t => ({
+      name: t.name,
+      artist: t.artist || '',
+      album: t.album || '',
+      image: t.image || '',
+      duration_ms: t.duration_ms || 0,
+      id: t.id || '',
+    })),
+  };
+}
+
+function markSaveDone(btn) {
+  btn.disabled = true;
+  btn.classList.add('import-save-btn--done');
+  btn.textContent = '✓ Saved to Library';
+}
+
+// Built with DOM APIs so it can be appended to either host (the banner's action
+// row, the detail hero's note) after that host's innerHTML is already set.
+function buildSaveAction(data, { hint = true } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'import-save';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'import-btn import-save-btn';
+  btn.textContent = 'Save to Library';
+  wrap.appendChild(btn);
+  if (hint) {
+    const why = document.createElement('span');
+    why.className = 'import-save-hint';
+    why.textContent = 'Keeps it in Library and streams it. Download All still gets the files.';
+    wrap.appendChild(why);
+  }
+  if (_savedKeys.has(importKey(data))) markSaveDone(btn);
+  else btn.addEventListener('click', () => saveImport(data, btn));
+  return wrap;
+}
+
+async function saveImport(data, btn) {
+  // Double-click guard: the button is disabled for the whole round trip and
+  // stays disabled on success, so one import can't be posted twice.
+  if (_saving || btn.disabled) return;
+  const payload = savePayload(data);
+  if (!payload.tracks.length) { showToast('Nothing to save — the import came back empty', true); return; }
+  _saving = true;
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Saving…';
+  try {
+    const res = await apiJson('/api/import/saved', { method: 'POST', body: payload }) || {};
+    _savedKeys.add(importKey(data));
+    markSaveDone(btn);
+    const name = res.name || payload.name;
+    const n = Number(res.count) || payload.tracks.length;
+    // `truncated` means the server capped the list — say so rather than
+    // reporting a clean save of a shorter playlist than the user just saw.
+    showToast(res.truncated
+      ? `Saved "${name}" — only the first ${n} track${n === 1 ? '' : 's'} were kept`
+      : `Saved "${name}" to Library — ${n} track${n === 1 ? '' : 's'}`);
+    // Library re-reads /api/import/saved when it hears this.
+    window.dispatchEvent(new Event('savedimportschange'));
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = label;
+    showToast(e.message || 'Could not save to Library', true);
+  } finally {
+    _saving = false;
+  }
 }
 
 // ── Automatic full-playlist harvest ──

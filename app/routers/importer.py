@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Depends, Response
 
 from pydantic import BaseModel, Field
 
-from app.services import auth, playlist_import, playlist_harvest
+from app.services import auth, playlist_import, playlist_harvest, imported_playlists
 from app.dependencies import _user_spotify_creds
 
 logger = logging.getLogger(__name__)
@@ -190,3 +190,83 @@ async def get_harvest(job_id: str, user: dict = Depends(auth.get_current_user)):
     if not job:
         raise HTTPException(404, "That fetch has expired — start it again.")
     return _harvest_view(job)
+
+
+# ── Saved imports (persisted, per-user) ─────────────────────────────
+#
+# An import is transient until it's saved here: /playlist, /tracks and /harvest all
+# just resolve a list. These routes give it a home WITHOUT touching Navidrome —
+# Subsonic playlists can only hold songs that exist in the library, which would drop
+# every not-yet-downloaded track. Getting the list into Navidrome stays the explicit
+# "Download All" + "Create playlist in Navidrome" action.
+
+# A body past this is a client bug, not an import: reject it at parse time (422)
+# instead of normalising a huge payload down to MAX_TRACKS. Anything between
+# MAX_TRACKS and this bound is stored truncated, with `truncated: true`.
+_SAVED_TRACKS_MAX = imported_playlists.MAX_TRACKS * 2
+
+
+class SavedPlaylistRequest(BaseModel):
+    name: str = Field("", max_length=imported_playlists.MAX_NAME_LEN)
+    source: str = Field("", max_length=imported_playlists.MAX_SOURCE_LEN)
+    source_url: str = Field("", max_length=2048)
+    image: str = Field("", max_length=2048)
+    tracks: list[dict] = Field(default_factory=list, max_length=_SAVED_TRACKS_MAX)
+
+
+class SavedPlaylistRename(BaseModel):
+    name: str = Field(max_length=imported_playlists.MAX_NAME_LEN)
+
+
+@router.post("/saved", status_code=201)
+async def save_imported_playlist(req: SavedPlaylistRequest,
+                                 user: dict = Depends(auth.get_current_user)):
+    """Persist an imported list for this user. `truncated` means fewer tracks were
+    stored than were sent — silently storing a short list is the bug class this
+    whole feature keeps tripping over, so it is always reported."""
+    try:
+        summary = imported_playlists.save(user["username"], {
+            "name": req.name,
+            "image": req.image,
+            "source": req.source,
+            "source_url": req.source_url,
+            "tracks": req.tracks,
+        })
+    except imported_playlists.PlaylistLimit as e:
+        raise HTTPException(409, str(e))
+    except OSError as e:
+        logger.exception("Saving an imported playlist failed")
+        raise HTTPException(500, f"Couldn't save the playlist: {e}")
+    return {"id": summary["id"], "name": summary["name"],
+            "count": summary["count"], "truncated": summary["truncated"]}
+
+
+@router.get("/saved")
+async def list_imported_playlists(user: dict = Depends(auth.get_current_user)):
+    """Summaries only (no track arrays) — the Library grid renders from these."""
+    return {"playlists": imported_playlists.list_for(user["username"])}
+
+
+@router.get("/saved/{pid}")
+async def get_imported_playlist(pid: str, user: dict = Depends(auth.get_current_user)):
+    entry = imported_playlists.get(user["username"], pid)
+    if not entry:
+        # Also the answer for another user's id: an unknown id and someone else's
+        # id must be indistinguishable.
+        raise HTTPException(404, "That imported playlist no longer exists.")
+    return entry
+
+
+@router.put("/saved/{pid}")
+async def rename_imported_playlist(pid: str, req: SavedPlaylistRename,
+                                   user: dict = Depends(auth.get_current_user)):
+    if not imported_playlists.rename(user["username"], pid, req.name):
+        raise HTTPException(404, "That imported playlist no longer exists.")
+    return {"status": "ok"}
+
+
+@router.delete("/saved/{pid}")
+async def delete_imported_playlist(pid: str, user: dict = Depends(auth.get_current_user)):
+    if not imported_playlists.delete(user["username"], pid):
+        raise HTTPException(404, "That imported playlist no longer exists.")
+    return {"status": "ok"}

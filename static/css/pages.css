@@ -108,6 +108,54 @@
 .btn-hero-secondary { width: auto; padding: 12px 28px; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); }
 .btn-hero-danger { width: auto; padding: 12px 28px; background: var(--red); color: #fff; }
 
+/* ── Imported playlists (Library → Downloaded) ──
+   Its own section under the Navidrome grid, separated by a rule so the two
+   grids never read as one list: these playlists are NOT in Navidrome, they
+   only stream, and the badge on each card says so at a glance. */
+.imported-section {
+  margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border);
+}
+.imported-title {
+  font-size: 16px; font-weight: 700; letter-spacing: -0.2px;
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+}
+.imported-count { font-size: 12px; font-weight: 500; color: var(--text-dim); }
+.imported-sub {
+  font-size: 12px; color: var(--text-muted); line-height: 1.5;
+  margin: 5px 0 16px; max-width: 560px;
+}
+/* Top-RIGHT on purpose: the kebab (.card .kebab-btn) owns top-left. */
+.imported-badge {
+  position: absolute; top: 8px; right: 8px; z-index: 4;
+  background: var(--accent-dim); border: 1px solid var(--accent); color: var(--accent);
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; pointer-events: none;
+}
+.imported-card:hover { border-color: var(--accent); }
+
+/* ── "Save to Library" on an imported playlist ──
+   Lives in the detail hero's note (#plDetailNote) and in the search banner's
+   action row, so it must wrap rather than widen its host. */
+.import-save {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px;
+}
+.import-banner-actions .import-save { margin-top: 0; }
+.import-save-hint {
+  font-size: 11px; color: var(--text-muted); line-height: 1.4;
+  flex: 1 1 180px; min-width: 0;
+}
+.import-save-btn { border-color: var(--accent); color: var(--accent); }
+.import-save-btn:disabled { cursor: default; }
+.import-save-btn--done {
+  background: var(--accent-dim); border-color: var(--accent);
+  color: var(--accent); opacity: .9;
+}
+
+@media (max-width: 640px) {
+  .imported-section { margin-top: 24px; padding-top: 18px; }
+  .import-save-btn { flex: 1 1 auto; text-align: center; }
+}
+
 /* ── Empty state ── */
 .empty-state {
   text-align: center; padding: 60px 20px; color: var(--text-muted);
