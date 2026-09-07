@@ -448,13 +448,16 @@ pub fn run() {
             // runtime data. No stored address -> DEFAULT_SERVER_URL, which is the
             // pre-existing behaviour, and the static capability already covers it.
             let handle = app.handle().clone();
-            match stored_server_url(&handle) {
-                Some(url) => {
-                    grant_server_ipc(&handle, &url);
-                    open_main_window(&handle, &url)?;
-                }
-                None => open_main_window(&handle, DEFAULT_SERVER_URL)?,
-            }
+            let server = stored_server_url(&handle)
+                .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
+            // Granted for the default too, not just a configured address. The
+            // static capability in capabilities/default.json was written for a
+            // window declared in tauri.conf.json; whether it also attaches to one
+            // built at runtime is not documented, and getting that wrong costs the
+            // IPC bridge — which is what the in-app updater and the server switch
+            // both ride on. Adding it unconditionally makes both paths identical.
+            grant_server_ipc(&handle, &server);
+            open_main_window(&handle, &server)?;
 
             // macOS ONLY: this menu lives in the global top-of-screen menu bar there,
             // which is expected. On Linux/Windows the same call renders an in-WINDOW
