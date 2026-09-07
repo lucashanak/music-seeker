@@ -7,17 +7,8 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "MusicSeeker",
-        "width": 1200,
-        "height": 800,
-        "minWidth": 400,
-        "minHeight": 600,
-        "url": "https://musicseeker.hanaktech.org/?app_version=__APP_VERSION__",
-        "titleBarStyle": "Overlay"
-      }
-    ],
+    "//": "No windows here on purpose: the window URL is the configured server, which is runtime data. lib.rs builds it (see open_main_window) so the webview is CREATED at that URL rather than navigated to it — capability matching for the initial URL is the documented case, navigation is not.",
+    "windows": [],
     "security": {
       "csp": "default-src * 'unsafe-inline' 'unsafe-eval' blob: data: media:;"
     }

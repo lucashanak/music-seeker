@@ -91,7 +91,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 ### Native Apps
 - **macOS** — standalone window with dock icon, keyboard shortcuts for reload/cache clear
 - **Android** — background audio playback, media notification with play/pause/skip controls and progress bar, microphone access for Shazam
-- ⚠️ **Self-hosters must build their own** — the released DMG/APK have the author's server URL baked in, so logging into your own instance from them will not work. See [native apps docs](docs/native-apps.md#pointing-the-apps-at-your-own-server).
+- **Configurable server** — the released DMG/APK default to the author's instance; self-hosters point them at their own address in-app, no rebuild needed ([how](docs/native-apps.md#choosing-your-server))
 - **Auto-update** — checks for new versions, shows update banner in Settings
 - [Full native apps documentation](docs/native-apps.md)
 

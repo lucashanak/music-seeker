@@ -73,9 +73,36 @@ export async function doLogin() {
     await initApp();
   } catch (e) {
     $('#loginError').textContent = e.message;
+    _offerServerSwitch();
   } finally {
     $('#loginBtn').disabled = false;
   }
+}
+
+// ── "Wrong server?" escape hatch (native apps only) ──
+// The published DMG/APK default to the author's instance, so a self-hoster's
+// first experience was a login that failed every time with no hint why — the app
+// was talking to a different server than their browser. A failed login inside
+// the app is exactly that moment, so the way out is offered there and nowhere
+// else: in a browser, or on a successful login, nothing is rendered at all.
+function _offerServerSwitch() {
+  const inApp = !!(window.__TAURI__ && window.__TAURI__.core);
+  if (!inApp || document.getElementById('switchServerBtn')) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'switchServerBtn';
+  btn.type = 'button';
+  btn.textContent = 'Not your server? Change address';
+  btn.style.cssText = 'display:block;margin:10px auto 0;background:none;border:0;'
+    + 'color:var(--text-muted);font:inherit;font-size:12.5px;text-decoration:underline;cursor:pointer';
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    window.__TAURI__.core.invoke('reset_server_url').catch(() => {
+      btn.disabled = false;
+      btn.textContent = 'Could not open the server setup';
+    });
+  });
+  $('#loginError').insertAdjacentElement('afterend', btn);
 }
 
 // ── App Init ──

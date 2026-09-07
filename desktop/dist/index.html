@@ -1,5 +1,141 @@
 <!DOCTYPE html>
-<html>
-<head><meta http-equiv="refresh" content="0;url=https://musicseeker.hanaktech.org"></head>
-<body></body>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>MusicSeeker — Server</title>
+<style>
+  :root {
+    --bg: #0f0f14; --surface: #1a1a22; --border: #2a2a35;
+    --text: #e8e8ef; --muted: #8b8b9a; --accent: #7c5cff; --danger: #e74c3c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    padding: 28px 20px calc(28px + env(safe-area-inset-bottom));
+  }
+  .card { width: 100%; max-width: 380px; }
+  h1 { font-size: 21px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  p.lead { color: var(--muted); margin: 0 0 22px; font-size: 14px; }
+  label { display: block; font-size: 12px; text-transform: uppercase;
+          letter-spacing: 0.06em; color: var(--muted); margin-bottom: 7px; }
+  input {
+    width: 100%; padding: 13px 14px; font-size: 16px; font-family: inherit;
+    color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 10px; outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+  button {
+    width: 100%; margin-top: 14px; padding: 13px 16px; font-size: 15px;
+    font-weight: 600; font-family: inherit; color: #fff; background: var(--accent);
+    border: 0; border-radius: 10px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.55; cursor: default; }
+  .msg { margin-top: 14px; font-size: 13.5px; min-height: 20px; }
+  .msg.err { color: var(--danger); }
+  .msg.ok { color: var(--muted); }
+  .hint { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border);
+          color: var(--muted); font-size: 12.5px; }
+  code { background: var(--surface); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Which server?</h1>
+  <p class="lead">MusicSeeker is self-hosted. Point the app at your own instance — the same address you open in a browser.</p>
+
+  <label for="url">Server address</label>
+  <input id="url" type="url" inputmode="url" autocapitalize="off" autocorrect="off"
+         spellcheck="false" placeholder="https://music.example.com">
+  <button id="connect">Connect</button>
+  <div class="msg" id="msg"></div>
+
+  <div class="hint">
+    Must be <code>https://</code> — Android blocks plain <code>http</code>, so an
+    <code>http://</code> address would open a blank screen.
+  </div>
+</div>
+
+<script>
+  var input = document.getElementById('url');
+  var connect = document.getElementById('connect');
+  var msg = document.getElementById('msg');
+
+  function invoke(cmd, args) {
+    // Tauri v2 exposes invoke on the local (bundled) origin, which is where this
+    // page runs — no capability juggling needed for the setup step itself.
+    if (!window.__TAURI__ || !window.__TAURI__.core) {
+      return Promise.reject(new Error('This page only works inside the MusicSeeker app.'));
+    }
+    return window.__TAURI__.core.invoke(cmd, args || {});
+  }
+
+  function say(text, kind) {
+    msg.textContent = text;
+    msg.className = 'msg' + (kind ? ' ' + kind : '');
+  }
+
+  function normalize(value) {
+    var v = (value || '').trim().replace(/\/+$/, '');
+    if (!v) return '';
+    if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+    return v;
+  }
+
+  // Reachability only. The server sends no CORS headers, so a cross-origin
+  // response body cannot be read from here — an opaque no-cors request still
+  // distinguishes "nothing answers at this address" (a typo, the usual mistake)
+  // from "something does", which is the check worth having.
+  function probe(url) {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, 8000);
+    return fetch(url + '/api/version', { mode: 'no-cors', signal: ctl.signal })
+      .then(function () { clearTimeout(timer); })
+      .catch(function (e) {
+        clearTimeout(timer);
+        throw new Error(e && e.name === 'AbortError'
+          ? 'No answer from that address (timed out).'
+          : 'Could not reach that address. Check it and that the server is running.');
+      });
+  }
+
+  function save(url) {
+    connect.disabled = true;
+    say('Checking ' + url + ' …', 'ok');
+    probe(url)
+      .then(function () {
+        say('Connecting …', 'ok');
+        return invoke('set_server_url', { url: url });
+      })
+      .catch(function (e) {
+        connect.disabled = false;
+        say(e.message || String(e), 'err');
+      });
+  }
+
+  connect.addEventListener('click', function () {
+    var url = normalize(input.value);
+    if (!url) { say('Enter your server address.', 'err'); return; }
+    if (!/^https:\/\//i.test(url)) {
+      say('The address must start with https:// — Android blocks plain http.', 'err');
+      return;
+    }
+    input.value = url;
+    save(url);
+  });
+
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') connect.click();
+  });
+
+  // No "use the default" button: current_server_url already prefills the field
+  // with the default when nothing is stored, so pressing Connect unchanged does it.
+
+  invoke('current_server_url')
+    .then(function (url) { input.value = url; input.focus(); })
+    .catch(function () { input.focus(); });
+</script>
+</body>
 </html>

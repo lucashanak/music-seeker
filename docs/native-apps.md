@@ -2,10 +2,12 @@
 
 MusicSeeker has native app wrappers built with [Tauri](https://tauri.app/) v2. The apps are thin WebView wrappers that load a MusicSeeker web interface over the network, so features stay up to date without reinstalling the app.
 
-> [!IMPORTANT]
-> **The published DMG and APK point at the author's own instance** (`https://musicseeker.hanaktech.org`), which is baked into `desktop/src-tauri/tauri.conf.json` at build time. They are not usable against your own server: login will fail every time even though the same credentials work in your browser, because the app is talking to a different server where you have no account.
->
-> If you self-host, **build the apps yourself** with your own URL — see [Pointing the apps at your own server](#pointing-the-apps-at-your-own-server).
+> [!NOTE]
+> The apps ship pointing at `musicseeker.hanaktech.org` as a **default**, not a
+> hardcoded address. If you self-host, open the app, let the login fail once, and
+> tap **"Not your server? Change address"** — enter your own address and the app
+> remembers it across updates. On macOS the same screen is under **View → Change
+> Server…**. See [Choosing your server](#choosing-your-server).
 
 ## Download
 
@@ -115,25 +117,37 @@ Both platforms build in parallel:
 5. Sign with persistent keystore (GitHub secret)
 6. Upload to GitHub Release
 
-### Pointing the apps at your own server
+### Choosing your server
 
-The window URL is static configuration, not a runtime setting. Edit
-`desktop/src-tauri/tauri.conf.json` before building:
+The address is stored per install in the app's config directory — not in
+localStorage — so it survives "Clear Cache & Reload" and an app update.
 
-```json
-{ "app": { "windows": [{ "url": "https://music.example.com/?app_version=__APP_VERSION__" }] } }
-```
+**Where to change it**
 
-Keep the `?app_version=__APP_VERSION__` query intact — CI substitutes it, and the
-in-app update check compares it against the server's reported version.
+- **Any platform:** attempt a login in the app. On failure a
+  *"Not your server? Change address"* link appears below the error. It is only
+  rendered inside the native apps, and only after a failed login.
+- **macOS:** **View → Change Server…**, which works even when the stored address
+  no longer resolves and therefore shows no login screen at all.
+- **Android**, if the stored address is dead and you cannot reach a login screen:
+  Settings → Apps → MusicSeeker → Storage → **Clear storage**, which forgets the
+  address and brings the setup screen back.
 
-Then build via GitHub Actions in your own fork (push a `v*` tag), or locally with
-`npx tauri build` / `npx tauri android build --apk --target aarch64` from
-`desktop/`. Android additionally needs the signing keystore described below.
+**Requirements**
 
-A first-run "server address" screen would remove this step entirely; it does not
-exist yet.
+- **`https://` only.** Android blocks cleartext HTTP by default, so an
+  `http://192.168.x.x:8090` address would open a blank screen with no
+  explanation. The setup screen refuses it up front instead.
+- The address is checked for reachability before it is saved. That check cannot
+  confirm the host is actually MusicSeeker — the server sends no CORS headers, so
+  the app cannot read a cross-origin response — but it does catch typos and
+  unreachable hosts, which is the mistake people actually make.
 
+Nothing needs rebuilding, and the in-app updater keeps working on your own
+instance: the app grants the IPC bridge to the address you configured, scoped to
+that address only.
+
+### Version management
 ### Version management
 
 - `tauri.conf.json` has version `1.0.0` in source

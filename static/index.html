@@ -1522,7 +1522,10 @@ try {
                 });
               return false;
             };
-          } else if (isTauri && isAndroid && window.AndroidBridge && window.AndroidBridge.installApk) {
+          } else if (isAndroid && window.AndroidBridge && window.AndroidBridge.installApk) {
+            // Keyed off the bridge alone, NOT `isTauri &&`: AndroidBridge is
+            // injected via addJavascriptInterface and works on any origin, so
+            // the in-app APK update keeps working even if __TAURI__ is absent.
             // Android Tauri — download + install via bridge
             link.textContent = 'Install';
             window._apkProgress = function(pct, msg) {
