@@ -12,10 +12,7 @@ router = APIRouter(prefix="/api", tags=["downloads"], dependencies=[Depends(bind
 
 @router.post("/download")
 async def start_download(req: DownloadRequest, user: dict = Depends(auth.get_current_user)):
-    if req.method not in user.get("allowed_methods", ["yt-dlp", "slskd", "lidarr"]):
-        raise HTTPException(403, f"Method '{req.method}' not allowed for your account")
-    if req.format not in user.get("allowed_formats", ["mp3", "flac"]):
-        raise HTTPException(403, f"Format '{req.format}' not allowed for your account")
+    auth.require_download_perms(user, req.method, req.format)
     # Quota check
     quota_gb = user.get("quota_gb", 0)
     if quota_gb > 0:
@@ -78,6 +75,16 @@ async def retry_job(job_id: str, user: dict = Depends(auth.get_current_user)):
     data = jobs.get_retry_data(job_id)
     if not data:
         raise HTTPException(404, 'Job not found or not retryable')
+    # Ownership. GET and DELETE on the same job check this; retry did not, so any
+    # authenticated user could retry any job by id — and since the new job is
+    # created under the CALLER, it also moved the download onto their quota.
+    # 404 rather than 403, matching get_job, so a foreign id is indistinguishable
+    # from a missing one.
+    if not user.get("is_admin") and data.get("username") != user["username"]:
+        raise HTTPException(404, 'Job not found or not retryable')
+    # Re-check permissions instead of trusting the original job: an admin may
+    # have revoked FLAC or slskd since it ran, and a retry must not resurrect it.
+    auth.require_download_perms(user, data['method'], data['format'])
     job = jobs.create_job(
         type_=data['type'],
         title=data['title'],

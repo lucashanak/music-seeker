@@ -296,8 +296,10 @@ async def add_and_download(playlist_id: str, req: AddTrackByNameRequest, user: d
 
     # Not in library — start download with playlist_id callback
     from app.services import settings as app_settings
-    fmt = app_settings._settings.get("default_format", "flac")
-    method = app_settings._settings.get("default_method", "yt-dlp")
+    # The global defaults are a server preference, not a permission — resolve
+    # them against the caller's allowed lists (see auth.resolve_allowed).
+    fmt = auth.resolve_allowed(user, app_settings._settings.get("default_format", "flac"), "format")
+    method = auth.resolve_allowed(user, app_settings._settings.get("default_method", "yt-dlp"), "method")
     title = f"{req.artist} - {req.name}" if req.artist else req.name
     job = create_job(
         type_="track", title=title, url="", method=method, fmt=fmt,
@@ -341,8 +343,10 @@ async def add_and_download_batch(playlist_id: str, req: BatchAddRequest, user: d
     queued = 0
     if missing and req.download:
         from app.services import settings as app_settings
-        fmt = app_settings._settings.get("default_format", "flac")
-        method = app_settings._settings.get("default_method", "yt-dlp")
+        # Same as the single-track path: global defaults are a server preference,
+        # not a permission grant.
+        fmt = auth.resolve_allowed(user, app_settings._settings.get("default_format", "flac"), "format")
+        method = auth.resolve_allowed(user, app_settings._settings.get("default_method", "yt-dlp"), "method")
         for t in missing:
             title = f"{t.get('artist','')} - {t.get('name','')}".strip(" -")
             job = create_job(

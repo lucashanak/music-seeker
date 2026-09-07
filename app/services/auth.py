@@ -179,6 +179,43 @@ def _user_perms(user: dict) -> dict:
     }
 
 
+# ── Download permission checks ──────────────────────────────────────
+# These live here, not inline in a router, because THREE separate paths create
+# download jobs (POST /api/download, job retry, playlist add-and-download) and
+# only the first one used to check anything. Keeping the rule in one place is
+# what stops them drifting apart again.
+
+def require_download_perms(user: dict, method: str, fmt: str) -> None:
+    """Reject a job whose method/format the account is not permitted to use."""
+    if method not in user.get("allowed_methods", DEFAULT_PERMS["allowed_methods"]):
+        raise HTTPException(403, f"Method '{method}' not allowed for your account")
+    if fmt not in user.get("allowed_formats", DEFAULT_PERMS["allowed_formats"]):
+        raise HTTPException(403, f"Format '{fmt}' not allowed for your account")
+
+
+def resolve_allowed(user: dict, preferred: str, kind: str) -> str:
+    """Pick a permitted value for a job the caller did not parameterize.
+
+    Add-and-download has no format/method picker in the UI, so it used the global
+    settings default — which sidestepped per-user permissions entirely. Rejecting
+    outright would break the feature for every restricted account whenever the
+    global default happens to be one they lack, so prefer the global default when
+    it is permitted and otherwise fall back to the account's own first allowed
+    value. This can never grant more than the account is permitted.
+    """
+    key = f"allowed_{kind}s"
+    # `.get(key, DEFAULT)` and NOT `user.get(key) or DEFAULT`: an admin who
+    # explicitly stores an empty list means "deny everything", and `or` would
+    # silently hand back the permissive defaults instead. This matches
+    # require_download_perms above.
+    allowed = user.get(key, DEFAULT_PERMS[key])
+    if preferred in allowed:
+        return preferred
+    if not allowed:
+        raise HTTPException(403, f"No {kind} allowed for your account")
+    return allowed[0]
+
+
 def init_admin(username: str, password: str):
     """Create admin user if no users exist."""
     if not _USERNAME_RE.match(username or ""):
