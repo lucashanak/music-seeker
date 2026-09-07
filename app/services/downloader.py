@@ -398,27 +398,32 @@ async def _slskd_api(method: str, path: str, json_data: dict = None) -> dict | l
         return resp.json()
 
 
-def _pick_best_slskd_file(responses: list, preferred_format: str = "flac") -> tuple[str, dict] | None:
+def _slskd_file_extension(filename: str) -> str:
+    """Return the real file extension from a slskd path, case-insensitive."""
+    basename = filename.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    if "." not in basename:
+        return ""
+    return basename.rsplit(".", 1)[-1].lower()
+
+
+def _pick_best_slskd_file(responses: list, requested_format: str) -> tuple[str, dict] | None:
     """Pick the best file from slskd search responses. Returns (username, file_info) or None."""
+    requested = requested_format.lower().lstrip(".")
+    if not requested:
+        return None
+
     candidates = []
-    audio_exts = {"flac", "mp3", "ogg", "opus", "m4a", "wav", "aac"}
     for resp in responses:
         username = resp.get("username", "")
         for file in resp.get("files", []):
             filename = file.get("filename", "")
-            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-            if ext not in audio_exts:
+            ext = _slskd_file_extension(filename)
+            if ext != requested:
                 continue
             size = file.get("size", 0)
             if size < 500_000:  # skip tiny files (<500KB)
                 continue
             score = 0
-            if ext == preferred_format:
-                score += 100
-            if ext == "flac":
-                score += 50
-            elif ext == "mp3":
-                score += 20
             bit_rate = file.get("bitRate", 0)
             score += min(bit_rate // 10, 50)
             score += min(size // 1_000_000, 30)  # prefer larger files
@@ -427,7 +432,7 @@ def _pick_best_slskd_file(responses: list, preferred_format: str = "flac") -> tu
     return (candidates[0][1], candidates[0][2]) if candidates else None
 
 
-async def _download_track_slskd(artist: str, title: str, album: str, username: str = "") -> bool:
+async def _download_track_slskd(artist: str, title: str, album: str, fmt: str, username: str = "") -> bool:
     """Search and download a single track via slskd. Returns True if successful."""
     # Use only primary artist for search (avoid "Artist1, Artist2" cluttering results)
     search_artist = artist.split(",")[0].strip() if artist else ""
@@ -456,7 +461,7 @@ async def _download_track_slskd(artist: str, title: str, album: str, username: s
     if not responses:
         return False
 
-    result = _pick_best_slskd_file(responses)
+    result = _pick_best_slskd_file(responses, requested_format=fmt)
     if not result:
         return False
 
@@ -551,7 +556,7 @@ async def _run_slskd(job: Job):
         job.progress_text = f"{i}/{total} — Searching Soulseek for {artist} - {name}"
         job.progress = int((i - 1) / total * 100)
 
-        ok = await _download_track_slskd(artist, name, album, username=job.username)
+        ok = await _download_track_slskd(artist, name, album, job.format, username=job.username)
         if not ok:
             failed.append(f"{artist} - {name}")
 

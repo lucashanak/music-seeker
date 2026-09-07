@@ -125,7 +125,7 @@ export function closeModal(fromPopstate) {
 
 const METHOD_HINTS = {
   'yt-dlp': 'Downloads from YouTube. Choose audio quality below.',
-  slskd: 'Searches the Soulseek network for a lossless copy. No quality choice — it grabs the best available.',
+  slskd: 'Searches the Soulseek network for the best available copy in the requested format.',
   lidarr: 'Hands off to Lidarr, which finds and downloads this in the background. Check the Downloads panel for progress.',
 };
 
@@ -140,7 +140,7 @@ function updateOptionGroups() {
     b.classList.toggle('selected', b.dataset.value === store.selectedFormat);
     b.style.display = allowedFormats.includes(b.dataset.value) ? '' : 'none';
   });
-  $('#formatSection').style.display = store.selectedMethod === 'yt-dlp' ? '' : 'none';
+  $('#formatSection').style.display = (store.selectedMethod === 'yt-dlp' || store.selectedMethod === 'slskd') ? '' : 'none';
   const hintEl = $('#modalMethodHint');
   if (hintEl) hintEl.textContent = METHOD_HINTS[store.selectedMethod] || '';
 }

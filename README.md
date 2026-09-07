@@ -21,7 +21,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 - **Download modal redesign** — clear separation of playback (Play Now / Add to Queue / Radio) vs. library download (Method + Format)
 - **Download methods**:
   - **yt-dlp** (Fastest) — YouTube audio in FLAC/MP3 with embedded metadata and album art
-  - **Soulseek (slskd)** (Best quality) — P2P downloads, auto-selects best quality
+  - **Soulseek (slskd)** (Best quality) — P2P downloads in the requested format (MP3 or FLAC)
   - **Lidarr** (Runs in background) — torrent-based with artist monitoring
 - **Smart downloads** — skips tracks already in your Navidrome library
 - **Job management** — real-time progress, retry, cancel, history
