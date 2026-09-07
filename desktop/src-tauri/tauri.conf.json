@@ -7,7 +7,6 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "//": "No windows here on purpose: the window URL is the configured server, which is runtime data. lib.rs builds it (see open_main_window) so the webview is CREATED at that URL rather than navigated to it — capability matching for the initial URL is the documented case, navigation is not.",
     "windows": [],
     "security": {
       "csp": "default-src * 'unsafe-inline' 'unsafe-eval' blob: data: media:;"
