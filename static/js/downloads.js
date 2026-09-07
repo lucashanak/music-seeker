@@ -125,7 +125,7 @@ export function closeModal(fromPopstate) {
 
 const METHOD_HINTS = {
   'yt-dlp': 'Downloads from YouTube. Choose audio quality below.',
-  slskd: 'Searches the Soulseek network for the best available copy in the requested format.',
+  slskd: 'Searches the Soulseek network. Prefers the format you pick; if no peer has it, takes the best other copy available.',
   lidarr: 'Hands off to Lidarr, which finds and downloads this in the background. Check the Downloads panel for progress.',
 };
 

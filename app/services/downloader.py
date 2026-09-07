@@ -419,11 +419,37 @@ def _find_completed_slskd_file(basename: str, download_dir: str | None = None) -
     return None
 
 
-def _pick_best_slskd_file(responses: list, requested_format: str) -> tuple[str, dict] | None:
-    """Pick the best file from slskd search responses. Returns (username, file_info) or None."""
+# Audio extensions slskd peers actually serve. Lossless ones are tracked
+# separately: the fallback below can return a format the user did not ask for,
+# and handing a 30MB FLAC to an MP3-only account is exactly what allowed_formats
+# exists to prevent.
+_SLSKD_AUDIO_EXTS = {"flac", "mp3", "ogg", "opus", "m4a", "wav", "aac"}
+_SLSKD_LOSSLESS_EXTS = {"flac", "wav"}
+
+
+def _user_allows_lossless(username: str) -> bool:
+    """Whether this account may receive a lossless file it did not explicitly ask for."""
+    if not username:
+        return True
+    from app.services import auth as auth_service
+    users = auth_service._load_users()
+    allowed = users.get(username, {}).get("allowed_formats") or ["mp3", "flac"]
+    return "flac" in allowed
+
+
+def _pick_best_slskd_file(responses: list, requested_format: str,
+                          allow_lossless: bool = True) -> tuple[str, dict] | None:
+    """Pick the best file from slskd search responses. Returns (username, file_info) or None.
+
+    The requested format wins whenever any peer has it — that is the point of
+    honouring `format`, and a 128kbps MP3 still beats a 1411kbps FLAC when MP3
+    was asked for. But when NO peer has it, we fall back to other audio formats
+    rather than failing: Soulseek's catalogue is uneven and plenty of tracks
+    exist only as m4a or ogg, so a strict match would quietly cut download
+    coverage. `allow_lossless=False` keeps the fallback away from FLAC/WAV for
+    accounts that are not permitted lossless.
+    """
     requested = requested_format.lower().lstrip(".")
-    if not requested:
-        return None
 
     candidates = []
     for resp in responses:
@@ -431,12 +457,22 @@ def _pick_best_slskd_file(responses: list, requested_format: str) -> tuple[str, 
         for file in resp.get("files", []):
             filename = file.get("filename", "")
             ext = _slskd_file_extension(filename)
-            if ext != requested:
+            if ext not in _SLSKD_AUDIO_EXTS:
+                continue
+            if ext in _SLSKD_LOSSLESS_EXTS and not allow_lossless and ext != requested:
                 continue
             size = file.get("size", 0)
             if size < 500_000:  # skip tiny files (<500KB)
                 continue
             score = 0
+            # Large enough that no bitrate/size bonus can let a fallback format
+            # outrank an exact match.
+            if ext == requested:
+                score += 1000
+            elif ext == "flac":
+                score += 50
+            elif ext == "mp3":
+                score += 20
             bit_rate = file.get("bitRate", 0)
             score += min(bit_rate // 10, 50)
             score += min(size // 1_000_000, 30)  # prefer larger files
@@ -474,7 +510,8 @@ async def _download_track_slskd(artist: str, title: str, album: str, fmt: str, u
     if not responses:
         return False
 
-    result = _pick_best_slskd_file(responses, requested_format=fmt)
+    result = _pick_best_slskd_file(responses, requested_format=fmt,
+                                   allow_lossless=_user_allows_lossless(username))
     if not result:
         return False
 

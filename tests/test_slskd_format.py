@@ -38,8 +38,49 @@ def test_mp3_requested_selects_mp3_over_flac():
     assert chosen["filename"].endswith(".mp3")
 
 
-def test_mp3_requested_only_flac_returns_none():
+def test_mp3_requested_falls_back_to_flac_when_lossless_allowed():
+    """No MP3 on offer -> take what exists rather than failing the download.
+
+    The original PR returned None here. That honoured the format strictly but cut
+    download coverage: plenty of Soulseek tracks exist only in one format, and a
+    hard miss means the user simply does not get the track.
+    """
     responses = _responses("peer1", _file("Artist - Song.flac", bit_rate=1411))
+    result = _pick_best_slskd_file(responses, "mp3", allow_lossless=True)
+    assert result is not None
+    assert result[1]["filename"].endswith(".flac")
+
+
+def test_mp3_only_account_never_gets_a_flac_fallback():
+    """The fallback must not smuggle lossless into an MP3-only account."""
+    responses = _responses("peer1", _file("Artist - Song.flac", bit_rate=1411))
+    assert _pick_best_slskd_file(responses, "mp3", allow_lossless=False) is None
+
+
+def test_mp3_only_account_still_falls_back_to_lossy_formats():
+    responses = _responses(
+        "peer1",
+        _file("Artist - Song.flac", size=30_000_000, bit_rate=1411),
+        _file("Artist - Song.m4a", bit_rate=256),
+    )
+    result = _pick_best_slskd_file(responses, "mp3", allow_lossless=False)
+    assert result is not None
+    assert result[1]["filename"].endswith(".m4a")
+
+
+def test_falls_back_to_ogg_when_nothing_else_exists():
+    responses = _responses("peer1", _file("Artist - Song.ogg", bit_rate=192))
+    result = _pick_best_slskd_file(responses, "flac")
+    assert result is not None
+    assert result[1]["filename"].endswith(".ogg")
+
+
+def test_non_audio_files_are_still_ignored():
+    responses = _responses(
+        "peer1",
+        _file("Artist - Song.nfo", size=1_000_000),
+        _file("folder.jpg", size=2_000_000),
+    )
     assert _pick_best_slskd_file(responses, "mp3") is None
 
 
@@ -63,7 +104,7 @@ def test_uppercase_mp3_extension_counts_as_mp3():
     assert chosen["filename"].endswith(".MP3")
 
 
-def test_high_quality_flac_does_not_beat_mp3_when_mp3_requested():
+def test_exact_match_beats_a_much_higher_quality_fallback():
     responses = _responses(
         "peer1",
         _file("Artist - Song.mp3", size=5_000_000, bit_rate=128),
