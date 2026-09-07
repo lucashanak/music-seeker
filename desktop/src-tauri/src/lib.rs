@@ -142,6 +142,147 @@ fn current_server_url(app: tauri::AppHandle) -> String {
 ///
 /// Restricted to this project's release URLs on purpose. Any origin holding IPC
 /// can call this, so it must not become a general "open any URL" primitive.
+/// In-app update for Linux.
+///
+/// Two install shapes exist and they need different handling, so the choice is
+/// made here rather than in the page — the page cannot see the filesystem, and
+/// keeping the decision next to the install means the asset and the method can
+/// never disagree:
+///
+/// * **Portable binary** (`MusicSeeker-linux`, wherever the user put it): the new
+///   binary is written beside the old one and `rename`d over it. Overwriting a
+///   running executable by opening it for writing fails with ETXTBSY, but
+///   replacing the directory entry does not — the running process keeps its
+///   inode and survives, verified on Linux before this was written. No polkit,
+///   no privileges, no prompt.
+/// * **Distro package** (`/usr/bin/music-seeker` from the pacman package): root
+///   owns it, so the package is handed to a graphical installer which raises its
+///   own polkit prompt. Same approach claude-remote takes.
+///
+/// Takes no URL, unlike install_macos_update: a page-supplied URL means any
+/// origin holding IPC can choose what gets installed. The asset is derived from
+/// the install shape and fetched from the fixed releases path.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn install_linux_update() -> Result<String, String> {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    const RELEASES: &str = "https://github.com/lucashanak/music-seeker/releases/latest/download";
+
+    let exe = std::env::current_exe().map_err(|e| format!("Cannot locate the app: {e}"))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "The app has no parent directory".to_string())?
+        .to_path_buf();
+
+    // rename() needs write permission on the DIRECTORY, not on the file, so
+    // that is what decides which path we are on.
+    let portable = {
+        let probe = dir.join(".musicseeker-write-probe");
+        match fs::File::create(&probe) {
+            Ok(_) => {
+                let _ = fs::remove_file(&probe);
+                true
+            }
+            Err(_) => false,
+        }
+    };
+
+    let tmp_dir = std::env::temp_dir().join("musicseeker-update");
+    fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+
+    if !portable {
+        // Packaged install: fetch the pacman package and let a GUI installer
+        // prompt for authorisation.
+        let pkg = tmp_dir.join("music-seeker.pkg.tar.zst");
+        download(&format!("{RELEASES}/MusicSeeker-manjaro-x86_64.pkg.tar.zst"), &pkg)?;
+        // Bound to locals with .as_str(): `&[&format!(..)]` is `&[&String; 1]`,
+        // which does not coerce to the `&[&str]` the helper takes.
+        let path = pkg.to_string_lossy().to_string();
+        let gnome_arg = format!("--local-filename={path}");
+        let launched = try_spawn("pamac-installer", &[path.as_str()])
+            || try_spawn("gnome-software", &[gnome_arg.as_str()])
+            || try_spawn("xdg-open", &[path.as_str()]);
+        if launched {
+            return Ok("installer".into());
+        }
+        let _ = try_spawn(
+            "xdg-open",
+            &["https://github.com/lucashanak/music-seeker/releases/latest"],
+        );
+        return Err("No package installer found — opened the releases page instead".into());
+    }
+
+    // Portable install: swap the binary underneath ourselves and relaunch.
+    let staged: PathBuf = dir.join(".MusicSeeker.new");
+    download(&format!("{RELEASES}/MusicSeeker-linux"), &staged)?;
+
+    let meta = fs::metadata(&staged).map_err(|e| e.to_string())?;
+    if meta.len() < 1_000_000 {
+        let _ = fs::remove_file(&staged);
+        return Err("Downloaded file is too small to be the app — aborting".into());
+    }
+    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    // Same directory, so this is an atomic replace on one filesystem.
+    fs::rename(&staged, &exe).map_err(|e| format!("Could not replace the app: {e}"))?;
+
+    relaunch_after_exit(&exe)?;
+    std::process::exit(0);
+}
+
+#[cfg(target_os = "linux")]
+fn try_spawn(program: &str, args: &[&str]) -> bool {
+    Command::new(program).args(args).spawn().is_ok()
+}
+
+/// curl rather than an HTTP crate: it is already how the macOS updater fetches,
+/// and it keeps the dependency list unchanged.
+#[cfg(target_os = "linux")]
+fn download(url: &str, dest: &std::path::Path) -> Result<(), String> {
+    // Bound to a String first: an array literal must be homogeneous, and
+    // `&dest.to_string_lossy()` is `&Cow<str>`, not `&str`.
+    let dest_arg = dest.to_string_lossy().to_string();
+    let out = Command::new("curl")
+        .args(["-fSL", "-o", dest_arg.as_str(), url])
+        .output()
+        .map_err(|e| format!("Download failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "Download failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// Wait for this process to exit, then start the (already replaced) binary.
+#[cfg(target_os = "linux")]
+fn relaunch_after_exit(exe: &std::path::Path) -> Result<(), String> {
+    use std::io::Write;
+    let script = std::env::temp_dir().join("musicseeker-relaunch.sh");
+    let mut f = std::fs::File::create(&script).map_err(|e| e.to_string())?;
+    write!(
+        f,
+        "#!/bin/bash
+while kill -0 {} 2>/dev/null; do sleep 0.5; done
+exec '{}'
+",
+        std::process::id(),
+        exe.to_string_lossy()
+    )
+    .map_err(|e| e.to_string())?;
+    let script_arg = script.to_string_lossy().to_string();
+    let _ = Command::new("chmod").args(["+x", script_arg.as_str()]).status();
+    Command::new("/bin/bash")
+        .arg(&script_arg)
+        .spawn()
+        .map_err(|e| format!("Could not schedule the relaunch: {e}"))?;
+    Ok(())
+}
+
+
 #[cfg(desktop)]
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
@@ -268,7 +409,21 @@ pub fn run() {
 
     let mut builder = tauri::Builder::default();
 
-    #[cfg(desktop)]
+    // invoke_handler REPLACES the handler rather than adding to it, so each
+    // target gets exactly one call with its complete command list. Calling it
+    // twice compiles cleanly and silently drops the first set at runtime.
+    #[cfg(all(desktop, target_os = "linux"))]
+    {
+        builder = builder.invoke_handler(tauri::generate_handler![
+            install_macos_update,
+            install_linux_update,
+            open_external,
+            set_server_url,
+            reset_server_url,
+            current_server_url
+        ]);
+    }
+    #[cfg(all(desktop, not(target_os = "linux")))]
     {
         builder = builder.invoke_handler(tauri::generate_handler![
             install_macos_update,

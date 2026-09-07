@@ -345,6 +345,13 @@
       </div>
     </div>
     <div id="libraryGrid" class="grid"></div>
+    <!-- Imported playlists: saved from a shared link, stored app-side (NOT in
+         Navidrome). Hidden entirely until the user saves one. -->
+    <section id="importedSection" class="imported-section" style="display:none;">
+      <h3 class="imported-title">Imported playlists <span class="imported-count" id="importedCount"></span></h3>
+      <p class="imported-sub">Saved from a shared Spotify/Deezer link. These stream — they aren't in Navidrome until you download them.</p>
+      <div id="importedGrid" class="grid"></div>
+    </section>
   </div>
   <div id="likedSongsDetail" style="display:none; margin-top:24px;">
     <button id="backToLibraryFromLiked" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back</button>
@@ -1538,6 +1545,27 @@ function _getApp(key, spec, btn) {
   var inApp = !!(window.__TAURI__ && window.__TAURI__.core);
   var url = 'https://github.com/lucashanak/music-seeker/releases/latest/download/' + spec.file;
 
+  // Linux has an in-app path too, but which asset it needs depends on whether
+  // this is a portable binary or a distro package — only the app can see that,
+  // so the command takes no arguments and decides for itself.
+  if (inApp && _appPlatform() === 'linux' && (key === 'linux' || key === 'arch')) {
+    var lorig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Installing…';
+    window.__TAURI__.core.invoke('install_linux_update')
+      .then(function(mode) {
+        // "installer" means a package installer window is now asking the user;
+        // the portable path never returns because the app restarts itself.
+        btn.textContent = mode === 'installer' ? 'Installer opened' : 'Installing…';
+      })
+      .catch(function(e) {
+        btn.disabled = false;
+        btn.textContent = lorig;
+        _copyDownloadLink(url, btn);
+      });
+    return;
+  }
+
   if (inApp && key === 'macos' && _appPlatform() === 'macos') {
     var orig = btn.textContent;
     btn.disabled = true;
@@ -1624,7 +1652,26 @@ try {
           var isTauri = !!window.__TAURI__;
           var isAndroid = /android/i.test(navigator.userAgent);
           var downloadUrl = 'https://github.com/lucashanak/music-seeker/releases/latest/download/' + file;
-          if (isTauri && !isAndroid) {
+          var isLinuxApp = isTauri && /linux|x11/i.test(navigator.userAgent) && !isAndroid;
+          if (isLinuxApp) {
+            // Linux Tauri — in-app install; Rust picks portable-swap vs package
+            // installer based on where the binary actually lives.
+            link.textContent = 'Install';
+            link.onclick = function() {
+              link.disabled = true;
+              link.textContent = 'Installing...';
+              localStorage.setItem('app_installed_version', latest);
+              window.__TAURI__.core.invoke('install_linux_update')
+                .then(function(mode) {
+                  if (mode === 'installer') link.textContent = 'Installer opened';
+                })
+                .catch(function() {
+                  link.textContent = 'Failed';
+                  setTimeout(function() { link.textContent = 'Install'; link.disabled = false; }, 3000);
+                });
+              return false;
+            };
+          } else if (isTauri && !isAndroid) {
             // macOS Tauri — auto-install via Rust command
             link.textContent = 'Install';
             link.onclick = function() {
