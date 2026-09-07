@@ -51,54 +51,87 @@ fn validate_server_url(url: &str) -> Result<String, String> {
 fn grant_server_ipc<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str) {
     let capability = tauri::ipc::CapabilityBuilder::new("configured-server")
         .remote(format!("{}/*", url.trim_end_matches('/')))
-        .window("main")
+        .window(MAIN_WINDOW)
         .permission("core:default");
     if let Err(e) = app.add_capability(capability) {
         eprintln!("MusicSeeker: could not grant IPC to {url}: {e}");
     }
 }
 
-/// Build the main window pointing at `url`.
+// Two fixed window labels. The setup page gets its OWN label rather than reusing
+// "main": recreating a window under a label that still exists collides, and
+// destroying the old one first is worse — Tauri exits when the last window
+// closes, so "Change Server…" killed the app instead of showing the setup page.
+// Every transition below therefore CREATES the target window before destroying
+// the other one, so the app is never momentarily window-less.
+const MAIN_WINDOW: &str = "main";
+const SETUP_WINDOW: &str = "setup";
+
+/// Show the app pointing at `url`, replacing the setup window if it is open.
 ///
-/// Created, not navigated: the app version travels to the frontend as a query
-/// param (the update banner and every cache-busting reload read it back), and
-/// capability matching on the *initial* URL is the documented behaviour whereas
-/// matching after a client-side navigation is not.
-fn open_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str) -> tauri::Result<()> {
+/// The window is created with the URL rather than navigated to it: the app
+/// version travels to the frontend as a query param (the update banner and every
+/// cache-busting reload read it back), and capability matching on a window's
+/// initial URL is the documented case whereas matching after a client-side
+/// navigation is not.
+fn open_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str) -> Result<(), String> {
     let target = format!(
         "{}/?app_version={}",
         url.trim_end_matches('/'),
         app.package_info().version
     );
-    if let Some(existing) = app.get_webview_window("main") {
-        let _ = existing.destroy();
+    if let Some(existing) = app.get_webview_window(MAIN_WINDOW) {
+        // Already showing the app — just point it at the new address.
+        let parsed = target
+            .parse()
+            .map_err(|e| format!("Bad server address {target}: {e}"))?;
+        existing.navigate(parsed).map_err(|e| e.to_string())?;
+        let _ = existing.set_focus();
+    } else {
+        let builder = tauri::WebviewWindowBuilder::new(
+            app,
+            MAIN_WINDOW,
+            tauri::WebviewUrl::External(
+                target
+                    .parse()
+                    .map_err(|e| format!("Bad server address {target}: {e}"))?,
+            ),
+        )
+        .title("MusicSeeker")
+        .inner_size(1200.0, 800.0)
+        .min_inner_size(400.0, 600.0);
+
+        #[cfg(target_os = "macos")]
+        let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay);
+
+        builder.build().map_err(|e| e.to_string())?;
     }
-    let builder = tauri::WebviewWindowBuilder::new(
-        app,
-        "main",
-        tauri::WebviewUrl::External(target.parse().expect("server url should parse")),
-    )
-    .title("MusicSeeker")
-    .inner_size(1200.0, 800.0)
-    .min_inner_size(400.0, 600.0);
-
-    #[cfg(target_os = "macos")]
-    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay);
-
-    builder.build()?;
+    // Only now that a window exists is it safe to drop the other one.
+    if let Some(setup) = app.get_webview_window(SETUP_WINDOW) {
+        let _ = setup.destroy();
+    }
     Ok(())
 }
 
 /// Show the bundled setup page (desktop/dist/index.html).
-fn open_setup_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
-    if let Some(existing) = app.get_webview_window("main") {
-        let _ = existing.destroy();
-    }
-    tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-        .title("MusicSeeker")
+fn open_setup_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window(SETUP_WINDOW) {
+        let _ = existing.set_focus();
+    } else {
+        tauri::WebviewWindowBuilder::new(
+            app,
+            SETUP_WINDOW,
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("MusicSeeker — Server")
         .inner_size(560.0, 620.0)
         .min_inner_size(400.0, 520.0)
-        .build()?;
+        .build()
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(main) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = main.destroy();
+    }
     Ok(())
 }
 
@@ -112,7 +145,7 @@ fn set_server_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     }
     std::fs::write(&path, &url).map_err(|e| e.to_string())?;
     grant_server_ipc(&app, &url);
-    open_main_window(&app, &url).map_err(|e| e.to_string())
+    open_main_window(&app, &url)
 }
 
 /// Forget the configured server and go back to the setup page. Reachable from
@@ -123,7 +156,7 @@ fn reset_server_url(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(path) = server_url_file(&app) {
         let _ = std::fs::remove_file(path);
     }
-    open_setup_window(&app).map_err(|e| e.to_string())
+    open_setup_window(&app)
 }
 
 /// The address the app is pointing at, for the setup page to prefill.

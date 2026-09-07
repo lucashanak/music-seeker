@@ -1,9 +1,14 @@
 {
   "identifier": "default",
-  "description": "Allow IPC from remote frontend",
-  "windows": ["main"],
+  "description": "Allow IPC from the configured server and the bundled setup page",
+  "windows": [
+    "main",
+    "setup"
+  ],
   "remote": {
-    "urls": ["https://musicseeker.hanaktech.org/*"]
+    "urls": [
+      "https://musicseeker.hanaktech.org/*"
+    ]
   },
   "permissions": [
     "core:default"
