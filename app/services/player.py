@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from app.services import library
+from app.services import library, ytpick
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 PLAYER_DIR = DATA_DIR / "player"
@@ -274,17 +274,25 @@ async def _resolve_navidrome(name: str, artist: str) -> dict | None:
         return None
 
 
-async def _ytdlp_first_url(query: str, results: int, timeout: int) -> str | None:
-    """First playable audio URL among the top `results` YouTube matches.
+# Bounds on YouTube resolution. The deadline covers the whole attempt — search
+# plus every candidate extraction — because the caller is a browser waiting to
+# start playback: a lookup that takes longer than this has already failed as far
+# as the listener is concerned, whatever it eventually returns.
+YT_SEARCH_TIMEOUT = 15      # the one flat search request
+YT_EXTRACT_TIMEOUT = 20     # a single candidate's audio URL
+YT_RESOLVE_DEADLINE = 45    # everything, end to end
 
-    `-i` keeps yt-dlp going past entries it cannot extract, so one blocked video
-    no longer sinks the whole lookup — and because skipping sets a non-zero exit
-    status, the exit code must NOT be the success test: what matters is whether a
-    URL was printed.
+
+async def _ytdlp_url(target: str, timeout: float) -> str | None:
+    """Direct audio URL for one video (or search expression), or None.
+
+    `-i` keeps yt-dlp going past entries it cannot extract. Skipping sets a
+    non-zero exit status, so the exit code must NOT be the success test: what
+    matters is whether a URL was printed.
     """
     proc = await asyncio.create_subprocess_exec(
         "yt-dlp", "-f", "bestaudio", "--print", "url", "-i",
-        "--no-playlist", f"ytsearch{results}:{query}",
+        "--no-playlist", target,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -292,6 +300,7 @@ async def _ytdlp_first_url(query: str, results: int, timeout: int) -> str | None
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.wait()
         return None
     for line in (stdout or b"").decode(errors="replace").splitlines():
         url = line.strip()
@@ -303,24 +312,39 @@ async def _ytdlp_first_url(query: str, results: int, timeout: int) -> str | None
 async def _resolve_youtube(name: str, artist: str) -> dict | None:
     """Get a direct audio URL from YouTube via yt-dlp.
 
-    Tries the single best match first (the fast path, one extraction), and only
-    widens the search when that match can't be played. Region-locked and
-    label-blocked uploads are common enough that taking *only* the first hit made
-    tracks unplayable AND undownloadable even though the 3rd or 4th result was
-    fine — e.g. "Christina Aguilera - Loyal Brave True", where results 1, 2 and 5
-    answer "This video is not available" while 3 and 4 resolve.
+    One cheap flat search lists the top few matches, `ytpick` puts the ones that
+    look like live/karaoke/cover variants last, and we extract them in that order
+    until one plays. Taking *only* YouTube's first hit used to make tracks both
+    unplayable and undownloadable whenever that upload was blocked — e.g.
+    "Christina Aguilera - Loyal Brave True", where results 1, 2 and 5 answer
+    "This video is not available", 3 resolves, and 4 is a live recording.
+
+    Everything is bounded by `YT_RESOLVE_DEADLINE`, so a track nothing can
+    resolve fails in a knowable time instead of walking the whole result list.
     """
     query = f"{artist} {name}" if artist else name
+    deadline = time.monotonic() + YT_RESOLVE_DEADLINE
     try:
-        url = await _ytdlp_first_url(query, 1, 30)
-        if not url:
-            url = await _ytdlp_first_url(query, 5, 90)
-        if not url:
-            return None
-        return {
-            "source": "youtube",
-            "url": url,
-        }
+        candidates = await ytpick.search(
+            query, limit=5, timeout=min(YT_SEARCH_TIMEOUT, YT_RESOLVE_DEADLINE),
+        )
+        for cand in ytpick.rank(candidates, query):
+            left = deadline - time.monotonic()
+            if left <= 1:
+                break
+            url = await _ytdlp_url(cand["url"], min(YT_EXTRACT_TIMEOUT, left))
+            if url:
+                return {"source": "youtube", "url": url}
+        if not candidates:
+            # The search itself failed (yt-dlp change, network hiccup). Fall back
+            # to letting yt-dlp search and extract in one go — no title ranking,
+            # but better than reporting the track unplayable.
+            left = deadline - time.monotonic()
+            if left > 1:
+                url = await _ytdlp_url(f"ytsearch5:{query}", left)
+                if url:
+                    return {"source": "youtube", "url": url}
+        return None
     except Exception:
         return None
 

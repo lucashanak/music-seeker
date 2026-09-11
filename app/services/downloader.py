@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import os
 import re
 import shutil
@@ -6,7 +7,7 @@ import time
 import httpx
 
 from app.services.jobs import Job, JobStatus, get_semaphore, save_if_finished
-from app.services import library
+from app.services import library, ytpick
 
 LIDARR_URL = os.environ.get("LIDARR_URL", "http://lidarr:8686")
 LIDARR_API_KEY = os.environ.get("LIDARR_API_KEY", "")
@@ -15,6 +16,52 @@ NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://navidrome:4533")
 NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "")
 SLSKD_URL = os.environ.get("SLSKD_URL", "http://slskd:5030")
 SLSKD_API_KEY = os.environ.get("SLSKD_API_KEY", "")
+
+# Every external process gets a ceiling. Without one a wedged yt-dlp, metaflac or
+# ffmpeg holds a job slot forever and the job sits "downloading" with nothing
+# behind it. The numbers are deliberately generous — they are a stuck-process
+# backstop, not a performance budget.
+YT_SEARCH_TIMEOUT = 20       # flat search for candidates
+TRACK_DL_TIMEOUT = 600       # one candidate of a song (minutes of audio)
+PODCAST_DL_TIMEOUT = 2400    # one candidate of an episode (hours of audio)
+TAG_TIMEOUT = 120            # metaflac tag / cover embed
+TRANSCODE_TIMEOUT = 600      # ffmpeg remux with cover art
+
+
+async def _run(cmd: list[str], timeout: float) -> int | None:
+    """Run `cmd` to completion, killing it past `timeout`. Returns its exit code.
+
+    None means it was killed or could not be started — never a success. Output is
+    folded into stdout and discarded; callers judge by the file on disk.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+    except Exception:
+        return None
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return None
+    return proc.returncode
+
+
+def _clear_partials(out_dir: str, safe_title: str) -> None:
+    """Drop yt-dlp scratch files left by an abandoned attempt.
+
+    Every candidate writes to the same output template, so a `.part` from a
+    killed or blocked video would otherwise be *resumed* by the next candidate —
+    producing one file with two different videos' bytes in it.
+    """
+    for path in glob.glob(f"{glob.escape(os.path.join(out_dir, safe_title))}.*"):
+        if path.endswith((".part", ".ytdl", ".temp")):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def _check_quota(username: str) -> bool:
@@ -216,16 +263,17 @@ async def _download_track_ytdlp(artist: str, title: str, album: str, fmt: str,
         query = f"{artist} {title}" if artist else title
 
     # Step 1: Download audio with yt-dlp (no metadata from YouTube).
-    # Two attempts: the single best match (one extraction, the common case), then
-    # a wider search if that one can't be fetched. Region-locked and
-    # label-blocked uploads are common enough that taking only the first hit made
-    # tracks undownloadable even when the 3rd or 4th result was fine. `-i` skips
-    # the unavailable entries and `--max-downloads 1` stops at the first that
-    # works — that combination exits 101 ("max downloads reached"), so the exit
-    # code can't be the success test: the downloaded file is.
-    async def _attempt(results: int, skip_unavailable: bool) -> bool:
+    # A cheap flat search lists the top matches, `ytpick` sends live/karaoke/cover
+    # variants to the back, and we try them in that order until a file lands.
+    # Taking only YouTube's first hit made tracks undownloadable whenever that
+    # upload was region- or label-blocked, even with a good 3rd or 4th result.
+    # Podcast episodes get longer limits: they are hours where a track is minutes.
+    attempt_timeout = PODCAST_DL_TIMEOUT if is_podcast else TRACK_DL_TIMEOUT
+    deadline = time.monotonic() + attempt_timeout * 2
+
+    async def _attempt(target: str, timeout: float, skip_unavailable: bool) -> bool:
         cmd = [
-            "yt-dlp", f"ytsearch{results}:{query}",
+            "yt-dlp", target,
             "-x",
             "--audio-format", fmt,
             "--audio-quality", "0",
@@ -234,16 +282,28 @@ async def _download_track_ytdlp(artist: str, title: str, album: str, fmt: str,
             "-o", out_template,
         ]
         if skip_unavailable:
+            # `-i` skips entries it cannot extract and `--max-downloads 1` stops at
+            # the first that works — that combination exits 101 ("max downloads
+            # reached"), so the exit code can't be the success test: the file is.
             cmd += ["-i", "--max-downloads", "1"]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-        await proc.wait()
+        _clear_partials(out_dir, safe_title)
+        await _run(cmd, timeout)
         return os.path.exists(final_file)
 
-    if not await _attempt(1, False):
-        if not await _attempt(5, True):
-            return False
+    ok = False
+    candidates = await ytpick.search(query, limit=5, timeout=YT_SEARCH_TIMEOUT)
+    for cand in ytpick.rank(candidates, query):
+        left = deadline - time.monotonic()
+        if left <= 1:
+            break
+        if await _attempt(cand["url"], min(attempt_timeout, left), False):
+            ok = True
+            break
+    if not ok and not candidates:
+        # The search itself failed — let yt-dlp search and fetch in one go.
+        ok = await _attempt(f"ytsearch5:{query}", attempt_timeout, True)
+    if not ok:
+        return False
 
     # Step 2: Embed Spotify metadata + album art via ffmpeg/metaflac
     if fmt == "flac":
@@ -256,21 +316,17 @@ async def _download_track_ytdlp(artist: str, title: str, album: str, fmt: str,
             f"--set-tag=ALBUM={album}",
             final_file,
         ]
-        proc = await asyncio.create_subprocess_exec(
-            *tag_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-        await proc.wait()
+        await _run(tag_cmd, TAG_TIMEOUT)
 
         # Embed cover art
         if image_url:
             cover_path = f"{final_file}.cover.jpg"
             if await _download_cover(image_url, cover_path):
                 try:
-                    embed = await asyncio.create_subprocess_exec(
-                        "metaflac", "--import-picture-from", cover_path, final_file,
-                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                    await _run(
+                        ["metaflac", "--import-picture-from", cover_path, final_file],
+                        TAG_TIMEOUT,
                     )
-                    await embed.wait()
                 finally:
                     if os.path.exists(cover_path):
                         os.remove(cover_path)
@@ -297,11 +353,8 @@ async def _download_track_ytdlp(artist: str, title: str, album: str, fmt: str,
                 "-metadata", f"album={album}",
                 tmp_out,
             ])
-            proc = await asyncio.create_subprocess_exec(
-                *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            )
-            await proc.wait()
-            if proc.returncode == 0 and os.path.exists(tmp_out):
+            rc = await _run(ffmpeg_cmd, TRANSCODE_TIMEOUT)
+            if rc == 0 and os.path.exists(tmp_out):
                 os.replace(tmp_out, final_file)
             elif os.path.exists(tmp_out):
                 os.remove(tmp_out)
