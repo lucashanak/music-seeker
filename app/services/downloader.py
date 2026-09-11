@@ -215,26 +215,35 @@ async def _download_track_ytdlp(artist: str, title: str, album: str, fmt: str,
     else:
         query = f"{artist} {title}" if artist else title
 
-    # Step 1: Download audio with yt-dlp (no metadata from YouTube)
-    cmd = [
-        "yt-dlp", f"ytsearch1:{query}",
-        "-x",
-        "--audio-format", fmt,
-        "--audio-quality", "0",
-        "--no-embed-metadata",
-        "--no-playlist",
-        "-o", out_template,
-    ]
+    # Step 1: Download audio with yt-dlp (no metadata from YouTube).
+    # Two attempts: the single best match (one extraction, the common case), then
+    # a wider search if that one can't be fetched. Region-locked and
+    # label-blocked uploads are common enough that taking only the first hit made
+    # tracks undownloadable even when the 3rd or 4th result was fine. `-i` skips
+    # the unavailable entries and `--max-downloads 1` stops at the first that
+    # works — that combination exits 101 ("max downloads reached"), so the exit
+    # code can't be the success test: the downloaded file is.
+    async def _attempt(results: int, skip_unavailable: bool) -> bool:
+        cmd = [
+            "yt-dlp", f"ytsearch{results}:{query}",
+            "-x",
+            "--audio-format", fmt,
+            "--audio-quality", "0",
+            "--no-embed-metadata",
+            "--no-playlist",
+            "-o", out_template,
+        ]
+        if skip_unavailable:
+            cmd += ["-i", "--max-downloads", "1"]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        await proc.wait()
+        return os.path.exists(final_file)
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-    )
-    await proc.wait()
-    if proc.returncode != 0:
-        return False
-
-    if not os.path.exists(final_file):
-        return False
+    if not await _attempt(1, False):
+        if not await _attempt(5, True):
+            return False
 
     # Step 2: Embed Spotify metadata + album art via ffmpeg/metaflac
     if fmt == "flac":

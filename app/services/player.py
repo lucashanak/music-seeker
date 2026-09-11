@@ -274,27 +274,54 @@ async def _resolve_navidrome(name: str, artist: str) -> dict | None:
         return None
 
 
+async def _ytdlp_first_url(query: str, results: int, timeout: int) -> str | None:
+    """First playable audio URL among the top `results` YouTube matches.
+
+    `-i` keeps yt-dlp going past entries it cannot extract, so one blocked video
+    no longer sinks the whole lookup — and because skipping sets a non-zero exit
+    status, the exit code must NOT be the success test: what matters is whether a
+    URL was printed.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "yt-dlp", "-f", "bestaudio", "--print", "url", "-i",
+        "--no-playlist", f"ytsearch{results}:{query}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return None
+    for line in (stdout or b"").decode(errors="replace").splitlines():
+        url = line.strip()
+        if url.startswith("http"):
+            return url
+    return None
+
+
 async def _resolve_youtube(name: str, artist: str) -> dict | None:
-    """Get direct audio URL from YouTube via yt-dlp."""
+    """Get a direct audio URL from YouTube via yt-dlp.
+
+    Tries the single best match first (the fast path, one extraction), and only
+    widens the search when that match can't be played. Region-locked and
+    label-blocked uploads are common enough that taking *only* the first hit made
+    tracks unplayable AND undownloadable even though the 3rd or 4th result was
+    fine — e.g. "Christina Aguilera - Loyal Brave True", where results 1, 2 and 5
+    answer "This video is not available" while 3 and 4 resolve.
+    """
     query = f"{artist} {name}" if artist else name
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "yt-dlp", "-f", "bestaudio", "--print", "url",
-            "--no-playlist", f"ytsearch1:{query}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-        if proc.returncode != 0 or not stdout:
-            return None
-        url = stdout.decode().strip()
+        url = await _ytdlp_first_url(query, 1, 30)
+        if not url:
+            url = await _ytdlp_first_url(query, 5, 90)
         if not url:
             return None
         return {
             "source": "youtube",
             "url": url,
         }
-    except (asyncio.TimeoutError, Exception):
+    except Exception:
         return None
 
 
