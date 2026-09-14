@@ -80,7 +80,7 @@ export function renderQueueInto(el) {
     <div class="queue-item${i === store.playerIndex ? ' now-playing' : ''}" data-qi="${i}" draggable="true">
       <span class="qi-drag" title="Drag to reorder">&#x2630;</span>
       <span class="qi-num">${i === store.playerIndex ? '&#9654;' : i + 1}</span>
-      <img class="qi-img" src="${esc(item.image || '')}" alt="" onerror="this.style.background='var(--bg-elevated)'">
+      <img class="qi-img" ${item.image ? `src="${esc(item.image)}"` : ''} alt="" onerror="this.style.background='var(--bg-elevated)'">
       <div class="qi-info">
         <div class="qi-title">${esc(item.name || '')}</div>
         <div class="qi-artist">${esc(item.artist || '')}</div>

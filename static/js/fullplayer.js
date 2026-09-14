@@ -1,7 +1,7 @@
 // fullplayer.js — Full player UI, open/close, sync, volume, desktop split
 
 import { store } from './store.js';
-import { $, fmtTime, showToast, historyBack } from './utils.js';
+import { $, fmtTime, showToast, historyBack, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { renderQueueInto, renderQueue, openFpQueuePanel, closeFpQueuePanel, closeQueuePanel, scrollToNowPlaying } from './queue.js';
 import { toggleLike, isLiked } from './likes.js';
@@ -125,7 +125,7 @@ export function syncFullPlayer() {
   if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) return;
   const item = store.playerQueue[store.playerIndex];
   const fpImg = $('#fpImg');
-  if (fpImg) fpImg.src = item.image || '';
+  if (fpImg) setArt(fpImg, item.image);
   const fpTitle = $('#fpTitle');
   if (fpTitle) fpTitle.textContent = item.name || '';
   const fpArtist = $('#fpArtist');

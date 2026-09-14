@@ -1,7 +1,7 @@
 // player.js — Audio playback, controls, media session, queue persistence
 
 import { store } from './store.js';
-import { $, $$, fmtTime, showToast } from './utils.js';
+import { $, $$, fmtTime, showToast, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { renderQueue } from './queue.js';
@@ -112,7 +112,7 @@ export async function loadAndPlay() {
   import('./recommendations.js').then(m => m.stopRecPlayback());
   _currentRecItem = null; // clear stale rec so "Add to playlist" targets the queue track
   const item = store.playerQueue[store.playerIndex];
-  $('#playerImg').src = item.image || '';
+  setArt($('#playerImg'), item.image);
   $('#playerTitle').textContent = item.name || '';
   $('#playerArtist').textContent = item.artist || '';
   $('#playerProgressFill').style.width = '0%';
@@ -395,7 +395,7 @@ export function playRecTrack(item) {
     return;
   }
   _currentRecItem = item;
-  $('#playerImg').src = item.image || '';
+  setArt($('#playerImg'), item.image);
   $('#playerTitle').textContent = item.name || '';
   $('#playerArtist').textContent = item.artist || '';
   $('#playerProgressFill').style.width = '0%';
@@ -436,7 +436,7 @@ export function playRecTrack(item) {
   updatePlayPauseIcon(true);
   // Sync full player directly
   const fpImg = $('#fpImg');
-  if (fpImg) fpImg.src = item.image || '';
+  if (fpImg) setArt(fpImg, item.image);
   const fpTitle = $('#fpTitle');
   if (fpTitle) fpTitle.textContent = item.name || '';
   const fpArtist = $('#fpArtist');
@@ -562,7 +562,7 @@ export async function loadQueueState() {
       $('#playerVolume').value = Math.round(store.playerVolume * 100);
       const item = store.playerQueue[store.playerIndex];
       if (item) {
-        $('#playerImg').src = item.image || '';
+        setArt($('#playerImg'), item.image);
         $('#playerTitle').textContent = item.name || '';
         $('#playerArtist').textContent = item.artist || '';
         // Pre-set audio source so play button works immediately

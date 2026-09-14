@@ -18,7 +18,7 @@ export async function loadPodcastSubs() {
     container.innerHTML = '<h3 style="font-size:15px;font-weight:600;margin:0 0 12px;color:var(--text-muted);">Subscriptions</h3>' +
       data.subs.map(sub => `
         <div class="podcast-sub-card" data-sid="${esc(sub.spotify_id)}">
-          <img src="${esc(sub.image || '')}" alt="" onerror="this.style.display='none'">
+          <img ${sub.image ? `src="${esc(sub.image)}"` : ''} alt="" onerror="this.style.display='none'">
           <div class="podcast-sub-info">
             <div class="podcast-sub-name">${esc(sub.show_name)}</div>
             <div class="podcast-sub-meta">Max episodes: ${sub.max_episodes || 'Unlimited'}</div>

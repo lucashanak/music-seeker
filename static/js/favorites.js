@@ -51,7 +51,7 @@ export async function loadFavorites() {
     }
     grid.innerHTML = artists.map(a => `
       <div class="card fav-card" data-artist-id="${a.id}" data-item='${JSON.stringify({id: a.id, name: a.name, artist: a.name, image: a.image, type: "artist", provider: a.provider || ""}).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-        <img class="card-img" src="${a.image || ''}" alt="" loading="lazy" style="border-radius:50%;" onerror="this.style.background='var(--bg-elevated)'">
+        <img class="card-img" ${a.image ? `src="${a.image}"` : ''} alt="" loading="lazy" style="border-radius:50%;" onerror="this.style.background='var(--bg-elevated)'">
         ${a.new_release ? '<div class="fav-new-badge">NEW</div>' : ''}
         ${a.auto_download ? '<div class="fav-auto-dl-badge" title="Auto-download enabled">&#x21E9; Auto</div>' : ''}
         <div class="card-body">

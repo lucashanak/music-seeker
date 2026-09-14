@@ -22,3 +22,12 @@ main { max-width: 1200px; margin: 0 auto; padding: 28px; }
 .page-title {
   font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 24px;
 }
+
+/* An <img> with no src used to be rendered as src="" — which the browser
+   resolves to the page URL, fetches the HTML document, and then draws as a
+   broken image. Artwork is now omitted rather than emptied, so this styles the
+   srcless placeholder to look deliberate instead of missing. */
+img:not([src]) {
+  background: var(--bg-elevated);
+  border: 0;
+}

@@ -1,7 +1,7 @@
 // downloads.js — Download modal (openModal/closeModal), downloads panel (openPanel/closePanel), refreshJobs, job management
 
 import { store } from './store.js';
-import { $, $$, esc, showToast, historyBack } from './utils.js';
+import { $, $$, esc, showToast, historyBack, setArt} from './utils.js';
 import { apiFetch, apiJson } from './api.js';
 import { getPlayerModule } from './player_active.js';
 
@@ -9,7 +9,7 @@ import { getPlayerModule } from './player_active.js';
 export function openModal(item) {
   history.pushState({ layer: 'modal' }, '');
   store.modalItem = item;
-  $('#modalImg').src = item.image || '';
+  setArt($('#modalImg'), item.image);
   $('#modalTitle').textContent = item.name;
   const artistEl = $('#modalArtist');
   const artist = item.artist || '';

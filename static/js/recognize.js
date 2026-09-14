@@ -1,7 +1,7 @@
 // recognize.js — Microphone recording, Shazam identification
 
 import { store } from './store.js';
-import { $ } from './utils.js';
+import { $, setArt} from './utils.js';
 import { apiFetch } from './api.js';
 import { openModal } from './downloads.js';
 import { doSearch } from './search.js';
@@ -97,7 +97,7 @@ function classifyRecognizeError(status, detail) {
 export function showRecognizeResult(data) {
   $('#rrLabel').textContent = (data.recognized_by || 'Shazam') + ' identified';
   store.recognizedItem = data;
-  $('#rrImg').src = data.image || '';
+  setArt($('#rrImg'), data.image);
   $('#rrTitle').textContent = data.name || 'Unknown';
   $('#rrArtist').textContent = data.artist || '';
   $('#recognizeResult').style.display = '';

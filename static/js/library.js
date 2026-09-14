@@ -1,7 +1,7 @@
 // library.js — Navidrome library playlists management
 
 import { store } from './store.js';
-import { $, $$, esc, escAttr, showToast, historyBack, showPlaylistPicker, showInputModal, showPlaylistFormModal, showConfirmModal } from './utils.js';
+import { $, $$, esc, escAttr, showToast, historyBack, showPlaylistPicker, showInputModal, showPlaylistFormModal, showConfirmModal, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { renderResults } from './search.js';
 import { fetchPlaylistBpm, addBpmBadges, createBpmFilter, addScanButton } from './bpm.js';
@@ -462,7 +462,7 @@ async function loadLibraryDetail(id) {
       descEl.textContent = currentLibPlaylistDesc;
       descEl.style.display = currentLibPlaylistDesc ? '' : 'none';
     }
-    $('#libDetailImg').src = data.image || '';
+    setArt($('#libDetailImg'), data.image);
     if (!data.image) {
       $('#libDetailImg').style.background = 'linear-gradient(135deg,var(--accent),#1a1a2e)';
     } else {

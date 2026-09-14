@@ -27,6 +27,16 @@ export function escAttr(s) {
 }
 
 // ── Time / Duration Formatting ──
+export function setArt(el, url) {
+  // `el.src = ''` is not "no image": the browser resolves the empty string to
+  // the page URL, fetches the HTML document and paints a broken-image icon.
+  // Removing the attribute leaves nothing to fetch, and base.css styles
+  // img:not([src]) as a deliberate placeholder.
+  if (!el) return;
+  if (url) el.setAttribute('src', url);
+  else el.removeAttribute('src');
+}
+
 export function formatDuration(ms) {
   const m = Math.floor(ms / 60000);
   const s = Math.floor((ms % 60000) / 1000);

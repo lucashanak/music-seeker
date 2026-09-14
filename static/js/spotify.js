@@ -1,7 +1,7 @@
 // spotify.js — Spotify library tabs, playlist/artist/show detail, spCache
 
 import { store } from './store.js';
-import { $, $$, esc, showToast, historyBack } from './utils.js';
+import { $, $$, esc, showToast, historyBack, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { renderResults, renderSongRows, checkLibrary } from './search.js';
@@ -69,7 +69,7 @@ function renderSpGrid(tab, items, grid) {
       </div>`;
     grid.innerHTML = likedCard + items.map(pl => `
       <div class="card sp-card" data-playlist-id="${pl.id}" data-playlist-url="${pl.url}" data-sp-type="playlist" data-item='${JSON.stringify({id:pl.id,name:pl.name,image:pl.image||"",url:pl.url||"",type:"playlist",provider:"spotify"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
-        <img class="card-img" src="${pl.image || ''}" alt="" loading="lazy">
+        <img class="card-img" ${pl.image ? `src="${pl.image}"` : ''} alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(pl.name)}</div>
           <div class="card-sub">${pl.tracks_total} tracks</div>
@@ -78,7 +78,7 @@ function renderSpGrid(tab, items, grid) {
   } else if (tab === 'albums') {
     grid.innerHTML = items.map(a => `
       <div class="card sp-card" data-sp-type="album" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.artist,image:a.image,url:a.url,type:"album",provider:"spotify"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
-        <img class="card-img" src="${a.image || ''}" alt="" loading="lazy">
+        <img class="card-img" ${a.image ? `src="${a.image}"` : ''} alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(a.name)}</div>
           <div class="card-sub">${esc(a.artist)} &middot; ${a.total_tracks} tracks</div>
@@ -87,7 +87,7 @@ function renderSpGrid(tab, items, grid) {
   } else if (tab === 'artists') {
     grid.innerHTML = items.map(a => `
       <div class="card sp-card" data-sp-type="artist" data-item='${JSON.stringify({id:a.id,name:a.name,artist:a.name,image:a.image,url:a.url,type:"artist"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
-        <img class="card-img" src="${a.image || ''}" alt="" loading="lazy" style="border-radius:50%;">
+        <img class="card-img" ${a.image ? `src="${a.image}"` : ''} alt="" loading="lazy" style="border-radius:50%;">
         <div class="card-body">
           <div class="card-title">${esc(a.name)}</div>
           <div class="card-sub">${a.genres ? esc(a.genres.join(', ')) : 'Artist'}</div>
@@ -96,7 +96,7 @@ function renderSpGrid(tab, items, grid) {
   } else if (tab === 'podcasts') {
     grid.innerHTML = items.map(s => `
       <div class="card sp-card" data-sp-type="show" data-show-id="${s.id}" data-item='${JSON.stringify({id:s.id,name:s.name,artist:s.artist,image:s.image,url:s.url,type:"show",provider:"spotify"}).replace(/&/g,"&amp;").replace(/'/g,"&#39;")}'>
-        <img class="card-img" src="${s.image || ''}" alt="" loading="lazy">
+        <img class="card-img" ${s.image ? `src="${s.image}"` : ''} alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(s.name)}</div>
           <div class="card-sub">${esc(s.artist || '')} &middot; ${s.total_episodes || 0} episodes</div>
@@ -250,10 +250,10 @@ function _openPlaylistDetail({ id, url, fromPage, name, image, liked }) {
   // Paint whatever the caller already knows so the hero isn't blank while loading.
   if (liked) {
     $('#plDetailImg').style.background = 'linear-gradient(135deg,#604be8,#1db954)';
-    $('#plDetailImg').src = '';
+    setArt($('#plDetailImg'), '');
   } else {
     $('#plDetailImg').style.background = '';
-    $('#plDetailImg').src = image || '';
+    setArt($('#plDetailImg'), image);
   }
   $('#plDetailName').textContent = name || '';
   $('#plDetailCount').textContent = '';
@@ -374,7 +374,7 @@ export async function loadShowDetail(id, url, fromPage, feedUrl) {
     const data = await apiJson(`/api/spotify/show/${id}/episodes`);
     if (data.feed_url) store.currentShowFeedUrl = data.feed_url;
     store.currentShowEpisodes = data.episodes.map(e => ({ name: e.name, artist: e.artist, album: e.artist, image: e.image || '', url: e.url, type: 'episode' }));
-    $('#showDetailImg').src = data.image || '';
+    setArt($('#showDetailImg'), data.image);
     $('#showDetailName').textContent = data.name;
     $('#showDetailPublisher').textContent = data.publisher || '';
     $('#showDetailCount').textContent = `${data.episodes.length} episodes`;
@@ -431,13 +431,13 @@ export async function loadArtistDetail(id, fromPage, provider) {
   try {
     const data = await apiJson(`/api/artist/${id}/albums${_providerQs(provider)}`);
     store.currentArtistAlbums = data.albums || [];
-    $('#artistDetailImg').src = data.image || '';
+    setArt($('#artistDetailImg'), data.image);
     $('#artistDetailName').textContent = data.name;
     $('#artistDetailCount').textContent = `${store.currentArtistAlbums.length} albums`;
     albumsEl.innerHTML = store.currentArtistAlbums.map((a, i) => `
       <div class="card" data-album-idx="${i}">
         <button class="card-dl-btn" title="Download"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
-        <img class="card-img" src="${a.image || ''}" alt="" loading="lazy">
+        <img class="card-img" ${a.image ? `src="${a.image}"` : ''} alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(a.name)}</div>
           <div class="card-sub">${a.total_tracks || ''} tracks${a.release_date ? ' · ' + a.release_date.slice(0, 4) : ''}</div>
@@ -516,7 +516,7 @@ export async function loadAlbumDetail(album, fromPage) {
   history.pushState({ layer: 'albumDetail' }, '');
   const tracksEl = $('#albumTracks');
   tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
-  $('#albumDetailImg').src = album.image || '';
+  setArt($('#albumDetailImg'), album.image);
   $('#albumDetailName').textContent = album.name || '';
   $('#albumDetailArtist').textContent = album.artist || '';
   $('#albumDetailCount').textContent = '';

@@ -97,7 +97,7 @@ export function buildCardElement(item, fromPage) {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div class="card${artistCls}" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-      ${cardPlayBtn(item)}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="card-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      ${cardPlayBtn(item)}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="card-img" ${item.image ? `src="${escAttr(item.image)}"` : ''} alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="card-body">
         <div class="card-title">${esc(item.name)}</div>
         <div class="card-sub">${cardSubHtml(item)}</div>
@@ -443,7 +443,7 @@ function buildTopResultCard(item, fromPage) {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div class="card top-result-card${artistCls}" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-      ${cardPlayBtn(item)}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="top-result-img" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      ${cardPlayBtn(item)}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="top-result-img" ${item.image ? `src="${escAttr(item.image)}"` : ''} alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="top-result-name">${esc(item.name)}</div>
       <div class="top-result-type">${sub}</div>
     </div>
@@ -490,7 +490,7 @@ export function renderSongRows(tracks, sink, opts = {}) {
     // artist line when every track shares the album's artist.
     const lead = opts.numbered
       ? `<div class="song-num">${esc(String(item.track_number || (idx + 1)))}</div>`
-      : `<img class="song-thumb" src="${escAttr(item.image || '')}" alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">`;
+      : `<img class="song-thumb" ${item.image ? `src="${escAttr(item.image)}"` : ''} alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">`;
     const sub = opts.hideArtist ? '' : `<div class="song-artist">${cardSubHtml(item)}</div>`;
     row.innerHTML = `
       ${lead}

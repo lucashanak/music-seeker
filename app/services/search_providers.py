@@ -3,6 +3,8 @@
 import asyncio
 import re
 import threading
+import time
+from collections import deque
 import unicodedata
 import logging
 import defusedxml.ElementTree as ET
@@ -11,6 +13,39 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DEEZER_BASE = "https://api.deezer.com"
+
+# ── Deezer rate limit ────────────────────────────────────────────────
+# Deezer's public API allows roughly 50 requests / 5s per IP and answers
+# "Quota limit exceeded" past that. The failure is NOT confined to whoever
+# overran it: every Deezer call in that window fails, including the ones that
+# resolve cover art — which is how a background co-occurrence mining burst
+# (a playlist search per query plus up to 30 playlist fetches) made images
+# disappear across the whole app while the library's own covers kept working.
+#
+# A semaphore was not enough: it bounds concurrency, not rate, and three fast
+# sequential calls still overrun the window. This is a token bucket in front of
+# EVERY Deezer request, so background work queues behind the budget instead of
+# spending someone else's share of it.
+_DEEZER_WINDOW = 5.0
+_DEEZER_MAX_PER_WINDOW = 35  # headroom under ~50 so a burst never reaches the cap
+_deezer_calls: deque = deque()
+_deezer_lock = asyncio.Lock()
+
+
+async def _deezer_limit() -> None:
+    """Block until this process may make another Deezer request."""
+    async with _deezer_lock:
+        while True:
+            now = time.monotonic()
+            while _deezer_calls and now - _deezer_calls[0] >= _DEEZER_WINDOW:
+                _deezer_calls.popleft()
+            if len(_deezer_calls) < _DEEZER_MAX_PER_WINDOW:
+                _deezer_calls.append(now)
+                return
+            # Holding the lock across the wait is deliberate: it serialises
+            # waiters so they resume in order instead of stampeding together.
+            await asyncio.sleep(_DEEZER_WINDOW - (now - _deezer_calls[0]) + 0.05)
+
 ITUNES_BASE = "https://itunes.apple.com"
 
 # Bounds for paginated playlist fetches
@@ -44,6 +79,7 @@ async def deezer_search(query: str, search_type: str = "track", limit: int = 20,
         return []
 
     async with httpx.AsyncClient(timeout=10) as client:
+        await _deezer_limit()
         resp = await client.get(f"{DEEZER_BASE}/{endpoint}", params={"q": query, "limit": limit, "index": offset})
         resp.raise_for_status()
         data = resp.json()
@@ -100,6 +136,7 @@ async def deezer_search(query: str, search_type: str = "track", limit: int = 20,
 
 async def deezer_get_track(track_id: str) -> dict:
     async with httpx.AsyncClient(timeout=10) as client:
+        await _deezer_limit()
         resp = await client.get(f"{DEEZER_BASE}/track/{track_id}")
         resp.raise_for_status()
         item = resp.json()
@@ -113,6 +150,7 @@ async def deezer_get_track(track_id: str) -> dict:
 
 async def deezer_get_album_tracks(album_id: str) -> list[dict]:
     async with httpx.AsyncClient(timeout=10) as client:
+        await _deezer_limit()
         resp = await client.get(f"{DEEZER_BASE}/album/{album_id}")
         resp.raise_for_status()
         data = resp.json()
@@ -136,6 +174,7 @@ async def deezer_get_album_tracks(album_id: str) -> list[dict]:
 async def deezer_get_playlist_tracks(playlist_id: str) -> dict:
     """Get playlist info + tracks. Deezer pages `tracks.data` (~100/page) via `tracks.next`."""
     async with httpx.AsyncClient(timeout=10) as client:
+        await _deezer_limit()
         resp = await client.get(f"{DEEZER_BASE}/playlist/{playlist_id}")
         resp.raise_for_status()
         data = resp.json()
@@ -164,6 +203,7 @@ async def deezer_get_playlist_tracks(playlist_id: str) -> dict:
             next_url = page.get("next")
             if not next_url or len(tracks) >= _PLAYLIST_MAX_TRACKS:
                 break
+            await _deezer_limit()
             resp = await client.get(next_url)
             resp.raise_for_status()
             page = resp.json()
@@ -173,11 +213,13 @@ async def deezer_get_playlist_tracks(playlist_id: str) -> dict:
 async def deezer_get_artist_albums(artist_id: str) -> dict:
     async with httpx.AsyncClient(timeout=10) as client:
         # Get artist info
+        await _deezer_limit()
         resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}")
         resp.raise_for_status()
         artist = resp.json()
         # Get albums with pagination (Deezer returns max 100 per page)
         albums = []
+        await _deezer_limit()
         url = f"{DEEZER_BASE}/artist/{artist_id}/albums"
         params = {"limit": 100}
         while url:
@@ -206,6 +248,7 @@ async def deezer_get_artist_albums(artist_id: str) -> dict:
 
 async def deezer_artist_radio(artist_id: str) -> list[dict]:
     async with httpx.AsyncClient(timeout=10) as client:
+        await _deezer_limit()
         resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}/radio")
         resp.raise_for_status()
         data = resp.json()
@@ -225,6 +268,7 @@ async def deezer_artist_radio(artist_id: str) -> list[dict]:
 
 async def deezer_related_artists(artist_id: str) -> list[dict]:
     async with httpx.AsyncClient(timeout=10) as client:
+        await _deezer_limit()
         resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}/related")
         resp.raise_for_status()
         data = resp.json()
@@ -242,6 +286,7 @@ async def deezer_related_artists(artist_id: str) -> list[dict]:
 
 async def deezer_artist_latest_album(artist_id: str) -> dict | None:
     async with httpx.AsyncClient(timeout=10) as client:
+        await _deezer_limit()
         resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}/albums", params={"limit": 1, "order": "date"})
         resp.raise_for_status()
         data = resp.json()
