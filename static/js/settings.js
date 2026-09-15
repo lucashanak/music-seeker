@@ -1,7 +1,7 @@
 // settings.js — Settings page, user management, disk usage
 
 import { store } from './store.js';
-import { $, $$, esc, escAttr, formatSize, showToast, showConfirmModal, autoFocus } from './utils.js';
+import { $, $$, esc, escAttr, formatSize, showToast, showConfirmModal, autoFocus, searchPlaceholder} from './utils.js';
 import { apiJson, apiFetch } from './api.js';
 import { switchPage } from './router.js';
 import { getPlayerModule } from './player_active.js';
@@ -405,9 +405,9 @@ function _applyGlobalSettings(data) {
   store.appSettings = data;
   store.searchProvider = data.search_provider || 'deezer';
   store.podcastProvider = data.podcast_provider || 'itunes';
-  const providerLabels = { deezer: 'Deezer', ytmusic: 'YouTube Music', apple: 'Apple Music', spotify: 'Spotify' };
+
   const si = $('#searchInput');
-  if (si) si.placeholder = `Search for music (${providerLabels[store.searchProvider] || store.searchProvider})...`;
+  if (si) si.placeholder = searchPlaceholder(store.searchProvider);
 }
 
 // Debounced auto-save for a global-settings field. Admin-only (backend enforces

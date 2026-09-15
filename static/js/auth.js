@@ -1,7 +1,7 @@
 // auth.js — Login, logout, initApp, checkVersion, token management
 
 import { store } from './store.js';
-import { $, $$, autoFocus } from './utils.js';
+import { $, $$, autoFocus, searchPlaceholder} from './utils.js';
 import { apiJson, refreshStreamToken } from './api.js';
 import { showToast, historyBack } from './utils.js';
 import { requestNotificationPermission } from './utils.js';
@@ -175,8 +175,7 @@ export async function initApp() {
       }
     }
     // Search is always available (Deezer/YTMusic don't need credentials)
-    const providerLabels = { deezer: 'Deezer', ytmusic: 'YouTube Music', apple: 'Apple Music', spotify: 'Spotify' };
-    $('#searchInput').placeholder = `Search for music (${providerLabels[store.searchProvider] || store.searchProvider})...`;
+    $('#searchInput').placeholder = searchPlaceholder(store.searchProvider);
 
     // Start jobs polling
     refreshJobs();

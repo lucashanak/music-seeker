@@ -27,6 +27,21 @@ export function escAttr(s) {
 }
 
 // ── Time / Duration Formatting ──
+export const SEARCH_PROVIDER_LABELS = {
+  deezer: 'Deezer', ytmusic: 'YouTube Music', apple: 'Apple Music', spotify: 'Spotify',
+};
+
+export function searchPlaceholder(provider) {
+  // Deezer indexes lyrics, so a remembered line finds the song — verified with
+  // fragments sharing no word with the title ("i see a little silhouetto of a
+  // man" -> Bohemian Rhapsody). The other providers match metadata only, so the
+  // hint is shown for Deezer alone rather than promising something they cannot do.
+  const label = SEARCH_PROVIDER_LABELS[provider] || provider;
+  return provider === 'deezer'
+    ? `Title, artist, or lyrics (${label})...`
+    : `Search for music (${label})...`;
+}
+
 export function setArt(el, url) {
   // `el.src = ''` is not "no image": the browser resolves the empty string to
   // the page URL, fetches the HTML document and paints a broken-image icon.
