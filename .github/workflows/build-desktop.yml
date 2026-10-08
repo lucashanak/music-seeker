@@ -365,7 +365,15 @@ jobs:
         with:
           node-version: 20
 
+      # packages: '' is load-bearing. The action's default is to sdkmanager-install
+      # 'tools', an obsolete package Google has since removed from the repository, so
+      # the default now fails with "Failed to find package 'tools'" and takes the whole
+      # Android build with it. The runner image already ships cmdline-tools and
+      # platform-tools; the only thing this job actually needs installed is the NDK,
+      # which the next step does explicitly.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Install Android NDK
         run: sdkmanager --install "ndk;27.0.12077973"
