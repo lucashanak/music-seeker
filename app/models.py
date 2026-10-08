@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LoginRequest(BaseModel):
@@ -134,16 +134,34 @@ class PrewarmRequest(BaseModel):
 
 
 class RecommendationRequest(BaseModel):
-    tracks: list[dict]
+    tracks: list[dict] = Field(..., max_length=500)
     limit: int = Field(15, ge=1, le=50)
     skipped: list[dict] = []
     accepted: list[dict] = []
     tempo_coherent: bool = False
+    # Seed pool — a window of `tracks` around the listener's position. `tracks`
+    # stays the profile and the exclusion set; seeds are drawn from here, so
+    # recall follows where the listener IS in a long playlist rather than its
+    # tail. Empty = draw seeds from `tracks` (previous behavior).
+    seed_tracks: list[dict] = Field(default_factory=list, max_length=80)
+    # Extra keys to keep out of the results on top of `tracks` — the station's
+    # already-shown recommendations, so a top-up spends its limit on NEW tracks
+    # instead of duplicates the client then filters out.
+    exclude: list[dict] = Field(default_factory=list, max_length=200)
+    # Mood axis: None | "calm" | "energy". Anything else normalizes to None
+    # rather than 422 — a mood is a preference, not a contract.
+    vibe: str | None = None
     # Scene anchors for co-occurrence mining — typically the source playlist's
     # name. Measured to matter more than any scoring change: a playlist whose
     # name names its scene had 49 of 53 held-out members reachable, one whose
     # name does not had a fraction of that.
     anchors: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("vibe")
+    @classmethod
+    def _normalize_vibe(cls, v: str | None) -> str | None:
+        v = (v or "").strip().lower()
+        return v if v in ("calm", "energy") else None
 
 
 class LikeRequest(BaseModel):

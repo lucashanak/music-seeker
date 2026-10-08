@@ -56,6 +56,10 @@ COOCCUR_LIMIT = 400
 # lets one artist take 12% of a 50-track page; 4 takes most of the gain while
 # keeping the output varied, which the recall metric cannot see.
 DIVERSIFY_MAX_PER_ARTIST = 4
+# How many distinct candidate artists a mood request may fetch Last.fm tags for
+# on the request path (bounded by _lastfm_sem=5 → ~5 batches). The chip must
+# feel like a filter, not like starting a radio.
+VIBE_ARTIST_TAG_BUDGET = 25
 
 
 def _dedup(tracks: list[dict]) -> list[dict]:
@@ -579,8 +583,10 @@ def _merge_profiles(queue_profile: dict, taste_profile: dict | None,
 
 
 def _weighted_sample_seeds(tracks: list[dict], profile: dict, k: int = 5,
-                           rng: random.Random | None = None) -> list[dict]:
-    """Pick seeds weighted by artist frequency, with light shuffling.
+                           rng: random.Random | None = None,
+                           vibe: str | None = None) -> list[dict]:
+    """Pick seeds weighted by artist frequency (times mood fit), with light
+    shuffling.
 
     `rng` must be a seeded random.Random, not the global `random` module. The
     shuffling is deliberate — endless radio wants a different draw as its
@@ -601,7 +607,10 @@ def _weighted_sample_seeds(tracks: list[dict], profile: dict, k: int = 5,
     for t in tracks:
         a = _norm_artist(t.get("artist") or "")
         w = profile["artist_weights"].get(a, 0.01)
-        weights.append(w)
+        # Mood is decided here, not only in the reranker: see _vibe_seed_weight.
+        # Cache-only vector read; the caller has already prefetched the window.
+        tv = tagvec.vector(_norm_key(t)) if (vibe and TAGVEC_ENABLED) else None
+        weights.append(w * _vibe_seed_weight(t, vibe, tv))
     # Weighted sampling without replacement
     pool = list(zip(tracks, weights))
     picked: list[dict] = []
@@ -825,6 +834,106 @@ def _calm_features_ok(track: dict) -> bool:
     return True
 
 
+# ── Shared mood axis (seed-track radio AND the recommendation station) ──
+# One implementation so "Calm" means the same thing wherever it is offered.
+# Seed bias multipliers for _vibe_seed_weight: a fully aligned track is 2.5x as
+# likely to be drawn as a neutral one, a fully opposed one 0.3x.
+_VIBE_SEED_BOOST = 2.5
+_VIBE_SEED_DAMP = 0.3
+
+
+def _vibe_ok(track: dict, vibe: str | None) -> bool:
+    """Hard gate for a requested mood.
+
+    Only "calm" gates, via the two known-and-clearly-loud checks. "energy" does
+    not: a slow track can still be the right energetic pick, and the graded
+    steering in _vibe_score expresses that better than a filter would."""
+    if vibe != "calm":
+        return True
+    return _calm_bpm_ok(track) and _calm_features_ok(track)
+
+
+def _vibe_score(track: dict, cand_tags: set[str], vibe: str | None) -> float:
+    """Mood steering term: artist-tag alignment, plus real local energy features
+    for "energy". Returns 0 for no vibe, and for a candidate whose tags and
+    features are both unknown — so the mood never misranks on missing data."""
+    if vibe not in ("calm", "energy"):
+        return 0.0
+    score = 0.0
+    if cand_tags:
+        want, avoid = ((CALM_TAGS, ENERGY_TAGS) if vibe == "calm"
+                       else (ENERGY_TAGS, CALM_TAGS))
+        score += 2.0 * len(cand_tags & want)
+        score -= 2.0 * len(cand_tags & avoid)
+    if vibe == "energy":
+        c = bpm_service.get_cached_bpm(track.get("name", ""), track.get("artist", ""))
+        if c:
+            e = c.get("energy")
+            d = c.get("danceability")
+            # Centered on 0.5 so an unanalyzed candidate (0) sits BETWEEN a
+            # known-energetic and a known-lethargic one. As a one-sided bonus
+            # this was really a library-preference knob: cached features exist
+            # almost only for local files, which already collect the navidrome
+            # source bonus, so a sleepy local track outranked a genuine banger
+            # nobody had analyzed.
+            if isinstance(e, (int, float)):
+                score += 2.0 * (float(e) - 0.5)
+            if isinstance(d, (int, float)):
+                score += 1.0 * (float(d) - 0.5)
+    return score
+
+
+def _vibe_seed_weight(track: dict, vibe: str | None,
+                      tag_vec: dict[str, float] | None = None) -> float:
+    """Multiplier that tilts SEED selection toward the input's own calm (or
+    energetic) tracks.
+
+    Reranking alone cannot make a mood. Every recall arm is seeded by tracks, so
+    a calm request seeded from a playlist's club tracks mines a club candidate
+    pool and then has nothing calm left to promote — the gate just empties the
+    page. Biasing the seeds tilts recall itself, which is where a mood has to be
+    decided. Reads only the local bpm/feature cache, so an unanalyzed track
+    stays neutral (1.0) and the sampler degrades to plain artist weighting.
+
+    Each known signal votes +1 (calm) or -1 (energetic); unknown ones abstain.
+    `tag_vec` is the track's cached tagvec vector — the vote that carries the
+    STREAMED queues this station mostly runs on, since the bpm/feature cache is
+    filled by local file analysis only. Both sources are cache-only reads, so a
+    mood's seed draw does shift as those caches warm (the eval harness passes no
+    vibe, so its reproducibility is unaffected)."""
+    if vibe not in ("calm", "energy"):
+        return 1.0
+    votes: list[float] = []
+    if tag_vec:
+        # tagvec expands tags into concept dimensions; "calm" and "energetic"
+        # are exactly the two this axis needs (see tagvec._CONCEPTS).
+        calm_w = tag_vec.get("concept:calm", 0.0)
+        energy_w = tag_vec.get("concept:energetic", 0.0)
+        if calm_w or energy_w:
+            votes.append(1.0 if calm_w > energy_w else -1.0)
+    c = bpm_service.get_cached_bpm(track.get("name", ""), track.get("artist", ""))
+    if c:
+        e = c.get("energy")
+        if isinstance(e, (int, float)):
+            votes.append(1.0 if float(e) <= _CALM_ENERGY_MAX else -1.0)
+        d = c.get("danceability")
+        if isinstance(d, (int, float)):
+            votes.append(1.0 if float(d) <= _CALM_DANCE_MAX else -1.0)
+        bpm = c.get("bpm")
+        conf = c.get("confidence") or 0.3
+        if bpm and float(bpm) > 0 and conf >= 0.5:
+            in_band = any(_CALM_BPM_LO <= b <= _CALM_BPM_HI
+                          for b in (float(bpm), float(bpm) / 2.0, float(bpm) * 2.0))
+            votes.append(1.0 if in_band else -1.0)
+    if not votes:
+        return 1.0
+    calmness = sum(votes) / len(votes)  # -1 (energetic) .. +1 (calm)
+    aligned = calmness if vibe == "calm" else -calmness
+    if aligned >= 0:
+        return 1.0 + aligned * (_VIBE_SEED_BOOST - 1.0)
+    return 1.0 + aligned * (1.0 - _VIBE_SEED_DAMP)
+
+
 async def get_track_radio(
     seed: dict,
     source: str = "combined",
@@ -1033,8 +1142,8 @@ async def get_track_radio(
         artist_n = _norm_artist(track.get("artist") or "")
         cand_tags = artist_tags.get(artist_n, set())
 
-        # ── Calm-vibe gate: BPM proxy AND (when known) real low-energy ──
-        if vibe == "calm" and (not _calm_bpm_ok(track) or not _calm_features_ok(track)):
+        # ── Mood gate (calm: BPM proxy AND, when known, real low-energy) ──
+        if not _vibe_ok(track, vibe):
             return None
 
         score = 0.0
@@ -1062,24 +1171,8 @@ async def get_track_radio(
                 score -= 4.0
             seed_artist_count += 1
 
-        # ── Vibe tag steering (calm prefers calm tags; energy is symmetric) ──
-        if vibe == "calm" and cand_tags:
-            score += 2.0 * len(cand_tags & CALM_TAGS)
-            score -= 2.0 * len(cand_tags & ENERGY_TAGS)
-        elif vibe == "energy" and cand_tags:
-            score += 2.0 * len(cand_tags & ENERGY_TAGS)
-            score -= 2.0 * len(cand_tags & CALM_TAGS)
-
-        # ── Energy-vibe steering on real features (high energy/danceability) ──
-        if vibe == "energy":
-            ec = bpm_service.get_cached_bpm(track.get("name", ""), track.get("artist", ""))
-            if ec:
-                e = ec.get("energy")
-                d = ec.get("danceability")
-                if isinstance(e, (int, float)):
-                    score += 2.0 * float(e)
-                if isinstance(d, (int, float)):
-                    score += 1.0 * float(d)
+        # ── Mood steering (tags both ways; real features for energy) ──
+        score += _vibe_score(track, cand_tags, vibe)
 
         return (score, track)
 
@@ -1105,12 +1198,23 @@ async def get_playlist_recommendations(
     tempo_coherent: bool = False,
     variation: int = 0,
     anchors: list[str] | None = None,
+    seed_tracks: list[dict] | None = None,
+    vibe: str | None = None,
 ) -> list[dict]:
     """Profile-driven recommendations.
 
-    1. Build playlist profile (artist weights + Last.fm tag centroid), blended
-       with a durable per-user taste profile (Spotify likes/top + Navidrome starred)
-    2. Weighted seed selection
+    `tracks` is the profile (and, via `exclude`, what not to recommend back);
+    `seed_tracks` is the pool seeds are drawn from — typically a window of
+    `tracks` around the listener's position, so recall follows where they ARE
+    in a long playlist instead of its tail. Defaults to `tracks`.
+
+    `vibe` ("calm" | "energy" | None) is the mood axis: it biases seed
+    selection, gates known-loud candidates for calm, and steers the reranker.
+
+    1. Build playlist profile (artist weights over all of `tracks`; track-tag
+       centroid over the window), blended with a durable per-user taste profile
+       (Spotify likes/top + Navidrome starred)
+    2. Weighted seed selection (mood-biased)
     3. Multi-source recall: per-artist radio, per-tag tracks, similar-artists,
        per-track similar, Navidrome similar (library-grounded)
     4. Score+rerank by tag overlap, multi-source agreement, library bonus,
@@ -1120,14 +1224,42 @@ async def get_playlist_recommendations(
     if not tracks:
         return []
 
+    # Profile = the whole playlist; seed pool = the caller's window of it.
+    window = [t for t in (seed_tracks or []) if t]
+    seed_pool = window or tracks
+
+    # The profile is built from `tracks` in their natural order so its cache key
+    # is stable as the window MOVES: _build_profile keys on an order-sensitive
+    # hash, so folding the window into that list would miss the cache on every
+    # cursor advance and rebuild up to 5 Last.fm artist-tag calls per reload.
+    # Only the track-tag centroid is window-local — it is bounded to
+    # TAGVEC_PROFILE_BUDGET tracks, so computing it over the window is what
+    # makes it describe the local context instead of the playlist's first 30.
+    # Both tagvec calls are cheap: prefetch and centroid are cached in tagvec.
     queue_profile = await _build_profile(tracks)
+    if window and TAGVEC_ENABLED:
+        head = window[:TAGVEC_PROFILE_BUDGET]
+        head_keys = [_norm_key(t) for t in head]
+        await tagvec.prefetch([
+            (k, t.get("name") or "", t.get("artist") or "")
+            for k, t in zip(head_keys, head)
+        ])
+        # Copy: never mutate the cached profile dict.
+        queue_profile = {**queue_profile, "tag_vector": tagvec.centroid(head_keys)}
+
     taste_profile = await _build_taste_profile(user)
     profile = _merge_profiles(queue_profile, taste_profile)
-    # Seeded from the input, so the same request is reproducible. `variation`
-    # lets a caller ask for a different draw from the SAME input (endless radio
-    # topping up without sliding its window yet).
-    seed_rng = random.Random(f"{_hash_playlist(tracks)}:{variation}")
-    seeds = _weighted_sample_seeds(tracks, profile, k=5, rng=seed_rng)
+    # Seeded from the seed pool, so the same request stays reproducible while a
+    # window that has MOVED yields a fresh draw, and switching mood re-draws
+    # instead of silently reusing the Default draw. The no-mood string stays
+    # byte-identical to the pre-window one, so recall numbers recorded by past
+    # eval runs remain reproducible. `variation` lets a caller ask for a
+    # different draw from the SAME input (endless radio topping up without
+    # sliding its window yet).
+    rng_key = f"{_hash_playlist(seed_pool)}:{vibe}:{variation}" if vibe \
+        else f"{_hash_playlist(seed_pool)}:{variation}"
+    seed_rng = random.Random(rng_key)
+    seeds = _weighted_sample_seeds(seed_pool, profile, k=5, rng=seed_rng, vibe=vibe)
 
     playlist_artists = set(profile["artist_weights"].keys())
     skipped_artists = {_norm_artist(t.get("artist") or "") for t in (skipped or [])}
@@ -1253,17 +1385,43 @@ async def get_playlist_recommendations(
     # ── Pre-fetch candidate artist tags ONCE per distinct artist ────
     # (avoids an N+1 Last.fm lookup inside scoring; one call per distinct
     # non-excluded candidate artist that has >=1 source, run concurrently)
-    # Skipped entirely under TAGVEC_ENABLED: the cosine term supersedes this
-    # signal, so the per-artist calls would be pure cost.
+    # Skipped under TAGVEC_ENABLED: the cosine term supersedes this signal, so
+    # the per-artist calls would be pure cost — EXCEPT when a mood is requested,
+    # since _vibe_score scores against the artist-level CALM_TAGS/ENERGY_TAGS.
     artist_tags: dict[str, set[str]] = {}
-    if top_tag_names and lastfm.LASTFM_API_KEY and not TAGVEC_ENABLED:
+    legacy_overlap = bool(top_tag_names) and not TAGVEC_ENABLED
+    if lastfm.LASTFM_API_KEY and (vibe or legacy_overlap):
+        # A mood is a filter chip on a list the user is READING, so its fan-out
+        # is budgeted: fetching every candidate artist synchronously is the
+        # pattern _prefetch_candidate_vectors documents at ~30s worst case.
+        # Ranked by the two signals known before scoring (source agreement, then
+        # Last.fm match), so the budget goes to the candidates that could
+        # plausibly reach the output; the rest steer on 0, exactly as they do
+        # when Last.fm is unavailable.
+        #
+        # Budgeted on `vibe` ALONE, never on legacy_overlap. Keying the skip off
+        # legacy_overlap made the budget dead code wherever TAGVEC_ENABLED is
+        # off — which is the default — so a mood tap there still fetched every
+        # candidate artist, the exact 31s response the budget exists to prevent.
+        # The cost is that under the legacy path a mood request now computes the
+        # tag-overlap term from the top 25 candidates only; a request with no
+        # mood keeps its unbudgeted fetch, so the measured legacy behavior of
+        # the default station is untouched.
+        budgeted = bool(vibe)
+        ranked = [
+            (k, e) for k, e in candidates.items()
+            if k not in exclude_keys and e["sources"]
+        ]
+        if budgeted:
+            ranked.sort(key=lambda kv: (-len(kv[1]["sources"]), -kv[1]["match"]))
         distinct_artists: set[str] = set()
-        for key, entry in candidates.items():
-            if key in exclude_keys or not entry["sources"]:
-                continue
+        for key, entry in ranked:
             an = _norm_artist(entry["track"].get("artist") or "")
-            if an:
-                distinct_artists.add(an)
+            if not an:
+                continue
+            distinct_artists.add(an)
+            if budgeted and len(distinct_artists) >= VIBE_ARTIST_TAG_BUDGET:
+                break
 
         async def _fetch_artist_tags(an: str):
             try:
@@ -1281,6 +1439,9 @@ async def get_playlist_recommendations(
             return None
         track = entry["track"]
         artist_n = _norm_artist(track.get("artist") or "")
+        # Mood gate (calm only) — drops candidates known to be loud/fast.
+        if not _vibe_ok(track, vibe):
+            return None
         score = 0.0
         # Multi-source agreement (strongest signal)
         score += len(entry["sources"]) * 2.0
@@ -1318,6 +1479,8 @@ async def get_playlist_recommendations(
         # Boost for accepted artists (user-confirmed direction)
         if artist_n in accepted_artists:
             score += 2.0
+        # Mood steering (tags both ways; real features for energy)
+        score += _vibe_score(track, artist_tags.get(artist_n, set()), vibe)
         return (score, track)
 
     # Deterministic: iterate candidates in insertion order, sync scoring

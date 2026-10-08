@@ -20,6 +20,66 @@ let _playedWindow = [];       // recently played recs (sliding window of {name, 
 let _driftSteps = 0;          // how far we've drifted from the original seed
 let _toppingUp = false;       // guard against concurrent top-ups
 
+// ── Seed window: WHERE in the playlist the station is built from ──
+// The station used to seed off store.playerQueue.slice(-30) — the queue's TAIL,
+// ignoring store.playerIndex entirely. On a 200-track playlist that built
+// recommendations for music the listener had not reached (and would not for
+// hours). The window sits on the cursor instead, and reaches further BACK than
+// forward (what just played is stronger context than what is merely queued) —
+// an asymmetric window, not a per-track weighting; the sampler still weights
+// only by artist frequency and mood fit. The PROFILE meanwhile still covers the
+// whole playlist, so the picks keep its overall direction.
+const PROFILE_MAX = 200;   // cap on tracks sent as the profile (payload + cost)
+const SEED_BACK = 20;      // tracks up to and including the cursor
+const SEED_AHEAD = 10;     // tracks after it
+
+// Currently selected mood/vibe for the recs station ('' = default).
+let _recsVibe = '';
+
+// Project a queue item to the fields the recommendation engine actually reads
+// (name/artist for the profile, id for seed radio, bpm/camelot for tempo
+// coherence) — a 200-track profile of full queue items ships image URLs and
+// per-track player state for nothing.
+function _payloadTrack(t) {
+  const out = { name: t.name || '', artist: t.artist || '' };
+  if (t.album) out.album = t.album;
+  if (t.id) out.id = t.id;
+  if (t.bpm) out.bpm = t.bpm;
+  if (t.camelot) out.camelot = t.camelot;
+  return out;
+}
+
+function _key(t) {
+  return `${((t && t.name) || '').toLowerCase()}|${((t && t.artist) || '').toLowerCase()}`;
+}
+
+// Cursor position, falling back to the queue tail when nothing is playing yet
+// (which is exactly the old behavior, so an idle queue is unchanged).
+function _cursorIdx() {
+  const q = store.playerQueue;
+  const i = store.playerIndex;
+  return (i >= 0 && i < q.length) ? i : q.length - 1;
+}
+
+function _seedWindow() {
+  const q = store.playerQueue;
+  if (!q.length) return [];
+  const idx = _cursorIdx();
+  return q.slice(Math.max(0, idx - SEED_BACK + 1), idx + 1 + SEED_AHEAD)
+          .map(_payloadTrack);
+}
+
+// The profile: the whole playlist when it fits, else a PROFILE_MAX slice
+// centered on the cursor (never the head — that is the same bug as the tail).
+function _profileTracks() {
+  const q = store.playerQueue;
+  if (q.length <= PROFILE_MAX) return q.map(_payloadTrack);
+  const half = Math.floor(PROFILE_MAX / 2);
+  let start = Math.max(0, _cursorIdx() - half);
+  if (start + PROFILE_MAX > q.length) start = q.length - PROFILE_MAX;
+  return q.slice(start, start + PROFILE_MAX).map(_payloadTrack);
+}
+
 // ── Scene anchor for the co-occurrence recall arm ──
 // The backend mines public playlists named after a scene, and the single thing
 // that determines whether that works is the anchor. A playlist name is the best
@@ -136,25 +196,60 @@ export function stopRecPlayback() {
 }
 
 // ── Load Recommendations ──
+// What the list on screen was actually built from, so nothing in the UI can
+// claim a mood or a seed the visible picks do not come from.
+let _loadedVibe = '';
+let _loadedSeedTrack = null;
+let _loadFailed = false;
+
 async function loadRecs() {
-  if (recsLoading || !store.playerQueue.length) return;
+  if (!store.playerQueue.length) return;
+  // A mood chip tapped while a load is in flight must not be swallowed: the
+  // chip would show Calm over a Default list, and re-tapping it could not fix
+  // it. Let the in-flight request finish and re-enter from its `finally`.
+  if (recsLoading) return;
   recsLoading = true;
   renderLoading();
+  const vibe = _recsVibe;
   try {
     const fb = _loadFeedback();
-    const seedTracks = store.playerQueue.slice(-30);
+    const profileTracks = _profileTracks();
+    const seedTracks = _seedWindow();
+    const cursorTrack = store.playerQueue[_cursorIdx()] || null;
+    // Hold on to the rec playing right now: a reload (refresh, mood switch)
+    // replaces the cache, and recsPlayingIdx would then point at an unrelated
+    // row — highlighting the wrong track and mis-advancing "next".
+    const playing = recsPlayingIdx >= 0 ? recsCache[recsPlayingIdx] : null;
     const data = await apiJson('/api/player/recommendations', {
       method: 'POST',
       body: {
-        tracks: seedTracks,
+        tracks: profileTracks,
+        seed_tracks: seedTracks,
         limit: 20,
         skipped: fb.skipped.slice(-30),
         accepted: fb.accepted.slice(-30),
         anchors: _queueAnchors(),
+        vibe: vibe || null,
       },
     });
-    recsCache = data.tracks || [];
+    const fresh = data.tracks || [];
+    // Only carry the playing track over when the mood actually returned
+    // something — otherwise the single surviving row would masquerade as a
+    // result, and the "no picks for this mood" state would never show.
+    if (playing && fresh.length) {
+      const pk = _key(playing);
+      recsCache = [playing, ...fresh.filter(t => _key(t) !== pk)];
+      recsPlayingIdx = 0;
+    } else {
+      recsCache = fresh;
+      // The preserved track is gone (or there was nothing to preserve): drop
+      // the index rather than leaving it pointing into the new list.
+      if (recsPlayingIdx >= 0) recsPlayingIdx = -1;
+    }
     recsDirty = false;
+    _loadFailed = false;
+    _loadedVibe = vibe;
+    _loadedSeedTrack = cursorTrack;
     // Re-anchor the endless-radio station on a fresh full load.
     _originalSeed = seedTracks;
     _playedWindow = [];
@@ -162,11 +257,32 @@ async function loadRecs() {
     renderRecs();
   } catch {
     recsCache = [];
+    _loadFailed = true;
+    _loadedVibe = vibe;
+    _loadedSeedTrack = store.playerQueue[_cursorIdx()] || _loadedSeedTrack;
     renderRecs();
     showToast("Couldn't load recommendations");
   } finally {
     recsLoading = false;
+    // The mood changed under an in-flight request — serve the latest choice.
+    if (_recsVibe !== _loadedVibe) loadRecs();
   }
+}
+
+// Up to 150 already-shown recs (model caps `exclude` at 200), deduped.
+function _excludeKeys() {
+  const ends = recsCache.length <= 150
+    ? recsCache
+    : [...recsCache.slice(0, 75), ...recsCache.slice(-75)];
+  const seen = new Set();
+  const out = [];
+  for (const t of ends) {
+    const k = _key(t);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ name: t.name || '', artist: t.artist || '' });
+  }
+  return out;
 }
 
 // ── Endless radio: top up the virtual queue in the background ──
@@ -194,22 +310,35 @@ async function _maybeTopUp() {
     if (!seed.length) return;
 
     const fb = _loadFeedback();
+    // The drift window is the SEED pool; the profile stays the playlist, with
+    // the played recs folded in so they are excluded from the result too.
+    // `exclude` carries what the station already shows, so the top-up spends
+    // its limit on new tracks instead of duplicates we then filter out.
+    const profileTracks = _profileTracks();
+    const inProfile = new Set(profileTracks.map(_key));
+    const tracks = profileTracks.concat(seed.filter(t => !inProfile.has(_key(t))));
     const data = await apiJson('/api/player/recommendations', {
       method: 'POST',
       body: {
-        tracks: seed,
+        tracks,
+        seed_tracks: seed,
         limit: 15,
         skipped: fb.skipped.slice(-30),
         accepted: fb.accepted.slice(-30),
         anchors: _queueAnchors(),
+        // Both ends of the cache: the tail is what was just shown, the head is
+        // what the server is most likely to surface again (it ranked those
+        // first), and a long session's cache outgrows any one-sided slice.
+        exclude: _excludeKeys(),
+        vibe: _recsVibe || null,
       },
     });
     const fresh = data.tracks || [];
     if (fresh.length) {
       // Append only tracks not already in the cache (dedup by name+artist).
-      const seen = new Set(recsCache.map(t => `${(t.name || '').toLowerCase()}|${(t.artist || '').toLowerCase()}`));
+      const seen = new Set(recsCache.map(_key));
       for (const t of fresh) {
-        const k = `${(t.name || '').toLowerCase()}|${(t.artist || '').toLowerCase()}`;
+        const k = _key(t);
         if (!seen.has(k)) { recsCache.push(t); seen.add(k); }
       }
       renderRecs();
@@ -222,19 +351,33 @@ async function _maybeTopUp() {
 }
 
 // Human-readable seed label for the recs header — "Based on {track/artist}".
+// Names the track the visible list was BUILT around, captured at load time.
+// Reading the live cursor instead would let the header advance to "track 47"
+// while the list still came from a window around track 12 — a quieter version
+// of the bug the seed window exists to fix. (And before the window existed this
+// named the queue's last track, rarely anything the listener could hear.)
 function _seedLabel() {
-  const seed = (_originalSeed && _originalSeed.length)
-    ? _originalSeed[_originalSeed.length - 1]
-    : (store.playerQueue.length ? store.playerQueue[store.playerQueue.length - 1] : null);
+  let seed = _loadedSeedTrack;
+  if (!seed && _originalSeed && _originalSeed.length) {
+    seed = _originalSeed[_originalSeed.length - 1];
+  }
   if (!seed) return 'your queue';
   if (seed.name && seed.artist) return `${seed.name} — ${seed.artist}`;
   return seed.name || seed.artist || 'your queue';
 }
 
+const VIBE_LABELS = { calm: '\u{1F319} Calm', energy: '\u26A1 Energy' };
+
+function _headerSubtitle() {
+  const base = `Based on ${_seedLabel()}`;
+  // _loadedVibe, not _recsVibe: the subtitle describes the list on screen.
+  return _loadedVibe ? `${VIBE_LABELS[_loadedVibe]} \u00B7 ${base}` : base;
+}
+
 function _refreshRecsHeader() {
   $$('.recs-section').forEach(section => {
     const lbl = section.querySelector('.recs-seed');
-    if (lbl) lbl.textContent = `Based on ${_seedLabel()}`;
+    if (lbl) lbl.textContent = _headerSubtitle();
   });
 }
 
@@ -248,36 +391,35 @@ function _ensureRecsIn(queueListEl) {
     <div class="panel-header recs-header" style="font-size:13px;border-top:1px solid var(--border);padding-top:12px;">
       <div class="recs-header-titles">
         <span>Recommended</span>
-        <span class="recs-seed" style="font-size:11px;font-weight:400;color:var(--text-muted);">Based on ${_seedLabel()}</span>
+        <span class="recs-seed" style="font-size:11px;font-weight:400;color:var(--text-muted);">${esc(_headerSubtitle())}</span>
       </div>
       <button class="recs-refresh" title="Refresh recommendations" aria-label="Refresh recommendations">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
       </button>
     </div>
     <div class="recs-moods" role="group" aria-label="Recommendation mood">
-      <button class="recs-mood active" data-vibe="" title="Default mood">Default</button>
-      <button class="recs-mood" data-vibe="calm" title="Calmer picks">&#127769; Calm</button>
-      <button class="recs-mood" data-vibe="energy" title="Higher energy picks">&#9889; Energy</button>
+      <button class="recs-mood" data-vibe="" title="Balanced picks for this playlist">Default</button>
+      <button class="recs-mood" data-vibe="calm" title="Slower, lower-energy picks">&#127769; Calm</button>
+      <button class="recs-mood" data-vibe="energy" title="Faster, higher-energy picks">&#9889; Energy</button>
     </div>
     <div class="recs-list"></div>`;
   queueListEl.appendChild(section);
-  // Reconcile chip highlight against the persisted _recsVibe (e.g. the queue
-  // container was wiped by renderQueueInto and the section rebuilt from the
-  // template which hard-codes Default as active).
-  $$('.recs-mood', section).forEach(b => b.classList.toggle('active', (b.dataset.vibe || '') === _recsVibe));
+  // Reconcile chip state against _recsVibe — the template renders none active,
+  // and the section is rebuilt from it whenever renderQueueInto wipes the queue
+  // container.
+  _syncMoodChips(section);
   _attachHeaderHandlers(section);
   return section.querySelector('.recs-list');
 }
 
-// Currently selected mood/vibe for the recs station ('' = default).
-let _recsVibe = '';
-
-// Seed track for vibe-aware radio — the last track of the original seed (the one
-// the station is "Based on"), falling back to the live queue tail.
-function _vibeSeedTrack() {
-  if (_originalSeed && _originalSeed.length) return _originalSeed[_originalSeed.length - 1];
-  if (store.playerQueue.length) return store.playerQueue[store.playerQueue.length - 1];
-  return null;
+// Reflect the selected mood on every rendered header (desktop + mobile).
+function _syncMoodChips(root) {
+  const chips = root ? $$('.recs-mood', root) : $$('.recs-mood');
+  chips.forEach(b => {
+    const on = (b.dataset.vibe || '') === _recsVibe;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
 }
 
 function _attachHeaderHandlers(section) {
@@ -290,19 +432,21 @@ function _attachHeaderHandlers(section) {
   $$('.recs-mood', section).forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      _recsVibe = btn.dataset.vibe || '';
-      // Reflect selection across all rendered headers (desktop + mobile).
-      $$('.recs-mood').forEach(b => b.classList.toggle('active', (b.dataset.vibe || '') === _recsVibe));
-      if (_recsVibe) {
-        // Calm/Energy: the virtual-recs endpoint has no vibe axis, so start a
-        // vibe-aware track radio from the seed (backend supports vibe on /radio/track).
-        const seed = _vibeSeedTrack();
-        if (seed) import('./radio.js').then(m => m.startTrackRadio(seed, { vibe: _recsVibe }));
-      } else {
-        // Default: refresh the normal (non-vibe) recommendation station.
-        recsDirty = true;
-        loadRecs();
-      }
+      const next = btn.dataset.vibe || '';
+      // Re-tapping the active chip must still reload: it is the only way back
+      // when a load raced the selection, or when a request failed.
+      if (next === _recsVibe && next === _loadedVibe && recsCache.length
+          && !recsLoading) return;
+      _recsVibe = next;
+      _syncMoodChips();
+      // A mood is a FILTER on this station, not a playback action. It used to
+      // call startTrackRadio, which replaced the queue with a Radio temp
+      // playlist and started playing — so tapping a chip next to a list of
+      // suggestions threw the playlist away. Now the endpoint carries the mood
+      // (radio.py: seed bias + calm gate + tag/feature steering) and only the
+      // list below reloads; whatever is playing keeps playing.
+      recsDirty = true;
+      loadRecs();
     });
   });
 }
@@ -325,7 +469,12 @@ function renderLoading() {
 
 function _recsHtml() {
   if (!recsCache.length) {
-    return '<div style="text-align:center;color:var(--text-muted);font-size:12px;padding:12px;">No recommendations available</div>';
+    const msg = _loadFailed
+      ? "Couldn't load recommendations"
+      : _loadedVibe
+        ? `No ${_loadedVibe === 'calm' ? 'calm' : 'high-energy'} picks for this playlist — try Default`
+        : 'No recommendations available';
+    return `<div style="text-align:center;color:var(--text-muted);font-size:12px;padding:12px;">${esc(msg)}</div>`;
   }
   return recsCache.map((t, i) => `
     <div class="rec-item${i === recsPlayingIdx ? ' rec-playing' : ''}" data-rec-idx="${i}">
