@@ -427,11 +427,12 @@ jobs:
               <uses-permission android:name="android.permission.WAKE_LOCK" />\
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />\
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />\
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\
               <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />' "$MANIFEST"
           # Register AudioService + FileProvider inside <application>
           sed -i '/<\/application>/i \
-              <service android:name=".AudioService" android:exported="false" android:foregroundServiceType="mediaPlayback" />\
+              <service android:name=".AudioService" android:exported="false" android:foregroundServiceType="mediaPlayback|microphone" />\
               <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true"><meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_provider_paths" /></provider>' "$MANIFEST"
 
           # FileProvider paths config
@@ -499,6 +500,24 @@ jobs:
                       audioActive = false
                       startService(Intent(this@MainActivity, AudioService::class.java).apply {
                           action = "ACTION_STOP"
+                      })
+                  }
+
+                  @JavascriptInterface
+                  fun onPartyStart() {
+                      partyActive = true
+                      val intent = Intent(this@MainActivity, AudioService::class.java).apply {
+                          action = "ACTION_PARTY_START"
+                      }
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
+                      else startService(intent)
+                  }
+
+                  @JavascriptInterface
+                  fun onPartyStop() {
+                      partyActive = false
+                      startService(Intent(this@MainActivity, AudioService::class.java).apply {
+                          action = "ACTION_PARTY_STOP"
                       })
                   }
 
@@ -586,7 +605,7 @@ jobs:
               // wry's TauriActivity.onPause() calls mWebView.onPause(), which backgrounds the
               // page and lets Chromium throttle it. The CURRENT track keeps playing, because
               // that is the native media pipeline — but the track TRANSITION is pure JS: the
-              // `ended` handler has to swap src and call play(). A throttled page therefore
+              // 'ended' handler has to swap src and call play(). A throttled page therefore
               // stalls exactly in the gap between two tracks, and only continues when the
               // screen wakes the activity back up. That is the "stops between tracks in my
               // pocket, wake the phone and it resumes" report.
@@ -598,9 +617,22 @@ jobs:
               // still gets throttled normally.
               @Volatile private var audioActive = false
 
+              // True while continuous party recognition is running. Same problem as
+              // audioActive, one step worse: party recognition has no native pipeline at
+              // all. The mic stream, the clip timing and the /api/recognize round-trip are
+              // all page-side, so a throttled WebView does not merely stall between tracks
+              // — it stops recognising entirely until the screen comes back on.
+              //
+              // AudioService runs with the 'microphone' foreground-service type while this
+              // is set, which is what lets Android 14+ keep delivering mic audio to a
+              // backgrounded process at all; its PARTIAL_WAKE_LOCK holds the CPU. Keeping
+              // the page unthrottled here is the remaining piece: phone in pocket, screen
+              // off, recognition still running.
+              @Volatile private var partyActive = false
+
               override fun onPause() {
                   super.onPause()   // wry: mWebView.onPause()
-                  if (audioActive) {
+                  if (audioActive || partyActive) {
                       webViewRef?.get()?.let { wv ->
                           wv.post {
                               try { wv.onResume(); wv.resumeTimers() } catch (e: Exception) {}
@@ -617,7 +649,12 @@ jobs:
               }
 
               override fun onDestroy() {
-                  startService(Intent(this, AudioService::class.java).apply { action = "ACTION_STOP" })
+                  // ACTION_SHUTDOWN, not ACTION_STOP: stopping playback now leaves a party
+                  // session running, but a destroyed activity means the page that drives it
+                  // is gone too, so everything must go.
+                  partyActive = false
+                  audioActive = false
+                  startService(Intent(this, AudioService::class.java).apply { action = "ACTION_SHUTDOWN" })
                   super.onDestroy()
               }
 
@@ -688,8 +725,25 @@ jobs:
               private var pauseStopHandler: Handler? = null
               private var pauseStopRunnable: Runnable? = null
               private val CHANNEL_ID = "audio_playback"
+              // Separate channel: a mic-listening notification filed under "Audio Playback"
+              // is misleading, and the user could not silence or disable one of the two
+              // without also silencing the other.
+              private val PARTY_CHANNEL_ID = "party_recognition"
               private val NOTIFICATION_ID = 1
               private val PAUSE_STOP_DELAY_MS = 5L * 60 * 1000  // Stop service 5 min after pause
+              // Party recognition keeps the service (and its wake lock) alive independently
+              // of playback, and promotes it to the 'microphone' foreground-service type —
+              // without that type Android 14+ feeds a backgrounded recorder pure silence.
+              private var partyActive = false
+              // acquireWakeLock() only takes the lock when it is NOT already held, so calling
+              // it repeatedly never extends the 1h safety timeout. Playback gets away with
+              // that because ACTION_PROGRESS arrives every few hundred ms and re-takes the
+              // lock the instant it lapses. A party session has no such traffic — and worse,
+              // once the lock lapses the CPU may suspend, which stops the very JS that would
+              // have re-taken it. So re-arm from the service, before the timeout, while the
+              // CPU is still guaranteed to be ours. Parties outlast an hour routinely.
+              private val PARTY_WAKE_REARM_MS = 50L * 60 * 1000
+              private var partyWakeRunnable: Runnable? = null
 
               override fun onCreate() {
                   super.onCreate()
@@ -716,9 +770,33 @@ jobs:
                           updateNotification(true)
                       }
                       "ACTION_PAUSE" -> {
-                          releaseWakeLock()
                           updateNotification(false)
-                          schedulePauseStop()
+                          // A party session outlives paused playback: it still needs the CPU
+                          // and the service, so neither the wake lock nor the service may go.
+                          if (!partyActive) {
+                              releaseWakeLock()
+                              schedulePauseStop()
+                          }
+                      }
+                      "ACTION_PARTY_START" -> {
+                          cancelPauseStop()
+                          partyActive = true
+                          acquireWakeLock()
+                          schedulePartyWakeRearm()
+                          updateNotification(isCurrentlyPlaying)
+                      }
+                      "ACTION_PARTY_STOP" -> endPartySession()
+                      "ACTION_PARTY_STOP_USER" -> {
+                          // "Stop" on the party notification. Ask the page to tear the session
+                          // down so the mic stream and the UI unwind too; it calls back through
+                          // the bridge to ACTION_PARTY_STOP.
+                          MainActivity.evaluateJs("window._partyStopFromNative && window._partyStopFromNative()")
+                          // ...but never TRUST the page to answer. A crashed renderer, a
+                          // reload, a GC'd WebView reference or a page predating this feature
+                          // all swallow that call silently, and the user would be left with a
+                          // foreground service holding a wake lock behind a notification whose
+                          // Stop button does nothing. Tear down unilaterally if nobody replies.
+                          pauseStopHandler?.postDelayed({ if (partyActive) endPartySession() }, 3000L)
                       }
                       "ACTION_PROGRESS" -> {
                           // acquire() carries a 1h safety timeout and was only re-armed by
@@ -727,10 +805,41 @@ jobs:
                           acquireWakeLock()
                           currentPosition = intent.getLongExtra("position", 0L)
                           currentDuration = intent.getLongExtra("duration", 0L)
-                          updatePlaybackState(true)
+                          // NOT updatePlaybackState(true): 'timeupdate' also fires when the
+                          // user seeks while paused, which used to flip isCurrentlyPlaying
+                          // back to true with nothing playing. Harmless before, but party
+                          // teardown now branches on that flag and would keep the service
+                          // and its wake lock alive forever. Report the state we actually
+                          // believe we are in; ACTION_PLAY/ACTION_PAUSE own that flag.
+                          updatePlaybackState(isCurrentlyPlaying)
                       }
                       "ACTION_STOP" -> {
                           cancelPauseStop()
+                          // currentTitle is otherwise never cleared, and two decisions now
+                          // read it as "is there a track at all": the party-notification swap
+                          // and endPartySession's choice between handing back the paused-media
+                          // grace window and shutting down. Without this, a stopped track stays
+                          // "current" forever — the user would get a paused notification for
+                          // something they explicitly stopped, and a party ending afterwards
+                          // would keep the service alive for a pointless 5 more minutes.
+                          currentTitle = ""
+                          currentArtist = ""
+                          currentPosition = 0L
+                          currentDuration = 0L
+                          // Stopping playback must not silently kill a running party session
+                          // — the two are independent reasons for this service to exist.
+                          if (partyActive) {
+                              updateNotification(false)
+                          } else {
+                              releaseWakeLock()
+                              stopForeground(STOP_FOREGROUND_REMOVE)
+                              stopSelf()
+                          }
+                      }
+                      "ACTION_SHUTDOWN" -> {
+                          cancelPauseStop()
+                          partyActive = false
+                          cancelPartyWakeRearm()
                           releaseWakeLock()
                           stopForeground(STOP_FOREGROUND_REMOVE)
                           stopSelf()
@@ -743,6 +852,8 @@ jobs:
 
               override fun onDestroy() {
                   cancelPauseStop()
+                  partyActive = false
+                  cancelPartyWakeRearm()
                   mediaSession?.release()
                   releaseWakeLock()
                   super.onDestroy()
@@ -751,6 +862,8 @@ jobs:
               override fun onTaskRemoved(rootIntent: Intent?) {
                   // User swiped app from recents — clean up
                   cancelPauseStop()
+                  partyActive = false
+                  cancelPartyWakeRearm()
                   releaseWakeLock()
                   stopForeground(STOP_FOREGROUND_REMOVE)
                   stopSelf()
@@ -778,6 +891,45 @@ jobs:
                   pauseStopHandler?.postDelayed(pauseStopRunnable!!, PAUSE_STOP_DELAY_MS)
               }
 
+              // The one place a party session ends. Playback, if any, survives it — the two
+              // are independent reasons for this service to exist.
+              private fun endPartySession() {
+                  partyActive = false
+                  cancelPartyWakeRearm()
+                  if (isCurrentlyPlaying) {
+                      updateNotification(true)
+                  } else if (currentTitle.isNotEmpty()) {
+                      // Playback is paused, not finished. ACTION_PAUSE skipped its 5-minute
+                      // resume grace while the party held the service up; now that the party
+                      // is over, hand that window back instead of tearing the service down
+                      // and vanishing the notification the user would resume from.
+                      updateNotification(false)
+                      releaseWakeLock()
+                      schedulePauseStop()
+                  } else {
+                      releaseWakeLock()
+                      stopForeground(STOP_FOREGROUND_REMOVE)
+                      stopSelf()
+                  }
+              }
+
+              private fun schedulePartyWakeRearm() {
+                  cancelPartyWakeRearm()
+                  partyWakeRunnable = Runnable {
+                      if (partyActive) {
+                          wakeLock?.let { if (it.isHeld) it.release() }
+                          acquireWakeLock()
+                          schedulePartyWakeRearm()
+                      }
+                  }
+                  pauseStopHandler?.postDelayed(partyWakeRunnable!!, PARTY_WAKE_REARM_MS)
+              }
+
+              private fun cancelPartyWakeRearm() {
+                  partyWakeRunnable?.let { pauseStopHandler?.removeCallbacks(it) }
+                  partyWakeRunnable = null
+              }
+
               private fun cancelPauseStop() {
                   pauseStopRunnable?.let { pauseStopHandler?.removeCallbacks(it) }
                   pauseStopRunnable = null
@@ -789,7 +941,13 @@ jobs:
                           description = "Background audio playback"
                           setSound(null, null)
                       }
-                      (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
+                      val party = NotificationChannel(PARTY_CHANNEL_ID, "Song recognition", NotificationManager.IMPORTANCE_LOW).apply {
+                          description = "Listening for songs playing around you"
+                          setSound(null, null)
+                      }
+                      val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                      nm.createNotificationChannel(ch)
+                      nm.createNotificationChannel(party)
                   }
               }
 
@@ -810,7 +968,76 @@ jobs:
                       .build())
               }
 
+              // Foreground-service types must be declared on every startForeground call, and
+              // the mic one has to be present for as long as the page is recording.
+              private fun fgsTypes(): Int {
+                  var t = 0
+                  if (partyActive) t = t or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                  // Only claim mediaPlayback when something actually is playing, or when this
+                  // is a plain playback session. A party with nothing playing declares the
+                  // microphone alone rather than a type it is not using. The !partyActive arm
+                  // keeps the mask from ever being 0.
+                  if (isCurrentlyPlaying || !partyActive) t = t or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                  return t
+              }
+
+              private fun startInForeground(notification: Notification) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                      startForeground(NOTIFICATION_ID, notification)
+                      return
+                  }
+                  try {
+                      startForeground(NOTIFICATION_ID, notification, fgsTypes())
+                  } catch (e: Exception) {
+                      // Android 14+ can refuse a while-in-use type (microphone) on a
+                      // startForeground issued from the background — reachable by tapping
+                      // Play on the notification, screen off, with a party running. An
+                      // uncaught throw there crashes the app in the user's pocket. Keep the
+                      // service alive without the mic type; losing recognition beats losing
+                      // the process.
+                      try {
+                          startForeground(NOTIFICATION_ID, notification,
+                              ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                      } catch (e2: Exception) {}
+                  }
+              }
+
+              // Shown while party recognition runs and nothing is playing. Deliberately not a
+              // MediaStyle notification: there is no track, and transport controls for a
+              // non-existent player would be nonsense.
+              private fun partyNotification(): Notification {
+                  val stopIntent = PendingIntent.getService(this, 1,
+                      Intent(this, AudioService::class.java).apply { action = "ACTION_PARTY_STOP_USER" },
+                      PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                  val openIntent = PendingIntent.getActivity(this, 2,
+                      Intent(this, MainActivity::class.java).apply {
+                          flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                      },
+                      PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                  return NotificationCompat.Builder(this, PARTY_CHANNEL_ID)
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setContentTitle("Listening for songs")
+                      .setContentText("Party recognition is running")
+                      .setContentIntent(openIntent)
+                      .setOngoing(true)
+                      .setSilent(true)
+                      .addAction(NotificationCompat.Action(
+                          android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent))
+                      .build()
+              }
+
               private fun updateNotification(isPlaying: Boolean) {
+                  // Only when there is no track at all. If something is merely PAUSED, the
+                  // media notification stays: swapping it for the party one would strip the
+                  // user's transport controls and leave the lock screen, a car head unit and
+                  // a watch tile with no way to resume. updatePlaybackState also has to run
+                  // on this path, or the MediaSession keeps reporting STATE_PLAYING at a
+                  // stale position and every one of those surfaces lies about what is going on.
+                  if (partyActive && !isPlaying && currentTitle.isEmpty()) {
+                      updatePlaybackState(false)
+                      startInForeground(partyNotification())
+                      return
+                  }
                   mediaSession?.setMetadata(MediaMetadataCompat.Builder()
                       .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
                       .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
@@ -843,11 +1070,7 @@ jobs:
                           androidx.media.session.MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT)))
                       .build()
 
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-                  } else {
-                      startForeground(NOTIFICATION_ID, notification)
-                  }
+                  startInForeground(notification)
               }
           }
           KOTLIN
