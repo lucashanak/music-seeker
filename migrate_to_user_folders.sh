@@ -113,17 +113,18 @@ echo ""
 echo "[4/6] Updating Navidrome database paths..."
 
 DB_RESULT=$(sudo python3 -c "
-import sqlite3, time
+import sqlite3, time, sys
 
+username = sys.argv[1]
 conn = sqlite3.connect('${NAVIDROME_DB}')
 cur = conn.cursor()
 
 cur.execute('PRAGMA wal_checkpoint(TRUNCATE);')
 
-cur.execute(\"UPDATE media_file SET path = '${USERNAME}/' || path WHERE path NOT LIKE '${USERNAME}/%' AND path NOT LIKE '.slskd%';\")
+cur.execute('UPDATE media_file SET path = ? || path WHERE path NOT LIKE ? AND path NOT LIKE \'.slskd%\';', (username + '/', username + '/%'))
 mf_count = cur.rowcount
 
-cur.execute(\"UPDATE album SET embed_art_path = '${USERNAME}/' || embed_art_path WHERE embed_art_path <> '' AND embed_art_path NOT LIKE '${USERNAME}/%' AND embed_art_path NOT LIKE '.slskd%';\")
+cur.execute('UPDATE album SET embed_art_path = ? || embed_art_path WHERE embed_art_path <> \'\' AND embed_art_path NOT LIKE ? AND embed_art_path NOT LIKE \'.slskd%\';', (username + '/', username + '/%'))
 album_count = cur.rowcount
 
 conn.commit()
@@ -133,20 +134,20 @@ row = cur.fetchone()
 reparented = 0
 if row:
     root_id, lib_id = row
-    cur.execute(\"SELECT id FROM folder WHERE name = '${USERNAME}' AND parent_id = ?;\", (root_id,))
+    cur.execute('SELECT id FROM folder WHERE name = ? AND parent_id = ?;', (username, root_id))
     existing = cur.fetchone()
     if existing:
         user_folder_id = existing[0]
     else:
-        user_folder_id = f'usr_${USERNAME}_{int(time.time())}'
-        cur.execute(\"INSERT INTO folder (id, library_id, path, name, parent_id, missing, num_audio_files, num_playlists) VALUES (?, ?, '.', '${USERNAME}', ?, 0, 0, 0);\", (user_folder_id, lib_id, root_id))
-    cur.execute(\"UPDATE folder SET parent_id = ? WHERE parent_id = ? AND name <> '${USERNAME}' AND name NOT LIKE '.%' AND name <> 'playlists';\", (user_folder_id, root_id))
+        user_folder_id = f'usr_{username}_{int(time.time())}'
+        cur.execute('INSERT INTO folder (id, library_id, path, name, parent_id, missing, num_audio_files, num_playlists) VALUES (?, ?, \'.\', ?, ?, 0, 0, 0);', (user_folder_id, lib_id, username, root_id))
+    cur.execute('UPDATE folder SET parent_id = ? WHERE parent_id = ? AND name <> ? AND name NOT LIKE \'.%\' AND name <> \'playlists\';', (user_folder_id, root_id, username))
     reparented = cur.rowcount
     conn.commit()
 
 conn.close()
 print(f'{mf_count}|{album_count}|{reparented}')
-")
+" "$USERNAME")
 
 IFS='|' read -r UPDATED_MF UPDATED_ALBUM REPARENTED <<< "$DB_RESULT"
 echo "  Updated $UPDATED_MF media_file paths"
