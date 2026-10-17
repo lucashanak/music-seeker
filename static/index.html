@@ -252,10 +252,15 @@
         <h2 id="artistDetailName"></h2>
         <p id="artistDetailCount"></p>
       </div>
-      <div class="playlist-hero-actions">
-        <button class="btn-download" id="downloadArtist" style="width:auto; padding:12px 28px;">Download All Albums</button>
+      <div class="playlist-hero-actions" style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn-download btn-hero-primary" id="playArtistTop" style="width:auto; padding:12px 28px; display:none;">&#9654; Play</button>
+        <button class="btn-download btn-hero-secondary" id="downloadArtist" style="width:auto; padding:12px 28px;">Download All Albums</button>
       </div>
     </div>
+    <!-- "Popular": the artist's most-played tracks, like Spotify's artist page.
+         Filled by loadArtistDetail; stays empty for providers with no such list. -->
+    <div id="artistTop"></div>
+    <div class="search-section-header" id="artistAlbumsHeader" style="display:none;"><h3>Albums</h3></div>
     <div id="artistAlbums" class="grid"></div>
   </div>
   <div id="albumDetail" style="display:none; margin-top:24px;">

@@ -1,7 +1,11 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.services import auth, search_providers, settings as app_settings
 from app.dependencies import _user_spotify_creds
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["search"])
 
@@ -26,7 +30,7 @@ async def search(
         q, search_type, limit, offset, provider=provider, fallback=fallback,
         # The Tracks and Albums tabs are a search box: an artist's name there
         # means "their music", so lead with the popular releases.
-        popular_first=search_type in ("track", "album"))
+        popular_first=search_type in ("track", "album", "artist"))
     return {"results": results, "query": q, "type": search_type}
 
 
@@ -50,6 +54,42 @@ async def get_artist_albums(
     provider = provider or app_settings._settings.get("search_provider", "deezer")
     data = await search_providers.get_artist_albums(artist_id, provider=provider)
     return data
+
+
+@router.get("/artist/{artist_id}/top")
+async def get_artist_top(
+    artist_id: str,
+    provider: str = Query(""),
+    limit: int = Query(20, ge=1, le=50),
+    user: dict = Depends(auth.get_current_user),
+):
+    """The artist's most-played tracks — the "Popular" block on their page."""
+    provider = provider or app_settings._settings.get("search_provider", "deezer")
+    tracks = await search_providers.get_artist_top(artist_id, provider=provider, limit=limit)
+    return {"tracks": tracks}
+
+
+@router.get("/genres")
+async def list_genres(user: dict = Depends(auth.get_current_user)):
+    """Browse tiles for an empty search box. Deezer-only; others get nothing
+    rather than an error, and the search page simply shows no tiles."""
+    try:
+        return {"genres": await search_providers.deezer_genres()}
+    except Exception as e:
+        logger.warning("Genre list failed: %s", e)
+        return {"genres": []}
+
+
+@router.get("/genre/{genre_id}/chart")
+async def genre_chart(
+    genre_id: str,
+    limit: int = Query(20, ge=1, le=50),
+    user: dict = Depends(auth.get_current_user),
+):
+    try:
+        return await search_providers.deezer_genre_chart(genre_id, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Genre chart failed: {e}")
 
 
 @router.get("/album/{album_id}/tracks")

@@ -40,19 +40,25 @@ export function cardFavBtn(item) {
   return `<button class="card-fav-btn${isFav ? ' following' : ''}" title="${isFav ? 'Unfollow' : 'Follow'}">${isFav ? '&#x2665;' : '&#x2661;'}</button>`;
 }
 
+// Deezer/iTunes both flag explicit lyrics; Spotify marks them with the same
+// little grey E in front of the byline, which is where a listener looks for it.
+export function explicitBadge(item) {
+  return (item && item.explicit) ? '<span class="explicit-badge" title="Explicit">E</span>' : '';
+}
+
 export function cardSubHtml(item) {
   const artist = item.artist || '';
   const album = item.album || '';
   const type = item.type || 'track';
   if (type === 'track' && artist) {
-    let html = `<span class="clickable" data-search-type="artist" data-search-q="${escAttr(artist)}">${esc(artist)}</span>`;
+    let html = explicitBadge(item) + `<span class="clickable" data-search-type="artist" data-search-q="${escAttr(artist)}">${esc(artist)}</span>`;
     // Separator and album in one span so a narrow song row can drop both and not
     // leave a dangling " · " behind the artist name.
     if (album) html += `<span class="sub-album"> · <span class="clickable" data-search-type="album" data-search-q="${escAttr(album)}">${esc(album)}</span></span>`;
     return html;
   }
   if ((type === 'album' || type === 'episode') && artist) {
-    return `<span class="clickable" data-search-type="artist" data-search-q="${escAttr(artist)}">${esc(artist)}</span>`;
+    return explicitBadge(item) + `<span class="clickable" data-search-type="artist" data-search-q="${escAttr(artist)}">${esc(artist)}</span>`;
   }
   return esc(artist);
 }
@@ -77,6 +83,19 @@ function _routeCardClick(item, fromPage) {
   } else {
     openModal(item);
   }
+}
+
+// Tapping a song plays it, the way it does on Spotify — the download dialog
+// moved to the ⋯ menu (and long-press / right-click), which is where the rest of
+// the per-track actions already live. Everything that isn't playable on its own
+// (album, artist, playlist, show) still opens, so only songs and episodes change.
+// Routed through the row's own play button so the queue context, the resolver
+// and the two player engines keep their single implementation.
+function _playOrRoute(el, item, fromPage) {
+  const type = item.type || 'track';
+  const playBtn = (type === 'track' || type === 'episode') ? el.querySelector('.card-play-btn') : null;
+  if (playBtn) { playBtn.click(); return; }
+  _routeCardClick(item, fromPage);
 }
 
 // ── Wire the quick "+" (add to Navidrome playlist) button on a card/row ──
@@ -119,7 +138,7 @@ export function buildCardElement(item, fromPage) {
     if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-dl-btn') || e.target.closest('.card-radio-btn') || e.target.closest('.card-addpl-btn') || e.target.closest('.card-fav-btn')) return;
     let it;
     try { it = JSON.parse(card.dataset.item); } catch { return; }
-    _routeCardClick(it, fromPage);
+    _playOrRoute(card, it, fromPage);
   });
   _wireAddPlBtn(card);
   return card;
@@ -242,8 +261,10 @@ export function restoreSearch() {
       store.searchType = saved.type || 'all';
       $$('.type-btn[data-type]').forEach(b => b.classList.toggle('active', b.dataset.type === store.searchType));
       doSearch();
+      return;
     }
   } catch {}
+  renderBrowse();
 }
 
 // ── Recent searches (localStorage, last ~8 distinct queries) ──
@@ -306,6 +327,110 @@ function renderRecentSearches() {
     clearBtn.addEventListener('mousedown', (e) => e.preventDefault());
     clearBtn.addEventListener('click', clearRecentSearches);
   }
+}
+
+// ── Browse tiles (what an empty search box shows) ──
+// Recent searches are a chip row above the results; this fills the results area
+// itself, the way Spotify's search screen opens on a wall of genres.
+let _genreCache = null;
+
+// Deterministic colour per genre so a tile keeps the same hue between visits.
+function _tileHue(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return h;
+}
+
+export async function renderBrowse() {
+  const el = $('#searchResults');
+  if (!el) return;
+  el.classList.remove('grid');
+  if (!_genreCache) {
+    el.innerHTML = `<div class="browse-grid">${Array(12).fill('<div class="skeleton skeleton-tile"></div>').join('')}</div>`;
+    try {
+      const data = await apiJson('/api/genres');
+      _genreCache = Array.isArray(data.genres) ? data.genres : [];
+    } catch { _genreCache = []; }
+  }
+  // The box may have been typed into while the genres were loading — a stale
+  // tile wall must not land on top of real results.
+  if ($('#searchInput').value.trim()) return;
+  if (!_genreCache.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div class="search-section-header"><h3>Browse all</h3></div><div class="browse-grid">'
+    + _genreCache.map(g => `
+      <button type="button" class="genre-tile" data-genre-id="${escAttr(g.id)}" data-genre-name="${escAttr(g.name)}" style="--tile-hue:${_tileHue(g.name)}">
+        <span class="genre-tile-name">${esc(g.name)}</span>
+        ${g.image ? `<img class="genre-tile-img" src="${escAttr(g.image)}" alt="" loading="lazy">` : ''}
+      </button>`).join('')
+    + '</div>';
+  $$('.genre-tile', el).forEach(tile => tile.addEventListener('click', () => {
+    openGenre(tile.dataset.genreId, tile.dataset.genreName);
+  }));
+}
+
+// One "Artists" / "Albums" / "Playlists" block of cards.
+function _cardSection(title, items, sink) {
+  const section = document.createElement('div');
+  section.className = 'search-section';
+  const header = document.createElement('div');
+  header.className = 'search-section-header';
+  header.innerHTML = `<h3>${esc(title)}</h3>`;
+  section.appendChild(header);
+  const grid = document.createElement('div');
+  grid.className = 'grid';
+  const cards = items.map(it => buildCardElement(it, 'search'));
+  cards.forEach(c => grid.appendChild(c));
+  addCardKebabs(cards);
+  _attachCardContextMenu(grid);
+  section.appendChild(grid);
+  if (sink) { items.forEach(it => sink.items.push(it)); cards.forEach(c => sink.cards.push(c)); }
+  return section;
+}
+
+// A genre's charts: top tracks as rows (so starting one queues the rest), then
+// the artists, albums and playlists carrying it.
+async function openGenre(id, name) {
+  // Takes over the search generation so an in-flight query can't repaint over
+  // this, and clears searchQuery so infinite scroll stays out of it.
+  const { gen, signal } = _beginSearch();
+  const el = $('#searchResults');
+  store.searchHasMore = false;
+  store.searchQuery = '';
+  store.searchLoading = false;
+  el.classList.remove('grid');
+  const head = `<div class="search-section-header"><h3>${esc(name)}</h3><button type="button" class="section-showall" id="genreBack">&larr; Browse all</button></div>`;
+  el.innerHTML = head + Array(6).fill('<div class="skeleton skeleton-row"></div>').join('');
+  let data;
+  try {
+    data = await apiJson(`/api/genre/${encodeURIComponent(id)}/chart?limit=20`, { signal });
+  } catch (e) {
+    if (gen !== _searchGen) return;
+    el.innerHTML = head + `<div class="empty-state"><p>Could not load ${esc(name)}: ${esc(e.message)}</p></div>`;
+    $('#genreBack')?.addEventListener('click', renderBrowse);
+    return;
+  }
+  if (gen !== _searchGen) return;
+  const sink = { items: [], cards: [] };
+  const frag = document.createDocumentFragment();
+  const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+  if (tracks.length) {
+    const section = document.createElement('div');
+    section.className = 'search-section';
+    const h = document.createElement('div');
+    h.className = 'search-section-header';
+    h.innerHTML = '<h3>Top songs</h3>';
+    section.appendChild(h);
+    section.appendChild(renderSongRows(tracks, sink));
+    frag.appendChild(section);
+  }
+  [['Artists', data.artists], ['Albums', data.albums], ['Playlists', data.playlists]].forEach(([title, items]) => {
+    if (Array.isArray(items) && items.length) frag.appendChild(_cardSection(title, items.slice(0, 6), sink));
+  });
+  el.innerHTML = head;
+  el.appendChild(frag);
+  $('#genreBack')?.addEventListener('click', renderBrowse);
+  if (sink.items.length) checkLibrary(sink.items, el, sink.cards);
+  _setKbdActive(-1);
 }
 
 // ── Keyboard navigation through search result cards ──
@@ -418,7 +543,7 @@ export async function doSearch(append) {
   }
   const { gen, signal } = _beginSearch();
   const q = $('#searchInput').value.trim();
-  if (!q) { $('#searchResults').innerHTML = ''; store.searchLoading = false; saveSearchState(); return; }
+  if (!q) { store.searchLoading = false; saveSearchState(); renderBrowse(); return; }
   // Songs read as a list, not a poster wall: the title, artist and duration are
   // what you scan down, and a card per song fits four of them on a phone.
   // Albums, artists and playlists stay in the grid, where the cover IS the item.
@@ -490,7 +615,7 @@ function buildTopResultCard(item, fromPage) {
         || e.target.closest('.card-fav-btn') || e.target.closest('.kebab-btn') || e.target.closest('.like-btn')) return;
     let it;
     try { it = JSON.parse(card.dataset.item); } catch { return; }
-    _routeCardClick(it, fromPage);
+    _playOrRoute(card, it, fromPage);
   });
   _wireAddPlBtn(card);
   // The shared .card-radio-btn / .card-addpl-btn rules pin these to a card's
@@ -556,7 +681,7 @@ export function renderSongRows(tracks, sink, opts = {}) {
           || e.target.closest('.kebab-btn') || e.target.closest('.like-btn')) return;
       let it;
       try { it = JSON.parse(row.dataset.item); } catch { return; }
-      openModal(it);
+      _playOrRoute(row, it, 'search');
     });
     list.appendChild(row);
     if (sink) { sink.items.push(item); sink.cards.push(row); }
@@ -617,7 +742,7 @@ async function doSearchAll() {
   const { gen, signal } = _beginSearch();
   const q = $('#searchInput').value.trim();
   const resultsEl = $('#searchResults');
-  if (!q) { resultsEl.innerHTML = ''; store.searchLoading = false; saveSearchState(); return; }
+  if (!q) { store.searchLoading = false; saveSearchState(); renderBrowse(); return; }
   store.searchQuery = q;
   store.searchHasMore = false;
   store.searchLoading = true;
@@ -761,7 +886,7 @@ export function init() {
     _cancelSearch();
     $('#searchInput').value = '';
     $('#searchClear').style.display = 'none';
-    $('#searchResults').innerHTML = '';
+    renderBrowse();
     store.searchQuery = '';
     store.searchHasMore = false;
     _setKbdActive(-1);

@@ -392,3 +392,56 @@
   .import-banner-actions { flex-basis: 100%; }
   .import-banner-actions .import-btn { flex: 1 1 auto; padding: 9px 12px; text-align: center; }
 }
+
+/* ── Explicit marker ──
+   Deezer and iTunes both flag explicit lyrics; this is the same small grey E
+   Spotify puts in front of the byline. */
+.explicit-badge {
+  display: inline-block; margin-right: 6px; padding: 0 4px;
+  font-size: 9px; font-weight: 700; line-height: 14px; vertical-align: 1px;
+  color: var(--bg); background: var(--text-dim); border-radius: 2px;
+}
+
+/* ── Browse tiles (empty search box) ── */
+.browse-grid {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.genre-tile {
+  position: relative; overflow: hidden; cursor: pointer;
+  aspect-ratio: 16 / 9; min-height: 92px; padding: 14px;
+  border: none; border-radius: 10px; text-align: left;
+  font-family: inherit; color: #fff;
+  background: hsl(var(--tile-hue, 210), 62%, 38%);
+  transition: transform .15s ease, filter .15s ease;
+}
+.genre-tile:hover { transform: scale(1.02); filter: brightness(1.12); }
+.genre-tile:active { transform: scale(.99); }
+.genre-tile-name {
+  position: relative; z-index: 1; display: block;
+  /* Keeps a two-line name ("Alternativní hudba") clear of the tilted cover. */
+  max-width: calc(100% - 46px);
+  font-size: 16px; font-weight: 700; line-height: 1.2;
+  text-shadow: 0 1px 4px rgba(0,0,0,.35);
+}
+/* The tilted cover in the bottom-right corner is the detail that makes these
+   read as genre tiles rather than coloured buttons. */
+.genre-tile-img {
+  position: absolute; right: -14px; bottom: -8px; width: 62px; height: 62px;
+  object-fit: cover; border-radius: 4px;
+  transform: rotate(25deg); box-shadow: 0 4px 14px rgba(0,0,0,.45);
+}
+.skeleton-tile { aspect-ratio: 16 / 9; min-height: 92px; border-radius: 10px; }
+
+/* ── Artist page: "Popular" ── */
+#artistTop { margin-top: 24px; }
+#artistTop:empty { margin-top: 0; }
+.artist-top-more {
+  margin-top: 10px; background: none; border: none; cursor: pointer;
+  font-family: inherit; font-size: 12px; font-weight: 700; letter-spacing: .6px;
+  text-transform: uppercase; color: var(--text-dim); padding: 6px 2px;
+  transition: color .15s;
+}
+.artist-top-more:hover { color: var(--text); }
+
+#artistAlbumsHeader { margin-top: 28px; }

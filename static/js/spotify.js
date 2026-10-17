@@ -428,19 +428,26 @@ export async function loadArtistDetail(id, fromPage, provider) {
   history.pushState({ layer: 'artistDetail' }, '');
   const albumsEl = $('#artistAlbums');
   albumsEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  const header = $('#artistAlbumsHeader');
+  if (header) header.style.display = 'none';
+  _renderArtistTop([]);   // clear the previous artist's Popular block
+  // Popular runs alongside the albums instead of after them: it is the first
+  // thing on screen, and the two requests share Deezer's cached top-tracks call.
+  _loadArtistTop(id, provider);
   try {
     const data = await apiJson(`/api/artist/${id}/albums${_providerQs(provider)}`);
     store.currentArtistAlbums = data.albums || [];
     setArt($('#artistDetailImg'), data.image);
     $('#artistDetailName').textContent = data.name;
     $('#artistDetailCount').textContent = `${store.currentArtistAlbums.length} albums`;
+    if (header) header.style.display = store.currentArtistAlbums.length ? '' : 'none';
     albumsEl.innerHTML = store.currentArtistAlbums.map((a, i) => `
       <div class="card" data-album-idx="${i}">
         <button class="card-dl-btn" title="Download"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
         <img class="card-img" ${a.image ? `src="${a.image}"` : ''} alt="" loading="lazy">
         <div class="card-body">
           <div class="card-title">${esc(a.name)}</div>
-          <div class="card-sub">${a.total_tracks || ''} tracks${a.release_date ? ' · ' + a.release_date.slice(0, 4) : ''}</div>
+          <div class="card-sub">${[a.year || (a.release_date || '').slice(0, 4), a.total_tracks ? a.total_tracks + ' tracks' : ''].filter(Boolean).join(' · ')}</div>
         </div>
       </div>
     `).join('');
@@ -480,6 +487,61 @@ export async function loadArtistDetail(id, fromPage, provider) {
   } catch (e) {
     albumsEl.innerHTML = `<div class="empty-state"><p>Failed to load albums: ${e.message}</p></div>`;
   }
+}
+
+// ── "Popular": the artist's most-played tracks ──
+// Spotify opens an artist on five of them with a "Show more" to ten; the whole
+// fetched list is the play context, so starting row 2 keeps going down the hits.
+let _artistTopTracks = [];
+const _ARTIST_TOP_COLLAPSED = 5;
+
+function _renderArtistTop(tracks, expanded) {
+  _artistTopTracks = tracks || [];
+  const el = $('#artistTop');
+  const playBtn = $('#playArtistTop');
+  if (!el) return;
+  el.innerHTML = '';
+  if (playBtn) playBtn.style.display = _artistTopTracks.length ? '' : 'none';
+  if (!_artistTopTracks.length) return;
+  const head = document.createElement('div');
+  head.className = 'search-section-header';
+  head.innerHTML = '<h3>Popular</h3>';
+  el.appendChild(head);
+  const shown = expanded ? _artistTopTracks : _artistTopTracks.slice(0, _ARTIST_TOP_COLLAPSED);
+  const sink = { items: [], cards: [] };
+  el.appendChild(renderSongRows(shown, sink, { context: _artistTopTracks }));
+  if (_artistTopTracks.length > _ARTIST_TOP_COLLAPSED) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'artist-top-more';
+    more.textContent = expanded ? 'Show less' : 'Show more';
+    more.addEventListener('click', () => _renderArtistTop(_artistTopTracks, !expanded));
+    el.appendChild(more);
+  }
+  checkLibrary(sink.items, el, sink.cards);
+}
+
+async function _loadArtistTop(id, provider) {
+  try {
+    const qs = provider ? `?provider=${encodeURIComponent(provider)}&limit=10` : '?limit=10';
+    const data = await apiJson(`/api/artist/${id}/top${qs}`);
+    // A slower response for the artist we just navigated away from must not
+    // paint over the one on screen.
+    if (store.currentArtistId !== id) return;
+    _renderArtistTop(Array.isArray(data.tracks) ? data.tracks : []);
+  } catch (e) {
+    console.warn('Artist top tracks failed', e);
+  }
+}
+
+function initArtistTopPlay() {
+  const btn = $('#playArtistTop');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (!_artistTopTracks.length) return;
+    const u = await import('./upnext.js');
+    u.playTracks(_artistTopTracks, 0);
+  });
 }
 
 function updateFollowButton(id) {
@@ -627,6 +689,7 @@ export function init() {
   });
 
   $('#backFromArtist').addEventListener('click', () => closeArtistDetail());
+  initArtistTopPlay();
 
   // Album detail
   $('#backFromAlbum').addEventListener('click', () => closeAlbumDetail());

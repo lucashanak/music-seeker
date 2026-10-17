@@ -89,6 +89,7 @@ def _deezer_track(item: dict) -> dict:
         "image": item.get("album", {}).get("cover_big", ""),
         "url": item.get("link", ""),
         "duration_ms": item.get("duration", 0) * 1000,
+        "explicit": bool(item.get("explicit_lyrics")),
         "type": "track",
     }
 
@@ -112,6 +113,7 @@ def _deezer_album(item: dict, artist: dict | None = None) -> dict:
         "total_tracks": item.get("nb_tracks", 0),
         "fans": item.get("fans", 0),
         "record_type": item.get("record_type", ""),
+        "explicit": bool(item.get("explicit_lyrics")),
         "type": "album",
     }
 
@@ -191,18 +193,21 @@ async def deezer_artist_albums_ranked(artist_id: str, artist: dict | None = None
     are already cached, so this costs one request.
     """
     top = await _deezer_artist_top_cached(artist_id)
-    first_hit = {}
-    for position, track in enumerate(top):
-        first_hit.setdefault(track.get("album_id", ""), position)
-
     async with httpx.AsyncClient(timeout=10) as client:
         await _deezer_limit()
         resp = await client.get(f"{DEEZER_BASE}/artist/{artist_id}/albums", params={"limit": 100})
         resp.raise_for_status()
         data = resp.json()
     albums = [_deezer_album(item, artist) for item in data.get("data", [])]
-    albums.sort(key=lambda a: (first_hit.get(a["id"], len(top) + 1), -a.get("fans", 0)))
-    return albums
+    return _rank_albums(albums, top)
+
+
+def _rank_albums(albums: list[dict], top: list[dict]) -> list[dict]:
+    """Order albums by where the artist's hits sit, then by fans."""
+    first_hit: dict[str, int] = {}
+    for position, track in enumerate(top):
+        first_hit.setdefault(track.get("album_id", ""), position)
+    return sorted(albums, key=lambda a: (first_hit.get(a["id"], len(top) + 1), -a.get("fans", 0)))
 
 
 async def deezer_get_track(track_id: str) -> dict:
@@ -238,6 +243,7 @@ async def deezer_get_album_tracks(album_id: str) -> list[dict]:
             "url": item.get("link", ""),
             "duration_ms": (item.get("duration") or 0) * 1000,
             "track_number": item.get("track_position") or (len(tracks) + 1),
+            "explicit": bool(item.get("explicit_lyrics")),
         })
     return tracks
 
@@ -270,6 +276,7 @@ async def deezer_get_playlist_tracks(playlist_id: str) -> dict:
                     "url": item.get("link", ""),
                     "duration_ms": (item.get("duration") or 0) * 1000,
                     "track_number": item.get("track_position") or (len(tracks) + 1),
+                    "explicit": bool(item.get("explicit_lyrics")),
                 })
             next_url = page.get("next")
             if not next_url or len(tracks) >= _PLAYLIST_MAX_TRACKS:
@@ -282,6 +289,12 @@ async def deezer_get_playlist_tracks(playlist_id: str) -> dict:
 
 
 async def deezer_get_artist_albums(artist_id: str) -> dict:
+    """Artist info plus their whole catalogue, most popular release first.
+
+    The page used to list albums the way Deezer returns them, which is newest
+    first — so an artist opened on a 2023 remix EP instead of the record they
+    are known for. Same ranking as the Albums search tab (see _rank_albums).
+    """
     async with httpx.AsyncClient(timeout=10) as client:
         # Get artist info
         await _deezer_limit()
@@ -289,32 +302,88 @@ async def deezer_get_artist_albums(artist_id: str) -> dict:
         resp.raise_for_status()
         artist = resp.json()
         # Get albums with pagination (Deezer returns max 100 per page)
-        albums = []
-        await _deezer_limit()
+        raw = []
         url = f"{DEEZER_BASE}/artist/{artist_id}/albums"
         params = {"limit": 100}
         while url:
+            await _deezer_limit()
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
-            for item in data.get("data", []):
-                albums.append({
-                    "id": str(item["id"]),
-                    "name": item.get("title", ""),
-                    "artist": artist.get("name", ""),
-                    "image": item.get("cover_big", ""),
-                    "url": item.get("link", ""),
-                    "total_tracks": item.get("nb_tracks", 0),
-                    "release_date": item.get("release_date", ""),
-                    "type": "album",
-                })
+            raw.extend(data.get("data", []))
             url = data.get("next")
             params = {}  # next URL includes all params
+    albums = [_deezer_album(item, artist) for item in raw]
+    albums = _rank_albums(albums, await _deezer_artist_top_cached(str(artist_id)))
     return {
         "name": artist.get("name", ""),
         "image": artist.get("picture_big", ""),
         "albums": albums,
     }
+
+
+_GENRE_CACHE_TTL = 86400          # the genre list is effectively static
+_GENRE_CHART_TTL = 1800
+_genre_list_cache: dict = {}
+_genre_chart_cache: dict = {}
+
+
+async def deezer_genres() -> list[dict]:
+    """Deezer's genre list, for the browse tiles on an empty search box.
+
+    Genre 0 ("All") is dropped — it is Deezer's catch-all, not a genre anyone
+    would pick off a wall of tiles.
+    """
+    cached, hit = _cache_get(_genre_list_cache, "genres", _GENRE_CACHE_TTL)
+    if hit:
+        return cached
+    async with httpx.AsyncClient(timeout=10) as client:
+        await _deezer_limit()
+        resp = await client.get(f"{DEEZER_BASE}/genre")
+        resp.raise_for_status()
+        data = resp.json()
+    genres = [
+        {"id": str(g["id"]), "name": g.get("name", ""), "image": g.get("picture_medium", "")}
+        for g in data.get("data", []) if str(g.get("id")) != "0" and g.get("name")
+    ]
+    _cache_put(_genre_list_cache, "genres", genres, 64)
+    return genres
+
+
+async def deezer_genre_chart(genre_id: str, limit: int = 20) -> dict:
+    """What is big in a genre right now: tracks, albums, artists, playlists."""
+    key = f"{genre_id}:{limit}"
+    cached, hit = _cache_get(_genre_chart_cache, key, _GENRE_CHART_TTL)
+    if hit:
+        return cached
+    async with httpx.AsyncClient(timeout=10) as client:
+        await _deezer_limit()
+        resp = await client.get(f"{DEEZER_BASE}/chart/{genre_id}", params={"limit": limit})
+        resp.raise_for_status()
+        data = resp.json()
+    if "error" in data:
+        raise RuntimeError(f"Deezer error: {data['error'].get('message', '')}")
+
+    def _rows(key_name: str) -> list[dict]:
+        return (data.get(key_name) or {}).get("data", []) or []
+
+    chart = {
+        "tracks": [_deezer_track(t) for t in _rows("tracks")],
+        "albums": [_deezer_album(a) for a in _rows("albums")],
+        "artists": [{
+            "id": str(a["id"]), "name": a.get("name", ""), "artist": a.get("name", ""),
+            "image": a.get("picture_big", ""), "url": a.get("link", ""),
+            "fans": a.get("nb_fan", 0), "type": "artist",
+        } for a in _rows("artists")],
+        "playlists": [{
+            "id": str(p["id"]), "name": p.get("title", ""),
+            "artist": (p.get("user") or {}).get("name", ""),
+            "image": p.get("picture_big", ""), "url": p.get("link", ""),
+            "total_tracks": p.get("nb_tracks", 0), "type": "playlist",
+        } for p in _rows("playlists")],
+    }
+    _cache_put(_genre_chart_cache, key, chart, 64)
+    return chart
 
 
 async def deezer_artist_radio(artist_id: str) -> list[dict]:
@@ -516,6 +585,7 @@ async def itunes_search(query: str, search_type: str = "track", limit: int = 20)
                 "image": _itunes_artwork(item.get("artworkUrl100", "")),
                 "url": item.get("trackViewUrl", ""),
                 "duration_ms": item.get("trackTimeMillis", 0),
+                "explicit": item.get("trackExplicitness") == "explicit",
                 "type": "track",
             })
         elif search_type == "album":
@@ -527,6 +597,7 @@ async def itunes_search(query: str, search_type: str = "track", limit: int = 20)
                 "image": _itunes_artwork(item.get("artworkUrl100", "")),
                 "url": item.get("collectionViewUrl", ""),
                 "total_tracks": item.get("trackCount", 0),
+                "explicit": item.get("collectionExplicitness") == "explicit",
                 "type": "album",
             })
         elif search_type == "artist":
@@ -893,6 +964,27 @@ async def _deezer_artist_albums_cached(artist_id: str, artist: dict | None = Non
     return albums
 
 
+async def _deezer_artists_by_size(query: str, limit: int, offset: int) -> list[dict] | None:
+    """Pull the artists actually CALLED this to the front, biggest first.
+
+    Deezer's artist search is relevance-ordered and relevance does not know who
+    anyone is: "Nirvana" returns the 1960s UK band of 259 fans ahead of the one
+    with ten million. Only exact name matches are promoted, so a query that is
+    not somebody's name keeps Deezer's own order and nothing is dropped.
+    """
+    window = min(100, max(offset + limit, 10))
+    plain = await deezer_search(query, "artist", window, 0)
+    if not plain:
+        return None
+    target = _normalize(query)
+    named = [a for a in plain if _normalize(a.get("name", "")) == target]
+    if not named or (named[0] is plain[0] and len(named) == 1):
+        return None  # already on top, or nobody goes by this name
+    named.sort(key=lambda a: -a.get("fans", 0))
+    rest = [a for a in plain if _normalize(a.get("name", "")) != target]
+    return (named + rest)[offset:offset + limit]
+
+
 async def _deezer_popular_first(query: str, search_type: str, limit: int, offset: int) -> list[dict] | None:
     """One page of "their popular work first", or None if this isn't an artist.
 
@@ -909,6 +1001,8 @@ async def _deezer_popular_first(query: str, search_type: str, limit: int, offset
     # The window is also the dominance sample, so never fetch fewer than the
     # sample size: the All tab asks for 5 tracks a type, and judging an artist on
     # 5 rows let two guest appearances outvote them.
+    if search_type == "artist":
+        return await _deezer_artists_by_size(query, limit, offset)
     if search_type not in ("track", "album"):
         return None
     window = min(100, max(offset + limit, _ARTIST_DOMINANCE_SAMPLE))
@@ -954,7 +1048,7 @@ async def search(query: str, search_type: str = "track", limit: int = 20, offset
     """
     provider = _canonical_provider(provider)
 
-    if popular_first and search_type in ("track", "album") and provider == "deezer":
+    if popular_first and search_type in ("track", "album", "artist") and provider == "deezer":
         try:
             ranked = await _deezer_popular_first(query, search_type, limit, offset)
             if ranked is not None:
@@ -1054,7 +1148,7 @@ async def search_all(query: str, provider: str = "deezer", fallback: str = "",
     types = ("track", "artist", "album", "playlist")
     gathered = asyncio.gather(
         *(search(query, t, limit_per_type, provider=provider, fallback=fallback,
-                 raise_on_error=True, popular_first=(t in ("track", "album")))
+                 raise_on_error=True, popular_first=(t in ("track", "album", "artist")))
           for t in types),
         return_exceptions=True,
     )
@@ -1113,6 +1207,15 @@ async def get_artist_albums(artist_id: str, provider: str = "deezer") -> dict:
     if _canonical_provider(provider) == "itunes":
         return await itunes_get_artist_albums(artist_id)
     return await deezer_get_artist_albums(artist_id)
+
+
+async def get_artist_top(artist_id: str, provider: str = "deezer", limit: int = 20) -> list[dict]:
+    """An artist's most popular tracks. Only Deezer publishes such a list;
+    the other providers have no equivalent, so their artist page just has none.
+    """
+    if _canonical_provider(provider) != "deezer":
+        return []
+    return (await _deezer_artist_top_cached(str(artist_id)))[:limit]
 
 
 async def get_album_tracks(album_id: str, provider: str = "deezer") -> list[dict]:
