@@ -264,3 +264,34 @@ points (`compute_features_only`, `_analyze_or_read_tag`) are module-level and ta
 only a path, so they are already picklable.
 
 Diagnose with `dmesg -T | grep -i "killed process"` and `docker stats`.
+
+## BPM tag writes and live streams
+
+mutagen rewrites a file in place (same inode), and a `FileResponse` holds its
+descriptor for the whole body, so a tag block that grows lands inside a running
+response. `bpm.write_tags` has three layers:
+
+- **Skip.** It does not write a library file pinned raw by `player.raw_pinned`, nor
+  anything inside `ms-nav-cache`. This is not exhaustive: the router serves a local
+  `.mp3` and every `quality=lossless` request via `FileResponse` with no pin, and the
+  check cannot see those. The pin is also set by the router after the check, so a
+  request arriving in between is not seen either.
+- **Replace.** Tags are saved into a copy in the same directory which then replaces the
+  file with `os.replace`. A descriptor opened before the write keeps the old bytes
+  (covered by `test_open_reader_keeps_original_bytes`). What this does not cover: a
+  later Range request of the same play lands on the new file, whose offsets may have
+  moved. That case was not measured.
+- **Lock.** One process-wide lock serialises the read-modify-write, because two
+  writers on one file otherwise lose the tag block of one of them.
+
+A skipped write is not queued and the result stays in `bpm_analysis.json`. A pinned
+library file gets its tags only from a later analysis that runs the full path (a forced
+one, or after `bpm_analysis.json` is lost): `analyze_track` short-circuits on the cache
+otherwise. A file in `ms-nav-cache` never gets tags, and is analysed again after a
+restart. `write_tags` also skips the save when no tag value changes, so the file's
+mtime (the key of the MP3 transcode cache) stays put.
+
+The pin lives in `player._raw_pins`, a dict in this process. If analysis ever moves to
+a `ProcessPoolExecutor` (see Memory limits), the child sees an empty dict and the pin
+check stops working; the replace and lock layers would then have to carry it, and the
+lock would have to become a file lock.

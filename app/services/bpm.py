@@ -7,7 +7,9 @@ import gc
 import json
 import logging
 import os
+import shutil
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -15,7 +17,8 @@ import httpx
 import numpy as np
 
 from app.services import library
-from app.services.player import find_track_file, evict_cache_dir, BPM_CACHE_MAX_BYTES, cache_navidrome_stream
+from app.services.player import (find_track_file, evict_cache_dir, BPM_CACHE_MAX_BYTES,
+                                 cache_navidrome_stream, raw_pinned)
 
 logger = logging.getLogger(__name__)
 
@@ -769,6 +772,25 @@ def _needs_features(entry: dict) -> bool:
 
 # ── File tag read/write ──
 
+# write_tags is read-modify-write; two writers on one file would drop the whole tag block.
+_tag_write_lock = threading.Lock()
+
+def _served_to_player(file_path: str) -> bool:
+    """True when *file_path* may be under a live stream response right now.
+
+    mutagen rewrites in place (same inode), and a FileResponse keeps its open
+    descriptor for the whole body, so a write that grows the tag block lands inside
+    a running response. Only two cases are recognisable: a library file pinned raw by
+    the player (`raw_pinned`), and anything in ms-nav-cache, which has no pin at all.
+    The router also serves a local .mp3 and any lossless request via FileResponse with
+    no pin, so this check is not exhaustive; write_tags replaces the file instead of
+    rewriting it, which is what protects those."""
+    if raw_pinned(file_path):
+        return True
+    nav_dir = os.path.realpath(os.path.join(tempfile.gettempdir(), "ms-nav-cache"))
+    return os.path.realpath(file_path).startswith(nav_dir + os.sep)
+
+
 def _open_tags(file_path: str):
     """Open mutagen tags for reading/writing. Returns (tags, format) or (None, None)."""
     try:
@@ -979,71 +1001,98 @@ def write_tags(file_path: str, bpm: int = None, key: str = None,
                time_sig: int = None, lufs: float = None,
                loudness_range: float = None):
     """Write BPM, key, beat anchor, intro end, outro start, and audio features to file tags.
-    Feature tags are ADDITIVE — they never block the BPM tag write."""
-    tags, fmt = _open_tags(file_path)
-    if not tags:
-        return
-    try:
-        if bpm is not None:
-            if fmt == "flac":
-                tags["BPM"] = str(bpm)
-            else:
-                tags["bpm"] = str(bpm)
-        if key is not None:
-            if fmt == "flac":
-                tags["INITIALKEY"] = key
-            else:
-                from mutagen.easyid3 import EasyID3
-                if "initialkey" not in EasyID3.valid_keys:
-                    from mutagen.id3 import TKEY
-                    EasyID3.RegisterTextKey("initialkey", "TKEY")
-                tags["initialkey"] = key
-        if beat_anchor is not None:
-            if fmt == "flac":
-                tags["BEAT_ANCHOR"] = str(round(beat_anchor, 3))
-            else:
-                # MP3: store in TXXX custom frame
-                from mutagen.easyid3 import EasyID3
-                if "beat_anchor" not in EasyID3.valid_keys:
-                    from mutagen.id3 import TXXX
-                    EasyID3.RegisterTXXXKey("beat_anchor", "BEAT_ANCHOR")
-                tags["beat_anchor"] = str(round(beat_anchor, 3))
-        for tag_name, value in [("INTRO_END", intro_end), ("OUTRO_START", outro_start),
-                                ("ENERGY", energy), ("DANCEABILITY", danceability),
-                                ("BRIGHTNESS", brightness), ("KEY_CONFIDENCE", key_confidence),
-                                ("DOWNBEAT_ANCHOR", downbeat_anchor), ("LUFS", lufs),
-                                ("LOUDNESS_RANGE", loudness_range), ("TIME_SIG", time_sig)]:
-            if value is not None:
+    Feature tags are ADDITIVE — they never block the BPM tag write.
+
+    The write is skipped (not queued) while the file is recognisably served to the
+    player; the result still lands in `_bpm_cache`. For a pinned library file the tags
+    are written by a later forced analysis or after bpm_analysis.json is lost; a file
+    in ms-nav-cache never gets them. Otherwise the tags are saved into a copy that
+    atomically replaces the file, so a descriptor an unpinned response already holds
+    keeps the old bytes. A write that would change nothing is skipped, so the file's
+    mtime (which keys the MP3 transcode cache) is left alone."""
+    with _tag_write_lock:
+        if _served_to_player(file_path):
+            logger.info("Tag write deferred, %s is being served", file_path)
+            return
+        tags, fmt = _open_tags(file_path)
+        if tags is None:
+            return
+        tmp = None
+        try:
+            before = {k: list(v) for k, v in tags.items()}
+            if bpm is not None:
                 if fmt == "flac":
-                    tags[tag_name] = str(round(value, 3))
+                    tags["BPM"] = str(bpm)
+                else:
+                    tags["bpm"] = str(bpm)
+            if key is not None:
+                if fmt == "flac":
+                    tags["INITIALKEY"] = key
                 else:
                     from mutagen.easyid3 import EasyID3
-                    lk = tag_name.lower()
-                    if lk not in EasyID3.valid_keys:
+                    if "initialkey" not in EasyID3.valid_keys:
+                        from mutagen.id3 import TKEY
+                        EasyID3.RegisterTextKey("initialkey", "TKEY")
+                    tags["initialkey"] = key
+            if beat_anchor is not None:
+                if fmt == "flac":
+                    tags["BEAT_ANCHOR"] = str(round(beat_anchor, 3))
+                else:
+                    # MP3: store in TXXX custom frame
+                    from mutagen.easyid3 import EasyID3
+                    if "beat_anchor" not in EasyID3.valid_keys:
                         from mutagen.id3 import TXXX
-                        EasyID3.RegisterTXXXKey(lk, tag_name)
-                    tags[lk] = str(round(value, 3))
-        if feature_ver is not None:
-            if fmt == "flac":
-                tags["FEATURE_VER"] = str(feature_ver)
-            else:
-                from mutagen.easyid3 import EasyID3
-                if "feature_ver" not in EasyID3.valid_keys:
-                    from mutagen.id3 import TXXX
-                    EasyID3.RegisterTXXXKey("feature_ver", "FEATURE_VER")
-                tags["feature_ver"] = str(feature_ver)
-        if algo_ver is not None:
-            if fmt == "flac":
-                tags["BPM_ALGO_VER"] = str(algo_ver)
-            else:
-                from mutagen.easyid3 import EasyID3
-                if "bpm_algo_ver" not in EasyID3.valid_keys:
-                    from mutagen.id3 import TXXX
-                    EasyID3.RegisterTXXXKey("bpm_algo_ver", "BPM_ALGO_VER")
-                tags["bpm_algo_ver"] = str(algo_ver)
-        tags.save()
-    except Exception as e:
-        logger.error("Failed to write tags to %s: %s", file_path, e)
+                        EasyID3.RegisterTXXXKey("beat_anchor", "BEAT_ANCHOR")
+                    tags["beat_anchor"] = str(round(beat_anchor, 3))
+            for tag_name, value in [("INTRO_END", intro_end), ("OUTRO_START", outro_start),
+                                    ("ENERGY", energy), ("DANCEABILITY", danceability),
+                                    ("BRIGHTNESS", brightness), ("KEY_CONFIDENCE", key_confidence),
+                                    ("DOWNBEAT_ANCHOR", downbeat_anchor), ("LUFS", lufs),
+                                    ("LOUDNESS_RANGE", loudness_range), ("TIME_SIG", time_sig)]:
+                if value is not None:
+                    if fmt == "flac":
+                        tags[tag_name] = str(round(value, 3))
+                    else:
+                        from mutagen.easyid3 import EasyID3
+                        lk = tag_name.lower()
+                        if lk not in EasyID3.valid_keys:
+                            from mutagen.id3 import TXXX
+                            EasyID3.RegisterTXXXKey(lk, tag_name)
+                        tags[lk] = str(round(value, 3))
+            if feature_ver is not None:
+                if fmt == "flac":
+                    tags["FEATURE_VER"] = str(feature_ver)
+                else:
+                    from mutagen.easyid3 import EasyID3
+                    if "feature_ver" not in EasyID3.valid_keys:
+                        from mutagen.id3 import TXXX
+                        EasyID3.RegisterTXXXKey("feature_ver", "FEATURE_VER")
+                    tags["feature_ver"] = str(feature_ver)
+            if algo_ver is not None:
+                if fmt == "flac":
+                    tags["BPM_ALGO_VER"] = str(algo_ver)
+                else:
+                    from mutagen.easyid3 import EasyID3
+                    if "bpm_algo_ver" not in EasyID3.valid_keys:
+                        from mutagen.id3 import TXXX
+                        EasyID3.RegisterTXXXKey("bpm_algo_ver", "BPM_ALGO_VER")
+                    tags["bpm_algo_ver"] = str(algo_ver)
+            if {k: list(v) for k, v in tags.items()} == before:
+                return
+            tmp = os.path.join(os.path.dirname(file_path),
+                               ".%s.tagtmp%s" % (os.path.basename(file_path), os.getpid()))
+            shutil.copy2(file_path, tmp)
+            tags.save(tmp)
+            os.replace(tmp, file_path)
+            tmp = None
+        except Exception as e:
+            logger.error("Failed to write tags to %s: %s", file_path, e)
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
 
 def _reconstruct_beat_grid(bpm: float, anchor: float, file_path: str) -> tuple[list, float]:
@@ -1165,7 +1214,8 @@ async def _get_audio_file(song_id: str, name: str, artist: str) -> str | None:
 
     # Reuse the player's shared Navidrome stream cache (ms-nav-cache/{song_id}.mp3)
     # instead of pulling a second original-FLAC copy. Lossy 320k MP3 is transparent
-    # for tempo/beat-grid/key/LUFS; it's build-lock-guarded against the live stream GET.
+    # for tempo/beat-grid/key/LUFS. Analysis only reads this file; write_tags never
+    # writes into it (see _served_to_player).
     shared = await cache_navidrome_stream(song_id, lossless=False)
     if shared:
         return shared
