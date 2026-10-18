@@ -89,3 +89,57 @@ Musí se předat cesta na soubor. Nález dráhy, opraveno v hlavičce testu.
 ## Nenasazeno, nepushnuto
 
 Čtyři commity sedí na `main`. Push ani nasazení nebyly odsouhlasené.
+
+---
+
+# Přejímka (18. 10. 2026, po nasazení 12:31) — 0 placených volání
+
+Nasazeno přes compose, `builder prune -af` uvolnil 1,72 GB (disk 49 %).
+Měřeno proti `http://192.168.1.22:8090` účtem `claude_test`.
+
+## Oprava 2
+
+| co | výsledek |
+|---|---|
+| nestažená skladba (`Stan`, `Lithium`, `Godzilla`) | `200 {"owned": false}` — dřív 404 |
+| první dotaz / druhý dotaz na tutéž | **0,746 s → 0,0017 s** (negativní cache, ~440×) |
+| stažená skladba s BPM (`Without Me`) | 200, bpm 112.3, key G minor, beat grid 556 bodů |
+| 404 z `/api/bpm/track` za 15 min provozu | **0** |
+| vyhledání interpreta + otevření stránky v prohlížeči | **0 požadavků na `/api/bpm/track`** |
+| fronta 10 skladeb | 10 dotazů, **0 opakovaných** |
+| odznaky ve frontě | `no BPM` u nestažených, `112` / `85` / `86` u tří, které BPM mají |
+| `pageerror` | žádný |
+
+Ty tři čísla sedí přesně na záznamy, které byly v `bpm_analysis.json` **před**
+dávkou (`eminem::without me` 112.3, `eminem::mockingbird` 85.0,
+`eminem::till i collapse` 86.0). Nic se nepřepočítalo, jen se přestalo ptát.
+
+## Oprava 3 — ostrý test zápisu pod běžícím streamem
+
+Skladba bez záznamu v cache (`Adele – He Won't Go`, 58 374 243 B), aby analýza
+opravdu **zapsala tagy**, ne jen přeskočila.
+
+    stream spuštěn (lossless, raw FLAC, škrcený na 700 kB/s)
+    po 3 s a 11 124 736 B staženo  ->  spuštěna první analýza
+    analýza:  HTTP 200, 44,98 s   mtime 1774168236 -> 1792326961  (zápis PROBĚHL)
+    stream:   HTTP 200, 73,25 s   staženo 58 374 243 B = PŘESNĚ velikost souboru
+
+    flac -t na stažené kopii      ok   (MD5 dekódovaného zvuku ze STREAMINFO sedí)
+    flac -t na originálu na disku ok
+
+Tedy: tagy se do souboru zapsaly **uprostřed běžícího Range streamu** a stream
+přesto dojel celý a bajtově nepoškozený. To je důkaz B1 — běžící `FileResponse`
+drží starý inode a `os.replace` mu ho nesebere.
+
+Druhý test, B2: vynucená analýza už otagovaného souboru
+(`AK – Wanderlust`) — `mtime` i velikost **beze změny**, takže MP3 transkód
+zůstal platný.
+
+## Co přejímka NEOVĚŘILA
+
+- **Zda k posunu offsetů vůbec kdy docházelo.** `He Won't Go` má dost paddingu,
+  takže velikost se nezměnila ani teď. Test dokládá, že zápis pod streamem
+  neuškodí; nedokládá, že dřív škodil.
+- Chování při souběhu dvou analýz téhož souboru (zámek je jen v procesu).
+- DJ přechod mezi dvěma skladbami bez BPM naživo — odznak ano, mix ne.
+- `POST /lookup-by-name?analyze=true` a sken playlistu.
