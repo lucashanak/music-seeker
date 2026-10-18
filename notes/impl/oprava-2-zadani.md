@@ -52,62 +52,72 @@ který analýza neumí.
 mřížku a tiše spadne na náhradní chování. Není to hláška v konzoli — je to
 hlavní funkce aplikace běžící naslepo.
 
-## Hrozby (co změna spustí a kdo to může vyvolat)
+## Rozhodnutí zadavatele (18. 10. 2026) — má přednost před vším výše
 
-Tohle je ta část, kterou musí kritika rozebrat **dřív než autor sáhne na kód**.
-Dnešní 404 je levná. Doplnění YouTube větve ji mění na:
-vyhledání na YouTube → stažení → ffmpeg → `analyze_bpm` (madmom, několik oken).
+**„BPM mají mít jen stažené skladby v playlistech."**
 
-- Vyvolá to **kterýkoli přihlášený uživatel** jedním GET s libovolným
-  `name`/`artist`; parametry nejsou vázané na knihovnu ani na frontu.
-- `_analysis_locks` (`bpm.py:1204`) serializuje jen **stejnou** skladbu. Různá
-  jména jdou paralelně.
-- `bpm.js:424` pouští **12 souběžných požadavků** („server has 6-thread pool,
-  12 keeps it saturated"); tlačítko „Analyze BPM" na 375 šest.
-- Strop na velikost cache je `BPM_CACHE_MAX_BYTES` / `YT_CACHE_MAX_BYTES` (2 GB),
-  tedy strop na disk, **ne na počet stažení ani na CPU**.
-- Produkce má `mem_limit 2g` a historii OOM (viz `project_oom_memlimit`).
+Tím padá celá úvaha o doplnění YouTube větve. Dnešní chování serveru je podle
+tohoto pravidla **správné**: `_get_audio_file` sahá na lokální soubor a na
+Navidrome, tedy přesně na to, co je stažené. Chybějící třetí stupeň není díra,
+je to hranice.
 
-Bez stropu je tohle amplifikace: jeden levný požadavek → stažení + těžký DSP.
+Vada tedy není tam, kde jsem ji hledal. Vada je, že **si klient o BPM říká pro
+skladby, které ho podle pravidla nikdy mít nemají**, a server jeho dotaz
+odbaví chybou místo odpovědi. 18 z 22 požadavků v měřeném okně bylo odsouzeno
+předem.
 
-## Otevřené volby (rozhodnout v dodatku po kritice)
+### Proč se YouTube větev nepřidává (doloženo, ne odhad)
 
-**(a) Plná YouTube větev.** `_get_audio_file` dostane třetí stupeň přes
-`_resolve_youtube` + `cache_youtube_stream`. Zisk: BPM pro všechno, co hraje.
-Cena: viz Hrozby — potřebuje strop.
+Stálo by to: jeden GET od kteréhokoli přihlášeného → hledání na YouTube →
+stažení → ffmpeg → `analyze_bpm`. `_analysis_locks` (`bpm.py:1204`) serializuje
+jen **stejnou** skladbu, různá jména jdou paralelně, a `bpm.js:424` pouští
+**12 souběžných požadavků** („server has 6-thread pool, 12 keeps it saturated").
+Strop je jen na disk (`YT_CACHE_MAX_BYTES`), ne na počet stažení ani na CPU;
+produkce má `mem_limit 2g` a historii OOM. Rozhodnutí zadavatele tuhle
+amplifikaci zavírá dřív, než vznikla.
 
-**(b) Jen použít, co už je stažené.** Spočítat klíč cache a soubor vzít, **jen
-když existuje**; nikdy nestahovat. Zisk: nulová nová cena, okamžitě zabere pro
-všechno, co sis pustil — tedy přesně pro frontu, kterou DJ hraje. Ztráta: první
-poslech skladby je pořád bez BPM.
+### Pravidlo už v kódu je — jen nehlídá to, co má
 
-**(c) Nechat server a přestat se ptát z frontendu** u skladeb mimo knihovnu.
-Zisk: zmizí šum. Ztráta: DJ je slepý dál. Tohle problém neřeší, jen schová.
+Tohle je nejdůležitější zjištění pro autora. „Owned-only" není nový nápad,
+`bpm.js` ho má popsané ve vlastních komentářích:
 
-**Doporučení vedení: (b) jako výchozí chování + (a) za výslovným parametrem**,
-který smí poslat jen DJ předvídání na *následující* skladbu fronty. (b) nemá
-žádnou z hrozeb výš a pokrývá hlavní případ; (a) zůstane ohraničená na jeden
-známý volající a jde opatřit stropem souběhu.
+    bpm.js:146   „Set false for unowned views where on-demand analysis mostly 404s."
+    bpm.js:15    „…the tempo controls render disabled (owned-only reality)."
+    bpm.js:299   „Feasibility-aware: … (owned-only reality)."
+
+Jenže `allowAnalyze` a hlídání pokrytí ovládají **jen vzhled** — tlačítko
+v toastu a zešednutí filtru. Na vlastní požadavek nesahá nikdo:
+`fetchTrackBpm` (`bpm.js:100`) se odpálí bez ohledu na vlastnictví.
+Pravidlo je zdokumentované a neprosazené — tedy stejný druh nepravdy, kvůli
+kterému měla dávka 1 kolo 3.
 
 ## Body
 
-- **B1.** `_get_audio_file` sáhne po existujícím souboru v `ms-yt-cache`, když
-  lokální soubor a Navidrome selžou. Nikdy nestahuje.
-  *Test:* dočasný `ms-yt-cache` s podvrženým souborem pod správným klíčem →
-  `_get_audio_file` vrátí jeho cestu. *Mutace:* vypnout větev → test zčervená;
-  vrátit cestu bez `os.path.exists` → test na chybějící soubor zčervená.
-- **B2.** Klíč cache se počítá na **jednom místě**. Dnes je vzorec zadrátovaný
-  uvnitř `cache_youtube_stream`; B1 ho nesmí zkopírovat (stejná past, kterou
-  v dávce 1 vyřešil `scripts/lib-partials.sh`).
-  *Test:* obě cesty dají pro týž vstup týž klíč. *Mutace:* změnit vzorec na
-  jednom místě → test zčervená.
-- **B3.** Rozhodnuté chování pro stahování (podle volby výš) **se stropem
-  souběhu**, ne jen se stropem disku.
-  *Test:* N souběžných požadavků na různé skladby → nejvýš K současných
-  stažení. *Mutace:* strop odstranit → test zčervená.
-- **B4.** 404 přestane lhát. Když zvuk opravdu není, odpověď má říct proč
-  (není v knihovně / nestahuje se zde), ne „audio not available" u souboru,
-  který leží na disku vedle.
+- **B1. Klient se neptá na to, co pravidlo vylučuje.** Volání `fetchTrackBpm`
+  se hradlují na „staženo" na místech, odkud jdou reálné požadavky:
+  `queue.js:53`, `bpm.js:369` a sedm míst v `player_v3.js` (525, 536, 555,
+  588, 926, 1056, 1677).
+  *Test:* položka bez příznaku staženo → žádné volání (odchycený `apiJson`).
+  *Mutace:* hradlo odstranit → test zčervená.
+- **B2. Příznak „staženo" musí u položky fronty existovat a být pravdivý.**
+  `search.js:169/186/225` pracuje s `item.inLibrary`, `contextmenu.js:363`
+  taky — ale **není ověřeno, že totéž nese položka v `store.playerQueue`**,
+  a právě odtud se ptá `queue.js` a `player_v3.js`. Pokud ne, zadání neplatí
+  tak, jak je napsané, a B1 nemá na čem stát. **Tohle má kritika ověřit jako
+  první; je to premisa, ne detail.**
+  *Test:* cesty, kterými se položka dostane do fronty, příznak zachovají.
+  *Mutace:* příznak při vložení do fronty zahodit → test zčervená.
+- **B3. Server odpoví levně a pravdivě.** Pro skladbu mimo knihovnu nemá
+  odpověď znít „audio not available" (což je u skladby, jejíž zvuk leží
+  v `ms-yt-cache`, nepravda), ale „mimo rozsah — není stažená". Nesmí přitom
+  spustit žádnou práci.
+  *Test:* požadavek na nestaženou skladbu → žádné volání `analyze_bpm`.
+  *Mutace:* vrátit původní větev → test zčervená.
+- **B4. DJ mode nesmí dělat, že tempo má.** Když skladba ve frontě není
+  stažená, nemá BPM, klíč ani beat grid. Dnes `player_v3.js` dostane `null`
+  a pokračuje. Co přesně má dělat — přeskočit, mixovat natvrdo, nebo to
+  přiznat v UI — **rozhodne se v dodatku po kritice**; zadání jen vyžaduje,
+  aby to bylo vědomé a doložené, ne ticho.
 
 ## K ověření v kritice (nepotvrzené)
 
@@ -123,16 +133,29 @@ doložit, nebo vyvrátit; ne odhadnout.
 
 ## Omezení
 
-- Repo **nemá ani jeden test na BPM** (51 sebraných testů, `grep -l bpm tests/`
-  prázdný). Body B1–B3 si testy musí přinést; mutace jsou povinné.
-- `analyze_bpm` potřebuje madmom + numpy a běhá dlouho — testy musí mířit na
-  `_get_audio_file` a klíčování, ne na skutečnou analýzu.
+- Repo **nemá ani jeden test na BPM** (51 sebraných testů, `grep -rl bpm tests/`
+  nevrací nic). Body B1–B3 si testy musí přinést; mutace jsou povinné.
+- Většina váhy dávky je ve **frontendu**, kde pytest nepomůže. Jak se B1 a B2
+  doloží — odchycený `apiJson` v node, nebo Playwright proti nasazené instanci —
+  je otevřené; `reference_e2e_harness` popisuje existující postroj. Kritika má
+  říct, který z nich unese mutaci (D18: test musí nad starým kódem padat).
+- `analyze_bpm` potřebuje madmom + numpy a běží dlouho — testy nesmí sahat na
+  skutečnou analýzu.
+- `static/index.html` se needituje, generuje se z `frontend/partials/*.html`
+  (dávka 1). Pokud se B4 projeví v UI, mění se část, ne výstup.
 - Produkce se během dávky nemění. Měření výš je čtení logu, výpis adresáře
   a čtení `bpm_analysis.json`; **nic se nezapisovalo**.
 
 ## Přejímka
 
-Proti běžící instanci po nasazení: pustit skladbu, která není v knihovně,
-počkat na `ms-yt-cache`, zavolat `/api/bpm/track` na tutéž skladbu a doložit
-200 + `bpm` + `beat_grid`. Dál doložit, že se při tom **nic nestáhlo** (mtime
-souboru v cache se nezměnil). Rozpočet placených volání: **0**.
+Proti běžící instanci po nasazení:
+
+1. Projít seznam skladeb, které nejsou stažené, a doložit **nula** požadavků na
+   `/api/bpm/track` (síťové počítadlo, ne dojem z UI).
+2. Stažená skladba v playlistu BPM dál dostane — 200 s `bpm` i `beat_grid`.
+3. Přímé volání endpointu na nestaženou skladbu odpoví podle B3 a v logu po něm
+   **nepřibude** žádná analýza.
+4. DJ mode s frontou, kde je nestažená skladba, se zachová podle rozhodnutí
+   u B4 — doložit, co udělal, ne že „nespadl".
+
+Rozpočet placených volání: **0**.
