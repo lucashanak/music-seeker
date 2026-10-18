@@ -96,12 +96,36 @@ export function getDjData(name, artist) {
   return _cache[_key(name, artist)] || null;
 }
 
+// Tracks the server has answered "owned: false" for (key -> expiry ms). The server,
+// not the client, decides what counts as downloaded; the client only remembers the
+// answer so it does not ask again.
+const _notOwned = new Map();
+const NOT_OWNED_TTL_MS = 10 * 60 * 1000;
+
+/** True when the server said this track has no audio to analyse (remembered for the session). */
+export function isBpmUnavailable(name, artist) {
+  const key = _key(name, artist);
+  const exp = _notOwned.get(key);
+  if (exp == null) return false;
+  if (exp <= Date.now()) { _notOwned.delete(key); return false; }
+  return true;
+}
+
+/** Forget every "not downloaded" answer; called when a download finishes, since the
+ *  job does not say which track it brought in. */
+export function forgetBpmUnavailable() { _notOwned.clear(); }
+
 /** Fetch and cache BPM/DJ data for a single track. Triggers server analysis if needed. */
 export async function fetchTrackBpm(name, artist) {
   const key = _key(name, artist);
   if (_cache[key]) return _cache[key];
+  if (isBpmUnavailable(name, artist)) return null;
   try {
     const data = await apiJson(`/api/bpm/track?name=${encodeURIComponent(name)}&artist=${encodeURIComponent(artist)}`);
+    if (data && data.owned === false) {
+      _notOwned.set(key, Date.now() + NOT_OWNED_TTL_MS);
+      return null;
+    }
     if (data && data.bpm) {
       _cache[key] = data;
       return data;

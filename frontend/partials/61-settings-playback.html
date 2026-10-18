@@ -38,7 +38,7 @@
             <option value="bpm">BPM Match — pick next track with closest BPM</option>
             <option value="bpm_key">BPM + Key — closest BPM with harmonic compatibility</option>
           </select>
-          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Chooses only which track plays <em>next</em> — the DJ crossfades and beat-sync apply either way. Playlist order keeps your queue exactly as it is; the BPM modes instead pick the best-matching track from the ones still unplayed (analyzed tracks only). Neither reorders the queue.</p>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Chooses only which track plays <em>next</em> — the DJ crossfades and beat-sync apply either way. Playlist order keeps your queue exactly as it is; the BPM modes instead pick the best-matching track from the ones still unplayed (analyzed tracks only). Neither reorders the queue. Tracks that are not downloaded have no tempo data and are marked "no BPM" in the queue; while the current track is one of them, Smart Queue is not used for the next pick (the next track follows queue order, or is random with shuffle on).</p>
         </div>
         <div class="setting-group dj-cf-only" style="display:none;">
           <label class="setting-label">Tempo</label>
