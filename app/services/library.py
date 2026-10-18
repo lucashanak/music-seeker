@@ -371,6 +371,9 @@ async def get_playlist(playlist_id: str) -> dict | None:
                 "duration_ms": e.get("duration", 0) * 1000,
                 "image": f"/api/library/cover/{e['coverArt']}" if e.get("coverArt") else "",
                 "type": "track",
+                # Entries come from a Navidrome playlist, so they were in the library at the last
+                # scan (a deleted file stays listed until the next one). Informational only.
+                "owned": True,
             }
             for e in entries
         ]

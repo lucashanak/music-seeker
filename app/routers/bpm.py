@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
@@ -14,6 +17,49 @@ router = APIRouter(prefix="/api/bpm", tags=["bpm"],
 LOOKUP_MAX = 500
 # Default cap on how many uncached tracks a single analyze=true request will scan.
 LOOKUP_ANALYZE_DEFAULT = 25
+
+
+# Negative cache for /track: a track that is neither in Navidrome nor on disk is
+# not analysable, and asking again costs a Navidrome search3 plus a blocking
+# directory walk every time. Keyed by lowercased (name, artist); bounded so a
+# client cannot grow it without limit by sending arbitrary names (count capped,
+# key length truncated).
+NOT_OWNED_TTL = 300.0
+NOT_OWNED_MAX = 2000
+_not_owned: dict[tuple[str, str], float] = {}
+
+
+NOT_OWNED_KEY_CHARS = 200
+
+
+def _neg_key(name: str, artist: str) -> tuple[str, str]:
+    # Truncated: the cap on entry COUNT alone would let long names hold tens of MB.
+    return (name.strip().lower()[:NOT_OWNED_KEY_CHARS], artist.strip().lower()[:NOT_OWNED_KEY_CHARS])
+
+
+def _is_known_not_owned(name: str, artist: str) -> bool:
+    key = _neg_key(name, artist)
+    expiry = _not_owned.get(key)
+    if expiry is None:
+        return False
+    if expiry <= time.monotonic():
+        _not_owned.pop(key, None)
+        return False
+    return True
+
+
+def _remember_not_owned(name: str, artist: str) -> None:
+    now = time.monotonic()
+    if len(_not_owned) >= NOT_OWNED_MAX:
+        for k in [k for k, exp in _not_owned.items() if exp <= now]:
+            del _not_owned[k]
+        while _not_owned and len(_not_owned) >= NOT_OWNED_MAX:
+            _not_owned.pop(next(iter(_not_owned)))
+    _not_owned[_neg_key(name, artist)] = now + NOT_OWNED_TTL
+
+
+def _not_owned_response(name: str, artist: str) -> dict:
+    return {"owned": False, "name": name, "artist": artist}
 
 
 class LookupTrack(BaseModel):
@@ -34,6 +80,7 @@ async def get_track_bpm(
     _user: dict = Depends(auth.get_current_user),
 ):
     """Get BPM for a single track. Analyzes if not cached."""
+    cached = None
     if not force:
         cached = bpm.get_cached_bpm(name, artist)
         # Fast path only when the cached entry already has the current feature set.
@@ -43,8 +90,28 @@ async def get_track_bpm(
         if cached and cached.get("feature_version") == bpm.FEATURE_VERSION:
             return cached
 
+    # Ownership is decided here, on the server, with the same two sources the
+    # analysis itself uses (Navidrome id, local file). A track with neither is
+    # answered with 200 {"owned": false} and no work is started. A song_id sent
+    # by the client is NOT trusted for this decision: it would skip both lookups.
+    # force=true bypasses the negative memory, so a track downloaded within the
+    # TTL can still be analysed on demand.
+    if not force and not cached and _is_known_not_owned(name, artist):
+        return _not_owned_response(name, artist)
+
+    song_id = await library.find_song_id(name, artist) or ""
+
     if not song_id:
-        song_id = await library.find_song_id(name, artist) or ""
+        # find_track_file walks the music directory — keep it off the event loop.
+        local = await asyncio.to_thread(bpm.find_track_file, name, artist)
+        if not local:
+            if cached:
+                # Already measured, audio gone: keep the measurement (this is what
+                # analyze_track's backfill does when there is no file).
+                return cached
+            if not force:
+                _remember_not_owned(name, artist)
+            return _not_owned_response(name, artist)
 
     result = await bpm.analyze_track(song_id, name, artist, force=force)
     if not result:

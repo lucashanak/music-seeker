@@ -4,6 +4,7 @@ import { store } from './store.js';
 import { $, $$, esc, showToast, historyBack, setArt} from './utils.js';
 import { apiFetch, apiJson } from './api.js';
 import { getPlayerModule } from './player_active.js';
+import { forgetBpmUnavailable } from './bpm.js';
 
 // ── Download Modal ──
 export function openModal(item) {
@@ -213,11 +214,13 @@ async function retryJob(id) {
 }
 
 // ── Browser Notifications for Job Completions ──
-function checkJobCompletions(jobs) {
-  if (!store.notificationsEnabled) return;
+export function checkJobCompletions(jobs) {
   for (const j of jobs) {
     const prev = store.previousJobStates[j.id];
-    if (prev && (prev === 'running' || prev === 'queued')) {
+    const wasActive = prev === 'running' || prev === 'queued';
+    // A finished download may be a track the queue marked "no BPM"; ask again.
+    if (wasActive && j.status === 'done') forgetBpmUnavailable();
+    if (store.notificationsEnabled && wasActive) {
       if (j.status === 'done') {
         new Notification('MusicSeeker - Download Complete', {
           body: j.title,

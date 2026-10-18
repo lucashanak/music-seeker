@@ -264,3 +264,34 @@ points (`compute_features_only`, `_analyze_or_read_tag`) are module-level and ta
 only a path, so they are already picklable.
 
 Diagnose with `dmesg -T | grep -i "killed process"` and `docker stats`.
+
+## BPM only exists for tracks with audio on hand
+
+`GET /api/bpm/track` decides ownership on the server, with the same two sources
+the analysis uses: a Navidrome song id (`find_song_id`) or a local file
+(`find_track_file`). A track with neither gets `200 {"owned": false}` and no work
+is started; before this it got a 404 "audio not available". Only those two sources
+count: audio the player holds in its YouTube cache (`ms-yt-cache`) is not consulted
+by the analysis, so such a track is still answered `owned:false`. An owned track
+whose analysis fails still returns 404.
+
+- **Server negative cache** (`app/routers/bpm.py`): `owned:false` is remembered
+  300 s per lowercased (name, artist) truncated to 200 characters each, at most 2000
+  entries. `force=true` skips it. A track that already has a cached BPM is answered
+  with that entry, never `owned:false`, and is not remembered as unowned. A `song_id`
+  query parameter does not skip the ownership check (the server looks the track up
+  itself). Analysis failures are not cached. A Navidrome error is not read as "not owned" and is not cached.
+- **Client** (`static/js/bpm.js`): `fetchTrackBpm` remembers `owned:false` for
+  10 min and does not ask again; a finished download job clears that memory; `isBpmUnavailable()` exposes it. The client does
+  not guess ownership from `inLibrary` (a DOM-only flag, not the same set as what
+  analysis can reach). Playlist entries from `library.get_playlist` carry
+  `owned: true`; nothing gates on it.
+- **DJ mode**: a track without BPM has no tempo grid, so the transition falls back
+  to the crossfade length setting and Smart Queue is not consulted for it (with
+  shuffle on the next track is random regardless). The queue
+  panel marks such tracks "no BPM" and the Smart Queue help text says so.
+
+Known limits: the "no BPM" badge appears only after the server has answered for
+that track in this session; `POST /api/bpm/lookup-by-name?analyze=true` and the
+playlist scan are not covered by the negative cache; the tag write into the analysed
+file (`write_tags`) is a separate hazard, tracked outside this change.

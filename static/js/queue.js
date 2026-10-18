@@ -2,7 +2,7 @@
 
 import { store } from './store.js';
 import { $, $$, esc, historyBack, showToast, showInputModal } from './utils.js';
-import { getCachedBpm } from './bpm.js';
+import { getCachedBpm, isBpmUnavailable } from './bpm.js';
 import { attachContextMenu, wasLongPress, makeKebabButton } from './contextmenu.js';
 import { makeHeartButton } from './likes.js';
 import { getPlayerModule } from './player_active.js';
@@ -11,6 +11,13 @@ import { getPlayerModule } from './player_active.js';
 let loadAndPlay, hidePlayerBar, saveQueueDebounced;
 let _audioRef = null;
 let _audioGetter = null;
+// Shown instead of a tempo number when the server said the track has no audio to
+// analyse. DJ mode cannot beat-match such a track and Smart Queue cannot pick it.
+const NOBPM_TITLE = 'No tempo data: the server found no audio file or library entry for it, so DJ mode and Smart Queue cannot use it';
+function _noBpmBadgeHtml() {
+  return `<span class="qi-bpm qi-nobpm" style="opacity:.6" title="${NOBPM_TITLE}">no BPM</span>`;
+}
+
 function audio() { return _audioGetter ? _audioGetter() : _audioRef; }
 
 export function setPlayerRefs(refs) {
@@ -52,6 +59,11 @@ async function _loadMissingBpm(el) {
       if (!bpm) {
         const data = await fetchTrackBpm(item.name, item.artist).catch(() => null);
         if (data) bpm = data.bpm;
+        if (abort.aborted) return;
+        if (!bpm && isBpmUnavailable(item.name, item.artist) && !qi.querySelector('.qi-bpm')) {
+          const rm = qi.querySelector('.qi-remove');
+          if (rm) rm.insertAdjacentHTML('beforebegin', _noBpmBadgeHtml());
+        }
         // Small delay between API calls to not starve prefetch
         await new Promise(r => setTimeout(r, 200));
       }
@@ -85,7 +97,7 @@ export function renderQueueInto(el) {
         <div class="qi-title">${esc(item.name || '')}</div>
         <div class="qi-artist">${esc(item.artist || '')}</div>
       </div>
-      ${(() => { const b = getCachedBpm(item.name, item.artist); return b ? `<span class="qi-bpm">${Math.round(b)}</span>` : ''; })()}
+      ${(() => { const b = getCachedBpm(item.name, item.artist); return b ? `<span class="qi-bpm">${Math.round(b)}</span>` : (isBpmUnavailable(item.name, item.artist) ? _noBpmBadgeHtml() : ''); })()}
       <button class="qi-remove" data-qi-rm="${i}" title="Remove">&times;</button>
     </div>
   `).join('');
