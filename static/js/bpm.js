@@ -341,6 +341,12 @@ export function initTempoFilter(tracksContainerId, opts = {}) {
   const includeLowConfDefault = filterCheckbox ? filterCheckbox.checked : true;
   const cov = coverageSummary(tracksContainerId, includeLowConfDefault);
   const lowCoverage = cov.total > 0 && (cov.noBpm / cov.total) > LOW_COVERAGE_RATIO;
+  if (lowCoverage && opts.allowAnalyze === false) {
+    // Nothing to filter, and no way to fix it from here — unowned tracks can't
+    // be analyzed. A dead control bar between the hero and the first song is
+    // the most prominent thing on the page on a phone, so don't mount one.
+    return null;
+  }
   if (lowCoverage) {
     // Disable interactive controls; keep coverage badge visible.
     filter.classList.add('bpm-filter-disabled');

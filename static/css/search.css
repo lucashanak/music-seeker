@@ -445,3 +445,26 @@
 .artist-top-more:hover { color: var(--text); }
 
 #artistAlbumsHeader { margin-top: 28px; }
+
+/* ── Library playlist rows: bulk select, remove, drag-to-reorder ──
+   On a card these three were absolutely positioned over the artwork; in a row
+   they are simply part of the flow. */
+.lib-bulk-cb {
+  width: 18px; height: 18px; accent-color: var(--accent);
+  cursor: pointer; flex-shrink: 0;
+}
+.lib-track-remove {
+  width: 30px; height: 30px; flex-shrink: 0;
+  border: none; background: none; color: var(--text-dim);
+  border-radius: 50%; cursor: pointer; font-size: 18px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.lib-track-remove:hover { color: var(--red); background: var(--bg-elevated); }
+.song-list .song-row .card-drag-handle {
+  position: static; width: 24px; height: 30px;
+  background: none; opacity: .45;
+}
+.song-list .song-row:hover .card-drag-handle { opacity: 1; }
+
+/* A numbered row that also carries art (playlists, liked songs). */
+.song-list-numbered .song-row .song-thumb { margin-left: 2px; }

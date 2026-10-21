@@ -4,7 +4,7 @@ import { store } from './store.js';
 import { $, $$, esc, showToast, historyBack, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { renderResults, renderSongRows, checkLibrary } from './search.js';
+import { renderResults, renderSongRows, renderSongList, checkLibrary } from './search.js';
 import { switchPage } from './router.js';
 import { attachContextMenu, wasLongPress, makeKebabButton, addTracksToNavidromePlaylist } from './contextmenu.js';
 import { getPlayerModule } from './player_active.js';
@@ -268,7 +268,9 @@ function _openPlaylistDetail({ id, url, fromPage, name, image, liked }) {
 function _paintPlaylistTracks(tracks) {
   store.currentPlaylistTracks = tracks.map(t => ({ name: t.name, artist: t.artist, album: t.album || '', image: t.image || '', url: t.url }));
   $('#plDetailCount').textContent = `${tracks.length} tracks`;
-  renderResults(tracks, '#playlistTracks');
+  // Rows, not a poster wall: a playlist is a running order, and starting any
+  // row makes the whole playlist the queue from that point on.
+  renderSongList(tracks, '#playlistTracks', { withArt: true, emptyText: 'This playlist is empty' });
   _mountTempoFilter(tracks, '#playlistTracks');
 }
 
@@ -297,7 +299,8 @@ export async function loadPlaylistDetail(id, url, fromPage, opts) {
   const o = typeof opts === 'string' ? { provider: opts } : (opts || {});
   _openPlaylistDetail({ id, url, fromPage, name: o.name, image: o.image, liked: id === 'liked' });
   const tracksEl = $('#playlistTracks');
-  tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  tracksEl.classList.remove('grid');
+  tracksEl.innerHTML = Array(10).fill('<div class="skeleton skeleton-row"></div>').join('');
   try {
     const data = await fetchPlaylistTracks(id, url, o.provider);
     const tracks = data.tracks || [];

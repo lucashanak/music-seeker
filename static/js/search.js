@@ -715,9 +715,13 @@ export function renderSongRows(tracks, sink, opts = {}) {
     // Numbered mode (album detail): show the track position instead of repeating
     // the album cover on every row. hideArtist drops the redundant per-track
     // artist line when every track shares the album's artist.
+    // Album detail numbers its rows and drops the art (every row shares one
+    // cover); a playlist shows both, the way Spotify does — the covers are how
+    // you recognise a track in a list that spans a hundred different albums.
+    const art = `<img class="song-thumb" ${item.image ? `src="${escAttr(item.image)}"` : ''} alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">`;
     const lead = opts.numbered
-      ? `<div class="song-num">${esc(String(item.track_number || (idx + 1)))}</div>`
-      : `<img class="song-thumb" ${item.image ? `src="${escAttr(item.image)}"` : ''} alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">`;
+      ? `<div class="song-num">${esc(String(item.track_number || (idx + 1)))}</div>` + (opts.withArt ? art : '')
+      : art;
     const sub = opts.hideArtist ? '' : `<div class="song-artist">${cardSubHtml(item)}</div>`;
     row.innerHTML = `
       ${lead}
@@ -762,6 +766,27 @@ export function renderSongRows(tracks, sink, opts = {}) {
     },
   });
   return list;
+}
+
+// ── A finished track list as rows (playlist / liked songs / album) ──
+// Same shape Spotify gives every track list: numbered rows, the whole list as
+// the play context, and the in-library check the grid renderer used to run.
+// Returns the row elements so callers can hang their own per-row controls on
+// them (the library playlist adds checkboxes, remove buttons and drag handles).
+export function renderSongList(tracks, container, opts = {}) {
+  const el = $(container);
+  if (!el) return [];
+  el.classList.remove('grid');
+  if (!tracks || !tracks.length) {
+    el.innerHTML = `<div class="empty-state"><p>${esc(opts.emptyText || 'Nothing here yet')}</p></div>`;
+    return [];
+  }
+  const sink = { items: [], cards: [] };
+  const list = renderSongRows(tracks, sink, { numbered: true, context: tracks, ...opts });
+  el.innerHTML = '';
+  el.appendChild(list);
+  if (opts.check !== false) checkLibrary(sink.items, el, sink.cards);
+  return sink.cards;
 }
 
 // ── Result-list hygiene for the All view ──

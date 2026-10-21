@@ -3,7 +3,7 @@
 import { store } from './store.js';
 import { $, $$, esc, escAttr, showToast, historyBack, showPlaylistPicker, showInputModal, showPlaylistFormModal, showConfirmModal, setArt} from './utils.js';
 import { apiJson } from './api.js';
-import { renderResults } from './search.js';
+import { renderSongList } from './search.js';
 import { fetchPlaylistBpm, addBpmBadges, createBpmFilter, addScanButton } from './bpm.js';
 import { attachContextMenu, buildActionsFor, showContextMenu, wasLongPress, makeKebabButton } from './contextmenu.js';
 import { getPlayerModule } from './player_active.js';
@@ -450,7 +450,8 @@ async function loadLibraryDetail(id) {
   $('#libraryDetail').style.display = '';
   history.pushState({ layer: 'libraryDetail' }, '');
   const tracksEl = $('#libraryTracks');
-  tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  tracksEl.classList.remove('grid');
+  tracksEl.innerHTML = Array(10).fill('<div class="skeleton skeleton-row"></div>').join('');
   try {
     const data = await apiJson(`/api/library/playlist/${id}`);
     currentLibPlaylistTracks = data.tracks || [];
@@ -485,7 +486,9 @@ async function loadLibraryDetail(id) {
 // of loadLibraryDetail so a drag-reorder can re-render locally (instant feedback)
 // without a refetch, keeping index-based checkbox/remove handlers in sync.
 function _renderLibDetailTracks(id) {
-  renderResults(currentLibPlaylistTracks, '#libraryTracks');
+  // Rows, like every other track list — the per-row controls below hang off
+  // the elements this returns, which carry .card exactly as the old grid did.
+  renderSongList(currentLibPlaylistTracks, '#libraryTracks', { withArt: true, check: false, emptyText: 'This playlist is empty' });
   // Tracks from a Navidrome playlist are definitively in the library —
   // mark them so openModal shows the Delete button without waiting for checkLibrary.
   _markTracksInLibrary('#libraryTracks', currentLibPlaylistTracks);
@@ -857,7 +860,6 @@ function _addBulkCheckboxes() {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.className = 'lib-bulk-cb';
-    cb.style.cssText = 'position:absolute;top:8px;left:8px;width:18px;height:18px;accent-color:var(--accent);z-index:2;cursor:pointer;';
     cb.addEventListener('change', (e) => {
       e.stopPropagation();
       if (cb.checked) _selectSet.add(i); else _selectSet.delete(i);
@@ -899,7 +901,6 @@ function _addRemoveButtons(playlistId) {
     btn.className = 'lib-track-remove';
     btn.title = 'Remove from playlist';
     btn.innerHTML = '&times;';
-    btn.style.cssText = 'position:absolute;top:8px;right:8px;width:24px;height:24px;border:none;background:rgba(0,0,0,.5);color:var(--text-muted);border-radius:50%;cursor:pointer;font-size:16px;line-height:1;z-index:2;display:flex;align-items:center;justify-content:center;';
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       try {
@@ -948,7 +949,8 @@ export async function openLikedSongs() {
   _likedViewOpen = true;
   history.pushState({ layer: 'likedSongs' }, '');
   const tracksEl = $('#likedSongsTracks');
-  tracksEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  tracksEl.classList.remove('grid');
+  tracksEl.innerHTML = Array(10).fill('<div class="skeleton skeleton-row"></div>').join('');
   await loadLikes();
   const tracks = getLikedTracks();
   $('#likedDetailCount').textContent = tracks.length === 1 ? '1 song' : `${tracks.length} songs`;
@@ -957,8 +959,7 @@ export async function openLikedSongs() {
     tracksEl.innerHTML = '<div class="empty-state"><p>Songs you like will appear here.</p></div>';
     return;
   }
-  // Reuse the shared track-row renderer (gives kebab + heart + context menu).
-  renderResults(tracks, '#likedSongsTracks');
+  renderSongList(tracks, '#likedSongsTracks', { withArt: true, emptyText: 'Songs you like will appear here.' });
 }
 
 // Re-render the open Liked Songs view from the current liked set. Called on
@@ -976,7 +977,7 @@ function _rerenderLikedSongs() {
     tracksEl.innerHTML = '<div class="empty-state"><p>Songs you like will appear here.</p></div>';
     return;
   }
-  renderResults(tracks, '#likedSongsTracks');
+  renderSongList(tracks, '#likedSongsTracks', { withArt: true, emptyText: 'Songs you like will appear here.' });
 }
 
 export function closeLikedSongs(fromPopstate) {

@@ -1,6 +1,6 @@
 import os
 
-APP_VERSION = "1.24.3"
+APP_VERSION = "1.25.1"
 
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 MUSIC_DIR = os.environ.get("MUSIC_DIR", "/music")
