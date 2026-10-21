@@ -20,6 +20,125 @@ function _noBpmBadgeHtml() {
 
 function audio() { return _audioGetter ? _audioGetter() : _audioRef; }
 
+// ── Shuffle order ───────────────────────────────────────────────────────────
+// Shuffle plays a PERMUTATION of the queue, so the panel has to draw that
+// permutation: otherwise the "up next" row names a track the engine will never
+// pick, which is what the audit measured (row 2 said "Get Lucky", the engine
+// played "Solar Sailer").
+//
+// Two pieces of state: the tracks already played (Previous pops that stack) and
+// the still-unplayed tail in the order it will be played. Both hold the queue's
+// ITEMS, not their positions. Positions shift under every content change — a row
+// removed with ✕, a row dragged, "Play next" from a kebab — and an order kept over
+// positions then names other tracks without noticing. Recomputing on a LENGTH
+// change alone was worse still: one ✕ re-dealt the whole tail, so 49 of 50 rows
+// changed place, while a drag changed no length at all and left the order stale.
+//
+// The order NEVER touches data-qi. That attribute stays the index into
+// store.playerQueue because the row's ✕ sends it to the server as a position in
+// the user's Navidrome playlist — a permuted value would delete another track.
+let _shufPlayed = [];
+let _shufTail = [];
+
+function _shuffleInPlace(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Reconcile with the queue as it stands now: tracks that left are dropped, tracks
+// that arrived are dealt into the tail, everything else keeps the place it had.
+function _syncShuffleOrder() {
+  const q = store.playerQueue;
+  const present = new Set(q);
+  const seen = new Set();
+  const keep = (list) => list.filter((it) => {
+    if (!present.has(it) || seen.has(it)) return false;
+    seen.add(it);
+    return true;
+  });
+  _shufPlayed = keep(_shufPlayed);
+  const cur = store.playerIndex >= 0 ? q[store.playerIndex] : null;
+  if (cur) seen.add(cur);
+  _shufTail = keep(_shufTail);
+  const fresh = [];
+  for (const it of q) if (!seen.has(it)) { seen.add(it); fresh.push(it); }
+  if (fresh.length) _shufTail = _shufTail.concat(_shuffleInPlace(fresh));
+}
+
+function _idx(item) {
+  const i = store.playerQueue.indexOf(item);
+  return i >= 0 ? i : null;
+}
+
+/** Next index in the shuffle order, or null when it is exhausted. */
+export function shuffleNext() {
+  _syncShuffleOrder();
+  const cur = store.playerIndex >= 0 ? store.playerQueue[store.playerIndex] : null;
+  if (cur && _shufPlayed[_shufPlayed.length - 1] !== cur) _shufPlayed.push(cur);
+  const next = _shufTail.shift();
+  return next === undefined ? null : _idx(next);
+}
+
+/** Previous index from the play history, or null when there is none. */
+export function shufflePrev() {
+  _syncShuffleOrder();
+  const prev = _shufPlayed.pop();
+  if (prev === undefined) return null;
+  const cur = store.playerIndex >= 0 ? store.playerQueue[store.playerIndex] : null;
+  if (cur) _shufTail.unshift(cur);
+  return _idx(prev);
+}
+
+/** Drop the order — on toggle, and when a finished one has to start over. */
+export function resetShuffleOrder() {
+  _shufPlayed = [];
+  _shufTail = [];
+}
+
+/** Queue indices in the order they will actually be played. */
+export function playOrder() {
+  const n = store.playerQueue.length;
+  const order = [];
+  if (!store.shuffleEnabled || n < 2) {
+    for (let i = 0; i < n; i++) order.push(i);
+    return order;
+  }
+  _syncShuffleOrder();
+  const taken = new Set();
+  const take = (i) => { if (i != null && i >= 0 && i < n && !taken.has(i)) { taken.add(i); order.push(i); } };
+  _shufPlayed.forEach((it) => take(_idx(it)));
+  take(store.playerIndex);
+  _shufTail.forEach((it) => take(_idx(it)));
+  // Safety net: the panel must draw every row exactly once, whatever the state
+  // above says — a queue holding the same object twice would otherwise lose a row.
+  for (let i = 0; i < n; i++) take(i);
+  return order;
+}
+
+// ── Autoplay tail ───────────────────────────────────────────────────────────
+// Tracks the recommender appends once the queue runs dry. Remembered by object
+// identity, not by position: upnext.playTracks REPLACES store.playerQueue with a
+// fresh array, and an index remembered across that would point into a queue the
+// user has since started over.
+let _autoFirst = null;
+
+/** Index of the first automatically appended track, or -1. */
+export function autoplayStart() {
+  if (!_autoFirst) return -1;
+  return store.playerQueue.indexOf(_autoFirst);
+}
+
+export function markAutoplayStart(item) {
+  if (autoplayStart() < 0) _autoFirst = item;
+}
+
+export function setAutoplayStartIndex(i) {
+  _autoFirst = (i >= 0 && i < store.playerQueue.length) ? store.playerQueue[i] : null;
+}
+
 export function setPlayerRefs(refs) {
   loadAndPlay = refs.loadAndPlay;
   hidePlayerBar = refs.hidePlayerBar;
@@ -34,6 +153,13 @@ import { fetchTrackBpm } from './bpm.js';
 // shared timer/abort would let each panel's call cancel the previous one, so only
 // the last-rendered panel ever got badges. Key the state per element.
 const _bpmLoadState = new WeakMap();
+// Where a tempo badge belongs in a row. The heart and the kebab are appended AFTER
+// the row's markup is built, so a badge that arrives later (lazy fetch) and anchors
+// on .qi-remove lands past them, while a cached one sits before the heart — the same
+// badge in two different slots depending on when the number showed up.
+function _badgeAnchor(qi) {
+  return qi.querySelector('.like-btn') || qi.querySelector('.kebab-btn') || qi.querySelector('.qi-remove');
+}
 /** Lazy-load BPM badges — limited to nearby tracks, with delays between requests. */
 async function _loadMissingBpm(el) {
   const prev = _bpmLoadState.get(el);
@@ -61,20 +187,20 @@ async function _loadMissingBpm(el) {
         if (data) bpm = data.bpm;
         if (abort.aborted) return;
         if (!bpm && isBpmUnavailable(item.name, item.artist) && !qi.querySelector('.qi-bpm')) {
-          const rm = qi.querySelector('.qi-remove');
-          if (rm) rm.insertAdjacentHTML('beforebegin', _noBpmBadgeHtml());
+          const anchor = _badgeAnchor(qi);
+          if (anchor) anchor.insertAdjacentHTML('beforebegin', _noBpmBadgeHtml());
         }
         // Small delay between API calls to not starve prefetch
         await new Promise(r => setTimeout(r, 200));
       }
       if (abort.aborted) return;
       if (bpm && !qi.querySelector('.qi-bpm')) {
-        const rmBtn = qi.querySelector('.qi-remove');
-        if (rmBtn) {
+        const anchor = _badgeAnchor(qi);
+        if (anchor) {
           const badge = document.createElement('span');
           badge.className = 'qi-bpm';
           badge.textContent = Math.round(bpm);
-          rmBtn.before(badge);
+          anchor.before(badge);
         }
       }
     }
@@ -88,10 +214,14 @@ export function renderQueueInto(el) {
     el.innerHTML = '<div class="empty-state"><p>Queue is empty</p></div>';
     return;
   }
-  el.innerHTML = store.playerQueue.map((item, i) => `
+  const autoAt = autoplayStart();
+  el.innerHTML = playOrder().map((i, pos) => {
+    const item = store.playerQueue[i];
+    const sep = i === autoAt ? '<div class="qi-autoplay-sep">Autoplay</div>' : '';
+    return sep + `
     <div class="queue-item${i === store.playerIndex ? ' now-playing' : ''}" data-qi="${i}" draggable="true">
       <span class="qi-drag" title="Drag to reorder">&#x2630;</span>
-      <span class="qi-num">${i === store.playerIndex ? '&#9654;' : i + 1}</span>
+      <span class="qi-num">${i === store.playerIndex ? '&#9654;' : pos + 1}</span>
       <img class="qi-img" ${item.image ? `src="${esc(item.image)}"` : ''} alt="" onerror="this.style.background='var(--bg-elevated)'">
       <div class="qi-info">
         <div class="qi-title">${esc(item.name || '')}</div>
@@ -100,7 +230,8 @@ export function renderQueueInto(el) {
       ${(() => { const b = getCachedBpm(item.name, item.artist); return b ? `<span class="qi-bpm">${Math.round(b)}</span>` : (isBpmUnavailable(item.name, item.artist) ? _noBpmBadgeHtml() : ''); })()}
       <button class="qi-remove" data-qi-rm="${i}" title="Remove">&times;</button>
     </div>
-  `).join('');
+  `;
+  }).join('');
   _attachDragHandlers(el);
   _attachTouchReorder(el);
   // Lazy-load BPM badges for tracks not yet in cache
@@ -169,15 +300,21 @@ export function renderQueueInto(el) {
   });
 }
 
+// Every queue surface carries the same Save control. Saving an ad-hoc queue is a
+// phone action above all, and the two panels a phone can reach had only Clear.
+const SAVE_BTN_IDS = ['#fpSaveQueue', '#queuePanelSave', '#fpQueuePanelSave'];
+
 export function updateSaveButton() {
-  const btn = $('#fpSaveQueue');
-  if (!btn) return;
   // Show "Save as playlist" whenever there is something to save. The click
   // handler promotes an Up Next playlistMode via rename, and otherwise falls
   // back to creating a fresh Navidrome playlist from the current queue.
   const show = store.playerQueue.length > 0;
-  btn.style.display = show ? '' : 'none';
-  btn.textContent = 'Save as playlist';
+  for (const id of SAVE_BTN_IDS) {
+    const btn = $(id);
+    if (!btn) continue;
+    btn.style.display = show ? '' : 'none';
+    btn.textContent = 'Save as playlist';
+  }
 }
 
 export function renderQueue() {
@@ -214,6 +351,11 @@ export function openQueuePanel() {
   renderQueue();
   $('#queueBackdrop').classList.add('open');
   $('#queuePanel').classList.add('open');
+  // Lift the bar over the backdrop for as long as THIS panel is open. The class is
+  // set here and cleared in closeQueuePanel only — #queueBackdrop is shared with the
+  // big player's queue panel, so a rule keyed off the backdrop would also raise the
+  // bar over the full player.
+  $('#playerBar').classList.add('queue-open');
   store.queuePanelOpen = true;
   history.pushState({ layer: 'queuePanel' }, '');
   scrollToNowPlaying($('#queueList'));
@@ -222,6 +364,7 @@ export function openQueuePanel() {
 export function closeQueuePanel(fromPopstate) {
   if (!store.queuePanelOpen) return;
   $('#queueBackdrop').classList.remove('open');
+  $('#playerBar').classList.remove('queue-open');
   const qp = $('#queuePanel');
   qp.classList.remove('open');
   qp.style.transform = '';
@@ -231,6 +374,13 @@ export function closeQueuePanel(fromPopstate) {
 }
 
 // ── Drag & Drop Reorder ──
+// A track dropped above the one that is playing is never reached: playback only
+// ever moves forward from store.playerIndex, so the move silently drops it from
+// the set. Moving the now-playing track itself is fine — the index follows it.
+function _dropAllowed(from, to) {
+  return from === store.playerIndex || to > store.playerIndex;
+}
+
 let _dragIdx = -1;
 let _dragContainer = null; // the queue list a drag started in (queue renders into up to 3)
 function _attachDragHandlers(el) {
@@ -251,7 +401,7 @@ function _attachDragHandlers(el) {
       e.dataTransfer.dropEffect = 'move';
       const target = qi;
       const targetIdx = parseInt(target.dataset.qi);
-      if (targetIdx !== _dragIdx) {
+      if (targetIdx !== _dragIdx && _dropAllowed(_dragIdx, targetIdx)) {
         target.classList.add('qi-drag-over');
       }
     });
@@ -266,7 +416,8 @@ function _attachDragHandlers(el) {
       // both indices are still valid (the queue may have re-rendered mid-drag).
       const n = store.playerQueue.length;
       if (_dragContainer === el && _dragIdx >= 0 && _dragIdx < n
-          && toIdx >= 0 && toIdx < n && _dragIdx !== toIdx) {
+          && toIdx >= 0 && toIdx < n && _dragIdx !== toIdx
+          && _dropAllowed(_dragIdx, toIdx)) {
         _moveQueueItem(_dragIdx, toIdx);
       }
       _dragIdx = -1;
@@ -301,7 +452,8 @@ function _attachTouchReorder(el) {
           if (ev.clientY > rect.top + rect.height / 2) target = parseInt(r.dataset.qi);
         }
         const n = store.playerQueue.length;
-        target = Math.max(0, Math.min(n - 1, target));
+        const floor = fromIdx === store.playerIndex ? 0 : Math.min(store.playerIndex + 1, n - 1);
+        target = Math.max(floor, Math.min(n - 1, target));
         if (target !== toIdx) {
           rows.forEach(r => r.classList.remove('qi-drag-over'));
           toIdx = target;
@@ -319,7 +471,8 @@ function _attachTouchReorder(el) {
         row.classList.remove('qi-dragging');
         $$('.queue-item', el).forEach(r => r.classList.remove('qi-drag-over'));
         const n = store.playerQueue.length;
-        if (commit && fromIdx >= 0 && fromIdx < n && toIdx >= 0 && toIdx < n && fromIdx !== toIdx) {
+        if (commit && fromIdx >= 0 && fromIdx < n && toIdx >= 0 && toIdx < n && fromIdx !== toIdx
+            && _dropAllowed(fromIdx, toIdx)) {
           _moveQueueItem(fromIdx, toIdx);
         }
       };
@@ -385,11 +538,10 @@ export function init() {
     store.queuePanelOpen ? closeQueuePanel() : openQueuePanel();
   });
   // Save: promote current Up Next to a named playlist, then spawn a fresh Up Next.
-  $('#fpSaveQueue').addEventListener('click', async () => {
+  async function _saveQueueAsPlaylist(btn) {
     if (!store.playerQueue.length) return;
     const name = await showInputModal('Save as playlist', '', { okLabel: 'Save', placeholder: 'Playlist name' });
     if (!name || !name.trim()) return;
-    const btn = $('#fpSaveQueue');
     btn.disabled = true;
     btn.textContent = 'Saving...';
     try {
@@ -419,7 +571,7 @@ export function init() {
         // an existing name would append the whole queue to that playlist (doubling it).
         const existing = await apiJson('/api/library/playlists');
         if ((existing.playlists || []).some(p => p.name === name.trim())) {
-          showToast(`Playlist "${name.trim()}" už existuje — zvol jiný název`);
+          showToast(`Playlist "${name.trim()}" already exists — pick another name`);
           return;
         }
         await apiJson('/api/library/playlist', { method: 'POST', body: { name: name.trim() } });
@@ -449,7 +601,11 @@ export function init() {
       btn.disabled = false;
       btn.textContent = 'Save as playlist';
     }
-  });
+  }
+  for (const id of SAVE_BTN_IDS) {
+    const b = $(id);
+    if (b) b.addEventListener('click', () => _saveQueueAsPlaylist(b));
+  }
 
   // Click playlist badge: if a named playlist is active, switch back to Up Next;
   // otherwise (already in Up Next) it's a no-op. We never leave the unified model.

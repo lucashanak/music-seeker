@@ -124,11 +124,13 @@ Each device (browser/app instance) is identified by a UUID stored in `localStora
 
 **Player engine:** two engines ship side by side — `classic` (`player.js`) and `dj`
 (`player_v3.js`, adds beat-matched EQ/filter transitions). The choice is per device and
-switchable in two places: Settings, or the **Player** row at the top of the 🎛 Live DJ
-Controls drawer in the full player. Switching flushes the queue on the outgoing engine
-and reloads the page — the engine module is memoized and owns a different audio graph, so
-a reload is required. The drawer is reachable in both engines (in `classic` it shows only
-the Player row), so the switch works in both directions. Cross-module code must resolve
+switchable in two places: Settings, or the **Player** row at the top of the drawer in the
+full player. Switching flushes the queue on the outgoing engine and reloads the page — the
+engine module is memoized and owns a different audio graph, so a reload is required. The
+drawer is reachable in both engines, so the switch works in both directions, and it names
+itself after what it holds: **🎛 Live DJ Controls** under the dj engine, plain **Player**
+under `classic`, where the mixing rows are hidden and only the Player row is left. The
+button that opens it is labelled to match (`DJ controls` / `Player settings`). Cross-module code must resolve
 the engine through `getPlayerModule()` (`player_active.js`) instead of importing
 `player.js` directly, or the dj engine is silently bypassed.
 

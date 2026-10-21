@@ -3,7 +3,7 @@
 import { store } from './store.js';
 import { $, fmtTime, showToast, historyBack, setArt} from './utils.js';
 import { apiJson } from './api.js';
-import { renderQueueInto, renderQueue, openFpQueuePanel, closeFpQueuePanel, closeQueuePanel, scrollToNowPlaying } from './queue.js';
+import { renderQueueInto, renderQueue, openFpQueuePanel, closeFpQueuePanel, closeQueuePanel, scrollToNowPlaying, resetShuffleOrder } from './queue.js';
 import { toggleLike, isLiked } from './likes.js';
 import * as djPanel from './djpanel.js';
 
@@ -32,16 +32,47 @@ export function setPlayerRefs(refs) {
 // store.shuffleEnabled / store.repeatMode, so flipping the store is sufficient.
 export function toggleShuffle() {
   store.shuffleEnabled = !store.shuffleEnabled;
+  // A fresh permutation per switch-on; switching off leaves the queue order and the
+  // index already on the playing track, so there is nothing to restore.
+  resetShuffleOrder();
+  _persistModes();
   syncShuffleRepeatUI();
 }
 
 export function toggleRepeat() {
   const modes = ['off', 'all', 'one'];
   store.repeatMode = modes[(modes.indexOf(store.repeatMode) + 1) % 3];
+  _persistModes();
   syncShuffleRepeatUI();
 }
 
+// Shuffle and repeat live in `store`, which is memory only — the saved queue carries
+// neither, so both silently went back to off on every reload while the queue itself
+// came back intact. Mirror them into localStorage; they are per-device settings, the
+// same way ms_player_engine is.
+const _SHUFFLE_KEY = 'ms_shuffle';
+const _REPEAT_KEY = 'ms_repeat_mode';
+let _modesRestored = false;
+
+function _persistModes() {
+  try {
+    localStorage.setItem(_SHUFFLE_KEY, store.shuffleEnabled ? '1' : '0');
+    localStorage.setItem(_REPEAT_KEY, store.repeatMode);
+  } catch {}
+}
+
+function _restoreModes() {
+  if (_modesRestored) return;
+  _modesRestored = true;
+  try {
+    store.shuffleEnabled = localStorage.getItem(_SHUFFLE_KEY) === '1';
+    const mode = localStorage.getItem(_REPEAT_KEY);
+    if (mode === 'off' || mode === 'all' || mode === 'one') store.repeatMode = mode;
+  } catch {}
+}
+
 export function syncShuffleRepeatUI() {
+  _restoreModes();
   for (const id of ['#fpShuffle', '#playerShuffle']) {
     const b = $(id);
     if (b) b.classList.toggle('active', store.shuffleEnabled);
@@ -130,6 +161,7 @@ export function syncFullPlayer() {
   if (fpTitle) fpTitle.textContent = item.name || '';
   const fpArtist = $('#fpArtist');
   if (fpArtist) fpArtist.textContent = item.artist || '';
+  syncSourceLabel();
   const fpFill = $('#fpProgressFill');
   if (fpFill) fpFill.style.width = '0%';
   const fpCur = $('#fpTimeCurrent');
@@ -146,10 +178,29 @@ export function syncFullPlayer() {
   syncLikeUI();
 }
 
+// Where this track is playing from. The header said "NOW PLAYING" and nothing else;
+// the only context label lived in .fp-queue-side, which is hidden below 641 px, so on
+// a phone there was no way to tell a playlist from an ad-hoc queue.
+export function syncSourceLabel() {
+  const el = document.querySelector('.fp-source');
+  if (!el) return;
+  const name = store.playlistMode && store.playlistMode.name;
+  el.textContent = name ? `Playing from ${name}` : 'Now Playing';
+}
+
 // ── Open/Close Full Player ──
 export function openFullPlayer() {
   if (store.fullPlayerOpen || store.playerIndex < 0) return;
+  // The bar is now lifted over the queue backdrop (z-index 250) so it stays usable
+  // while the small panel is open — and a tap on the bar's artwork opens THIS player
+  // (201). Left alone, bar and panel would both sit on top of it: two players over
+  // each other. The panel already owns a history entry, so take it over rather than
+  // stacking a second one; one Back then closes the big player, as it does anywhere
+  // else it was opened from.
+  const inheritHistory = store.queuePanelOpen;
+  if (inheritHistory) closeQueuePanel(true);
   syncFullPlayer();
+  syncSourceLabel();
   // Update progress if already playing
   const _a = audio();
   if (_a && _a.duration) {
@@ -166,7 +217,8 @@ export function openFullPlayer() {
     renderQueueInto($('#fpQueueList'));
     scrollToNowPlaying($('#fpQueueList'));
   }
-  history.pushState({ layer: 'fullPlayer' }, '');
+  if (inheritHistory) history.replaceState({ layer: 'fullPlayer' }, '');
+  else history.pushState({ layer: 'fullPlayer' }, '');
   // Show/hide cast volume slider
   const castVol = $('#fpCastVol');
   if (castVol) castVol.style.display = store.castDevice ? '' : 'none';
@@ -189,6 +241,27 @@ export function closeFullPlayer(fromPopstate) {
   if (!fromPopstate) historyBack();
 }
 
+async function _openArtistPage(name) {
+  try {
+    const data = await apiJson(`/api/search?q=${encodeURIComponent(name)}&type=artist&limit=5`);
+    const list = data.results || [];
+    const exact = list.find(a => (a.name || '').toLowerCase() === name.toLowerCase()) || list[0];
+    if (exact && exact.id) {
+      const m = await import('./spotify.js');
+      if (m.loadArtistDetail) {
+        // #artistDetail lives inside #pageSearch — opened from another page it would
+        // be shown on a page nobody is looking at.
+        const router = await import('./router.js');
+        if (router.switchPage) router.switchPage('search');
+        m.loadArtistDetail(exact.id, 'search', exact.provider);
+        return;
+      }
+    }
+  } catch {}
+  const cm = await import('./contextmenu.js');
+  cm.openArtistByName(name);
+}
+
 // Current now-playing item (or null).
 function _currentItem() {
   return (store.playerIndex >= 0 && store.playerIndex < store.playerQueue.length)
@@ -209,10 +282,13 @@ export function init() {
     const item = _currentItem();
     if (!item || !item.artist) return;
     e.stopPropagation();
-    // Throw the user into a Search for the artist (close the full player first so
-    // the search view isn't hidden under the overlay).
+    // Straight to the artist page. A name search only puts a grid of cards in the
+    // way and makes the user recognise and click the artist they were already
+    // listening to. A queue item carries no artist id — nothing in the app does,
+    // which is why every "show artist" ends in a search — so resolve the name to
+    // one first and fall back to the search when there is no match.
     if (store.fullPlayerOpen) closeFullPlayer();
-    import('./router.js').then(m => m.searchFor(item.artist, 'artist'));
+    _openArtistPage(item.artist);
   };
   const _navAlbum = (e) => {
     const item = _currentItem();
@@ -374,6 +450,22 @@ export function init() {
       const labels = { off: 'DJ Mode off', bpm: 'DJ Mode: BPM', bpm_key: 'DJ Mode: BPM+Key' };
       djBtn.title = labels[next];
       import('./utils.js').then(m => m.showToast(labels[next]));
+    });
+  }
+
+  // Every queue row has a ⋯ menu; the track that is actually playing had none, so
+  // "start a radio from this" was unreachable from the player itself. Built here
+  // rather than in markup so it carries the same actions a queue row's kebab does.
+  const fpDownload = $('#fpDownload');
+  if (fpDownload && !$('#fpKebab')) {
+    import('./contextmenu.js').then(m => {
+      const kebab = m.makeKebabButton(() => {
+        const item = _currentItem();
+        if (!item) return null;
+        return { item, type: 'queue-track', context: { queueIndex: store.playerIndex } };
+      });
+      kebab.id = 'fpKebab';
+      fpDownload.after(kebab);
     });
   }
 
@@ -559,7 +651,11 @@ export function init() {
       const rect = fpSide.getBoundingClientRect();
       const touchY = e.touches[0].clientY;
       if (touchY < rect.top + rect.height * 0.65) return;
-      const isInteractive = e.target.closest('button, input, .fp-progress-bar');
+      // `button` is deliberately NOT in this guard: the bottom third of the player is
+      // where the controls are, so excluding buttons left the gesture dead across most
+      // of its own area. It cannot steal a tap — it only commits after 40 px of travel,
+      // and unlike the swipe-to-close guard above it never calls preventDefault.
+      const isInteractive = e.target.closest('input, .fp-progress-bar');
       if (isInteractive) return;
       qsy = touchY;
       qdy = 0;

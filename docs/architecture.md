@@ -171,6 +171,93 @@ the same truth, and would drift from the other two.
 - **Gestures** (`gestures.js`) — swipe handling for player, queue panels, touch-optimized queue reorder
 - **Router** (`router.js`) — SPA navigation with history API, support for Library tabs (Downloaded / Spotify / Podcasts / Favorites)
 
+### The queue panel is the contract for what plays next
+
+Everything the panel draws has to be what the engine will actually do. Four rules keep
+it that way; all four are in `queue.js` and shared by both engines.
+
+**Shuffle is a permutation, not a dice roll.** `shuffleNext()` walks a Fisher-Yates
+permutation of the queue indices and pushes each index it leaves onto a stack;
+`shufflePrev()` pops that stack, so Previous retraces the path the listener took rather
+than stepping one row up. The old branch picked `Math.random()` *with replacement* every
+time, so tracks repeated, a set never finished, and Up Next named a track the engine
+would not pick. `playOrder()` returns the permutation and the panel renders in it.
+
+- The order is held over the queue's **items**, not their positions, and reconciled on
+  every read: rows that left are dropped, rows that arrived are dealt into the tail,
+  everything else keeps its place. Eight places in four modules append to, splice from or
+  replace the queue, and positions shift under all of them — an order kept over positions
+  names other tracks without noticing. Reconciling on a **length** change alone was worse
+  still: one ✕ re-dealt the whole tail, so 49 of 50 rows changed place, while a drag
+  changed no length and left the order stale.
+- **`data-qi` stays the index into `store.playerQueue`.** The permutation changes the
+  order rows are emitted in, never that attribute. This is a safety rule, not a tidiness
+  one: a row's ✕ sends its index to the server as a position in the user's Navidrome
+  playlist, so a permuted value would delete a different track.
+- Shuffle keeps precedence over Smart Queue in the DJ engine. Both want to choose the
+  next track and only one can.
+
+**Autoplay goes into the queue.** When the queue runs out, the recommender's pick is
+appended to `store.playerQueue` behind an `Autoplay` divider and `playerIndex` moves onto
+it, instead of playing beside the queue as it used to — which left the panel marking the
+previous track as playing and the title bar showing something no row contained.
+
+- There is no seam inside `recommendations.js` to take the track from: `playNextRec()`
+  starts playback itself. The hand-off is marked before that call and consumed in
+  `playRecTrack`, which is where the module finally hands the track over. A pick the user
+  starts from the recommendations panel is not part of the tail, so a click on a rec row
+  or a context menu **voids** the pending hand-off — otherwise a tap landing in the
+  network round trip would pin the user's own choice behind the divider. The cancel is on
+  the click, not in `playNextRec`'s `.then()`: `getPlayerModule()` is a cached, already
+  resolved promise, so the `playRecTrack` it schedules runs *before* that promise settles.
+- The recommender's cursor survives a load for as long as the queue carries a tail
+  (`loadAndPlay` skips `stopRecPlayback`). Dropping it made the station serve its first
+  pick again on the next Next — and append it a second time.
+- The append uses `store.playerQueue.push`, **never `concat`**. `search.js` grows the live
+  queue only while the array it handed out is still the same object
+  (`store.playerQueue !== ctx`), so swapping the array in would silently switch that off.
+- The tail is capped at 20 tracks; beyond that the oldest autoplay entries are spliced off
+  and `playerIndex` shifts with them. Unbounded, the queue grows for as long as the app is
+  open and `saveQueueNow` PUTs the whole thing on every change.
+- The divider's position is remembered by object identity, not by index: `upnext.playTracks`
+  replaces the whole array, and a remembered index would point into a queue the user has
+  since started over. The queue saved to the server carries no divider, so a reload drops it.
+- Previous is queue history only. It no longer walks the recommendation list backwards —
+  with the picks in the queue, that would step outside what the panel shows. "A track is
+  playing virtually" is `_currentRecItem`, not `isPlayingRec()`: the cursor stays set all
+  through the tail, and keying on it made Previous restart the tail track instead of
+  stepping back. With shuffle on, Previous falls back to the linear step whenever the
+  shuffle history is empty — which it is right after the toggle and after every page
+  load, because the order is module memory.
+
+**The player bar stays reachable while the queue is open.** `.queue-backdrop` is
+`z-index: 249` against the bar's `99`, so the bar was visible through the blur but every
+tap on it only closed the queue. `openQueuePanel` adds `queue-open` to `#playerBar` and
+`closeQueuePanel` removes it; the class raises the bar to 250. The rule is deliberately
+**not** keyed off the backdrop — `#queueBackdrop` is shared with the queue panel inside the
+full player, and the bar must stay under that one. Because the lifted bar is now tappable,
+`openFullPlayer` closes the small panel first: bar (250) and panel (250) would otherwise
+stay on top of the full player (201) and the user would see two players at once. The panel
+already owns a history entry, so the full player takes it over with `replaceState` instead
+of stacking a second one.
+
+**Remove-from-playlist is offered only in a named playlist.** It deletes the track from the
+Navidrome playlist, not just from the queue, and it sits one glyph away from Add. In Up
+Next — the implicit queue every ad-hoc session runs in — that distinction means nothing to
+the user, so the button is hidden there. Where it does show, it has its own glyph and a red
+hover: a tooltip is no warning on a touch device.
+
+Two smaller invariants in the same area:
+
+- **Shuffle and repeat are per-device settings**, mirrored into `ms_shuffle` and
+  `ms_repeat_mode`. They live in `store`, which is memory only, and the saved queue carries
+  neither — so both silently reverted to off on every reload while the queue came back intact.
+- **Below 640 px a queue row hides its tempo badge and its ✕.** The row carries a 36 px
+  thumbnail and five controls and leaves `.qi-info` about 150 px, which truncates two
+  different tracks to the same string. The kebab removes as well; the elements stay in the DOM.
+- **A track cannot be dropped above the one playing.** Playback only moves forward from
+  `playerIndex`, so such a move drops the track from the set without saying so.
+
 ## Native Apps (Tauri)
 
 - **macOS**: WebView wrapper with native menu (reload, cache clear)

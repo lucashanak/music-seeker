@@ -222,12 +222,27 @@ export function refreshDjPanelVisibility() {
 
 // Show the dj-only mixing controls only when the DJ engine is active; in classic
 // the panel shows just the Player selector.
+//
+// The drawer is kept in classic on purpose — it is the only way from the classic
+// engine into DJ without a detour through Settings. What it is NOT in classic is
+// "DJ controls": the heading and the button both say so, or the user opens a drawer
+// promising a mixing desk and finds a single dropdown.
 function _applyPanelMode() {
   const isDj = _isDjEngine();
   const rows = $('#fpDjOnlyRows');
   if (rows) rows.style.display = isDj ? '' : 'none';
   const more = $('#fpDjMoreSettings');
   if (more) more.style.display = isDj ? '' : 'none';
+  const title = $('#fpDjPanelTitle');
+  if (title) title.textContent = isDj ? '🎛 Live DJ Controls' : 'Player';
+  const btn = $('#fpDjPanelBtn');
+  if (btn) {
+    const label = isDj ? 'DJ controls' : 'Player settings';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+  }
+  const panel = $('#fpDjPanel');
+  if (panel) panel.setAttribute('aria-label', isDj ? 'DJ quick controls' : 'Player settings');
 }
 
 export function init() {

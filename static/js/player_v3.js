@@ -5,7 +5,7 @@ import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { renderQueue } from './queue.js';
+import { renderQueue, shuffleNext, shufflePrev, resetShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, abortStale, keyFor as prefetchKey, resumePrefetch, streamQuality } from './prefetch.js';
 import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration } from './djmix.js';
@@ -794,6 +794,7 @@ export function playTrack(item) {
   store.playerQueue = [item];
   store.playerIndex = 0;
   resetSmartQueuePlayed();
+  resetShuffleOrder();
   loadAndPlay();
 }
 
@@ -828,14 +829,21 @@ export function addToQueue(items, playNow = false) {
 // including a synchronous throw — so an exception can never permanently wedge
 // _advanceInFlight (which would silently block all future track advances).
 export async function loadAndPlay() {
+  // The recommender's cursor is what picks the NEXT autoplay track, so stopping it
+  // here would make the station serve its first pick again — and append it to the
+  // queue a second time. It stays alive for as long as the queue still carries an
+  // autoplay tail, which covers the append itself, Previous back along the tail and
+  // a jump to a row above the divider; replacing or clearing the queue ends it.
+  const keepRec = _keepRecCursor || autoplayStart() >= 0;
+  _keepRecCursor = false;
   try {
-    return await _loadAndPlayImpl();
+    return await _loadAndPlayImpl(keepRec);
   } finally {
     _advanceInFlight = false;
   }
 }
 
-async function _loadAndPlayImpl() {
+async function _loadAndPlayImpl(keepRec) {
   if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) {
     return;
   }
@@ -857,7 +865,7 @@ async function _loadAndPlayImpl() {
   const endedBlend = _endedBlend; // Fix 4: consume the one-shot blend-on-ended request
   _endedBlend = false;
   // Stop any virtual rec playback — we're back in the real queue
-  import('./recommendations.js').then(m => m.stopRecPlayback());
+  if (!keepRec) import('./recommendations.js').then(m => m.stopRecPlayback());
   _currentRecItem = null; // clear stale rec so "Add to playlist" targets the queue track
   const item = store.playerQueue[store.playerIndex];
   setArt($('#playerImg'), item.image);
@@ -1131,8 +1139,11 @@ export function updatePlaylistBadge() {
     if (store.playlistMode) { badge.textContent = store.playlistMode.name; badge.style.display = ''; }
     else badge.style.display = 'none';
   }
-  // Show/hide remove-from-playlist buttons
-  const show = store.playlistMode ? '' : 'none';
+  // "Remove from playlist" deletes the track from the Navidrome playlist, not just
+  // from the queue. In Up Next — the implicit, unnamed queue every ad-hoc session
+  // runs in — that distinction means nothing to the user, while the button sits
+  // one glyph away from "Add to playlist". Offer it only in a named playlist.
+  const show = (store.playlistMode && store.playlistMode.name !== 'Up Next') ? '' : 'none';
   const rm1 = $('#playerRemoveFromPlaylist');
   const rm2 = $('#fpRemoveFromPlaylist');
   if (rm1) rm1.style.display = show;
@@ -1220,9 +1231,12 @@ export function nextTrack(opts = {}) {
   if (store.castDevice) {
     cast.markCastTransition();
   }
-  // If playing a virtual rec track, advance to next rec (both local and cast)
+  // A track played VIRTUALLY — outside the queue, which now means only a pick the
+  // user started in the recommendations panel — advances along that list. The test
+  // is _currentRecItem, not isPlayingRec(): the recommender's cursor stays set while
+  // the autoplay tail plays, and those rows are ordinary queue rows.
   import('./recommendations.js').then(m => {
-    if (m.isPlayingRec()) {
+    if (_currentRecItem) {
       // Rec advance does not go through loadAndPlay — release the latch here.
       _advanceInFlight = false;
       m.playNextRec().then(filled => {
@@ -1240,9 +1254,16 @@ export function nextTrack(opts = {}) {
 }
 
 function _nextTrackInQueue() {
+  // Shuffle still takes precedence over Smart Queue — the user asked for random order
+  // explicitly, and the two cannot both pick the next track.
   if (store.shuffleEnabled && store.playerQueue.length > 1) {
-    let next;
-    do { next = Math.floor(Math.random() * store.playerQueue.length); } while (next === store.playerIndex);
+    let next = shuffleNext();
+    if (next == null && store.repeatMode === 'all') {
+      // Permutation exhausted and repeat-all is on: deal a fresh one.
+      resetShuffleOrder();
+      next = shuffleNext();
+    }
+    if (next == null) { _nextTrackTerminal(); return; }
     store.playerIndex = next;
     loadAndPlay();
   } else if (_djSetting('smart_queue', 'off') !== 'off' || store.playerIndex < store.playerQueue.length - 1) {
@@ -1361,22 +1382,97 @@ function _nextTrackTerminal() {
       _crossfadeTriggered = false; // M4: no advance occurred — re-arm trigger
     }
   } else {
-    // Queue ended — continue with virtual recommendations
-    _advanceInFlight = false; // rec advance does not go through loadAndPlay
-    import('./recommendations.js').then(m => {
-      m.playNextRec().then(filled => {
-        if (!filled) {
-          _activeDeckEl().pause();
-          updatePlayPauseIcon(false);
-        }
-      });
-    });
+    _advanceInFlight = false; // the autofill reaches loadAndPlay through playRecTrack
+    _autofillFromRecs();
   }
+}
+
+// ── Autoplay: the recommender keeps the queue going when it runs out ──
+// The recommender used to play its pick OUTSIDE the queue: the panel still marked
+// the previous track as playing, the title bar showed something no row contained,
+// and Next on the last track looked like it did nothing at all. The pick now goes
+// INTO the queue, behind an "Autoplay" divider, so what plays is what the panel says.
+//
+// There is no seam inside recommendations.js to take the track from — playNextRec()
+// starts playback itself — so the hand-off is marked here and consumed in
+// playRecTrack, which is where that module finally hands the track over.
+const AUTOPLAY_MAX = 20;
+let _autofillPending = false;
+let _keepRecCursor = false;
+
+function _autofillFromRecs() {
+  _autofillPending = true;
+  import('./recommendations.js').then(m => {
+    m.playNextRec().then(filled => {
+      if (!filled) {
+        // Nothing came back, so playRecTrack never ran and the hand-off is moot.
+        _autofillPending = false;
+        showToast('No more recommendations for this queue');
+        _activeDeckEl().pause();
+        updatePlayPauseIcon(false);
+      }
+    });
+  }).catch(() => { _autofillPending = false; });
+}
+
+// True exactly once per _autofillFromRecs, for the playRecTrack call it triggered —
+// a pick the user starts by hand in the panel is not part of the autoplay tail.
+// Deliberately not time-boxed: the recommender's first load is a network round trip
+// whose length is not ours to guess, and a guessed deadline turns the append into a
+// coin toss. The flag is cleared either here or on the empty-result path, and those
+// are the only two ways out of playNextRec.
+function _takeAutofill() {
+  if (!_autofillPending) return false;
+  _autofillPending = false;
+  return true;
+}
+
+// The hand-off has to be bound to its caller, and playRecTrack cannot see who called
+// it. Between _autofillFromRecs and the delivered track lies a network round trip; a
+// row the user taps in the panel in that window reaches playRecTrack FIRST and would
+// be the one pinned behind the "Autoplay" divider. So a user-started recommendation
+// voids the hand-off: the automatic pick then plays virtually, as it did before, and
+// nothing the user chose is written into their queue.
+//
+// It is cancelled on the click rather than set from playNextRec's own .then(), which
+// is a tick too late — getPlayerModule() is a cached, already-resolved promise, so
+// the playRecTrack it schedules runs BEFORE playNextRec's promise resolves.
+// Capture phase, document level: recommendations.js owns those rows and this batch
+// may not edit it.
+document.addEventListener('click', (e) => {
+  if (!_autofillPending) return;
+  const t = e.target;
+  if (t && t.closest && t.closest('.rec-item, .ctx-menu')) _autofillPending = false;
+}, true);
+
+function _appendAutoplay(item) {
+  // push, never concat: search.js grows the live queue only while the array it
+  // handed out is still the same object (`store.playerQueue !== ctx`), so swapping
+  // the array in would silently switch that off.
+  markAutoplayStart(item);
+  store.playerQueue.push(item);
+  store.playerIndex = store.playerQueue.length - 1;
+  const start = autoplayStart();
+  if (start >= 0) {
+    // Cap the tail. Unbounded, the queue grows for as long as the app is open and
+    // saveQueueNow PUTs the whole thing to the server on every change.
+    const over = store.playerQueue.length - start - AUTOPLAY_MAX;
+    if (over > 0) {
+      store.playerQueue.splice(start, over);
+      store.playerIndex -= over;
+      setAutoplayStartIndex(start);
+    }
+  }
+  _keepRecCursor = true;
+  loadAndPlay();
+  renderQueue();
+  saveQueueDebounced();
 }
 
 // ── Play a track from recommendations (virtual, not in queue) ──
 let _currentRecItem = null;
 export async function playRecTrack(item) {
+  if (_takeAutofill() && !store.remoteTarget) { _appendAutoplay(item); return; }
   if (store.remoteTarget) {
     store.playerQueue = store.playerQueue.concat([item]);
     store.playerIndex = store.playerQueue.length - 1;
@@ -1478,33 +1574,47 @@ export function prevTrack() {
   if (store.castDevice) {
     cast.markCastTransition();
   }
-  // If playing a virtual rec track, go to previous rec or back to queue
-  import('./recommendations.js').then(m => {
-    if (m.isPlayingRec()) {
-      const went = m.playPrevRec();
-      if (!went && store.playerIndex >= 0) {
-        // Back to last track in queue — loadAndPlay's finally releases the latch.
-        loadAndPlay();
-      } else {
-        // playPrevRec advanced without loadAndPlay (or nothing to do) — release the latch.
-        _advanceInFlight = false;
-      }
-      return;
-    }
-    // Normal queue navigation
-    if (!store.castDevice && _activeDeckEl().currentTime > 3) {
-      _activeDeckEl().currentTime = 0;
-      _advanceInFlight = false; // seek-to-start, no loadAndPlay — release latch
-    } else if (store.playerIndex > 0) {
-      store.playerIndex--;
+  // Previous is queue history, nothing else. Autoplay picks land in the queue now,
+  // so walking the recommendation list backwards would step outside what the panel
+  // shows — and it never matched where the user came from anyway.
+  //
+  // Only a track playing VIRTUALLY has no row behind it; for that one Previous drops
+  // back to the queue. Keyed on _currentRecItem, not on the recommender's cursor:
+  // the cursor is still set all through the autoplay tail, and keying on it made
+  // Previous restart the tail track instead of stepping back — and, because that
+  // reload cleared the cursor, the next Next served the same pick again and appended
+  // it to the queue a second time.
+  if (_currentRecItem) {
+    if (store.playerIndex >= 0) {
       loadAndPlay(); // finally releases the latch
     } else {
-      _advanceInFlight = false; // at first track, nothing advanced — release latch
+      _advanceInFlight = false;
     }
-  }).catch(() => {
-    // Import failed — loadAndPlay never ran; release the latch so future advances aren't wedged.
-    _advanceInFlight = false;
-  });
+    return;
+  }
+  // Normal queue navigation
+  if (!store.castDevice && _activeDeckEl().currentTime > 3) {
+    _activeDeckEl().currentTime = 0;
+    _advanceInFlight = false; // seek-to-start, no loadAndPlay — release latch
+    return;
+  }
+  if (store.shuffleEnabled && store.playerQueue.length > 1) {
+    const prev = shufflePrev();
+    if (prev != null) {
+      store.playerIndex = prev;
+      loadAndPlay(); // finally releases the latch
+      return;
+    }
+    // No history to walk back: right after switching shuffle on, and after every
+    // page load, because the order is module memory. Fall through to the linear
+    // Previous rather than being a dead button.
+  }
+  if (store.playerIndex > 0) {
+    store.playerIndex--;
+    loadAndPlay(); // finally releases the latch
+  } else {
+    _advanceInFlight = false; // at first track, nothing advanced — release latch
+  }
 }
 
 // ── Play/Pause Icon ──
