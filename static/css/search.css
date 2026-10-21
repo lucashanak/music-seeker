@@ -256,6 +256,17 @@
   .song-list-numbered .song-row { gap: 8px; }
   .song-list-numbered .song-row .like-btn,
   .song-list-numbered .song-row .bpm-badge { display: none; }
+  /* A library playlist row carries three more controls than any other list —
+     bulk select, remove and the reorder handle — which together left the title
+     about 42px wide on a 390px screen ("Inst…"). Removing a track stays in the
+     ⋮ menu; reordering and bulk-select are desktop-only here, as they are on
+     Spotify's phone app. */
+  #libraryTracks .song-row .lib-bulk-cb,
+  #libraryTracks .song-row .card-drag-handle,
+  #libraryTracks .song-row .lib-track-remove { display: none; }
+  /* A playlist row shows both a number and its cover; on a phone the cover is
+     the useful half, and Spotify's mobile playlist row has no numbers at all. */
+  .song-list-art .song-row .song-num { display: none; }
 }
 
 /* ── Playlist import banner (search page) ──

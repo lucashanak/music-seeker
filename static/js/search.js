@@ -705,7 +705,7 @@ export function renderSongRows(tracks, sink, opts = {}) {
   // page at a time, but playing row 3 should queue every row on screen, not the
   // twenty that happened to arrive together).
   const list = document.createElement('div');
-  list.className = 'song-list' + (opts.numbered ? ' song-list-numbered' : '');
+  list.className = 'song-list' + (opts.numbered ? ' song-list-numbered' : '') + (opts.withArt ? ' song-list-art' : '');
   tracks.forEach((item, idx) => {
     // `.card` class lets the event-delegated .card-play-btn handler (player_v3.js)
     // find this row via btn.closest('.card'); CSS re-styles it as a flat row.

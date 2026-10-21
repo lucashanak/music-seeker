@@ -71,10 +71,11 @@
   .card.in-library .like-btn { right: 84px; }
   /* In queue rows the heart sits inline, before the kebab. */
   .queue-item .like-btn:hover { background: rgba(255,255,255,.06); border-radius: 50%; }
-  /* Library-detail cards: bottom-right is the play button, top-right is remove,
-     mid-right is the kebab — so sit the heart on the mid-right edge just left of
-     the kebab (kebab is right:8, heart right:52), clear of play/remove/download. */
-  #libraryTracks .card .like-btn { top: 50%; bottom: auto; right: 52px; transform: translateY(-50%); }
+  /* Library-detail tracks are flat rows now, where the heart is just another
+     item in the row's trailing cluster. This rule dates from the card grid and
+     left the heart floating 16px above its own row, so it only applies to a
+     card that is not a row. */
+  #libraryTracks .card:not(.song-row) .like-btn { top: 50%; bottom: auto; right: 52px; transform: translateY(-50%); }
   /* ── Recent searches (chips shown when the input is focused & empty) ── */
   .recent-searches { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
   .recent-chip {
