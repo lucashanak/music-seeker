@@ -6,8 +6,9 @@
 // downloaded into an auto-created "Party <date>" playlist. Session is persisted
 // to localStorage so an accidental reload / screen-off doesn't lose the finds.
 
-import { $, showToast, escAttr } from './utils.js';
+import { $, showToast, escAttr, historyBack } from './utils.js';
 import { apiFetch, apiJson } from './api.js';
+import { store } from './store.js';
 
 const SESSION_KEY = 'ms_party_session';
 // 12s per clip: the server fingerprints up to _SEGMENT_SECONDS (12) of what it
@@ -347,7 +348,7 @@ function buildOverlay() {
       <div id="partyHint" style="font-size:11px;color:var(--text-muted);padding:0 18px 8px;"></div>
       <div id="partyList" style="flex:1;overflow-y:auto;padding:6px 12px;display:flex;flex-direction:column;gap:4px;"></div>
       <div style="display:flex;gap:8px;padding:12px 18px;border-top:1px solid var(--border);">
-        <button id="partySave" style="flex:1;padding:11px;border:none;border-radius:11px;background:var(--accent);color:#000;font-size:13px;font-weight:700;cursor:pointer;" disabled>Save to playlist</button>
+        <button id="partySave" style="flex:1;padding:11px;border:none;border-radius:11px;font-size:13px;font-weight:700;cursor:pointer;" disabled>Save to playlist</button>
         <button id="partyClear" style="padding:11px 14px;border:1px solid var(--border);border-radius:11px;background:none;color:var(--text-muted);font-size:13px;cursor:pointer;">Clear</button>
       </div>
     </div>`;
@@ -368,17 +369,23 @@ function buildOverlay() {
     #partyOverlay .party-title{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     #partyOverlay .party-artist{font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     #partyOverlay .party-src{font-size:10px;color:var(--text-muted);opacity:.7;flex-shrink:0;}
-    #partyOverlay .party-empty{color:var(--text-muted);font-size:13px;text-align:center;padding:32px 12px;}`;
+    #partyOverlay .party-empty{color:var(--text-muted);font-size:13px;text-align:center;padding:32px 12px;}
+    /* Colours live here, not inline: an inline background cannot be overridden
+       by :disabled, so the button sat there in full accent green while it was
+       refusing every click. */
+    #partyOverlay #partySave{background:var(--accent);color:#000;}
+    #partyOverlay #partySave:disabled{background:var(--bg-elevated);color:var(--text-muted);cursor:not-allowed;}`;
   document.head.appendChild(st);
 
   $('#partyToggle').addEventListener('click', () => { active ? stopParty() : startParty(); });
   $('#partySave').addEventListener('click', saveKeepers);
   $('#partyClear').addEventListener('click', clearSession);
-  $('#partyClose').addEventListener('click', closeParty);
+  $('#partyClose').addEventListener('click', () => closeParty());
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeParty(); });
 }
 
 function openParty() {
+  if (store.partyOpen) return;  // a second open would stack a second history entry
   if (!overlay) buildOverlay();
   // Decided on every open, not at build time: the native bridge is injected a few
   // hundred ms after load, so a hint fixed at build time could claim the wrong thing.
@@ -390,6 +397,10 @@ function openParty() {
   }
   loadSession();
   overlay.style.display = 'flex';
+  store.partyOpen = true;
+  // Own history entry, so hardware Back closes this overlay instead of
+  // navigating the page behind it — the same contract as the queue panel.
+  history.pushState({ layer: 'party' }, '');
   renderList();
   setStatus(active ? 'Listening…' : (session.length ? 'Review your finds, or resume.' : 'Idle'), active);
 }
@@ -397,8 +408,12 @@ function openParty() {
 // Closing the panel does NOT stop an active session (so it keeps listening in
 // the background tab if the OS allows) — but on mobile that's unreliable, so we
 // leave the choice to the user via the Stop button; here we just hide the UI.
-function closeParty() {
+export function closeParty(fromPopstate) {
+  if (!store.partyOpen) return;
   if (overlay) overlay.style.display = 'none';
+  store.partyOpen = false;
+  // On a Back press the browser has already popped our entry.
+  if (!fromPopstate) historyBack();
 }
 
 export function init() {

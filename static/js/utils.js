@@ -85,7 +85,10 @@ export function showToast(msg, isError = false, opts = {}) {
     toast.id = 'toastMsg';
     toast.setAttribute('aria-live', 'polite');
     toast.setAttribute('role', 'status');
-    toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:20px;font-size:13px;z-index:999;opacity:0;transition:opacity .3s;';
+    // Geometry (including how far above the bottom nav and the player bar it
+    // sits) is in toast.css — a fixed inline offset cannot react to either bar.
+    // Only the fade is written here, because it is toggled per message.
+    toast.style.opacity = '0';
     document.body.appendChild(toast);
   }
   // Honor the error flag with a distinct (red) style; default is the neutral elevated style.
@@ -139,6 +142,39 @@ export function historyBack() {
   history.back();
 }
 
+// ── Dialog layers ──
+// Every full-screen dialog pushes a history entry, so hardware Back closes the
+// dialog instead of navigating the page underneath it, and registers the one
+// path that closes it *and settles the Promise its caller is awaiting*. The
+// router only ever reads the top of this stack: document order is the opposite
+// of what Back needs — querySelector returns the oldest overlay, which with a
+// picker underneath a nested input modal is the wrong one.
+// The stack is created here because these helpers are its only writers.
+const dialogStack = store.dialogStack || (store.dialogStack = []);
+
+// True while a dialog of this kind is already up. Opening a second copy would
+// push a second history entry over a modal nobody can see behind the first.
+export function dialogOpen(kind) {
+  return dialogStack.some(d => d.kind === kind);
+}
+
+function pushDialog(entry) {
+  dialogStack.push(entry);
+  history.pushState({ layer: 'dialog' }, '');
+}
+
+// Returns false when the entry is already gone, which is what makes every close
+// path idempotent: a dialog that resolved once must not resolve again.
+function popDialog(entry, fromPopstate) {
+  const i = dialogStack.lastIndexOf(entry);
+  if (i === -1) return false;
+  dialogStack.splice(i, 1);
+  // On a Back press the entry is already popped by the browser; calling back()
+  // again here would eat a second level of history.
+  if (!fromPopstate) historyBack();
+  return true;
+}
+
 // ── Focus without popping the on-screen keyboard on touch devices ──
 // Calling .focus() on an <input>/<textarea> raises the virtual keyboard. That's
 // jarring on a phone/tablet when it happens on its own — on load, on navigating to
@@ -175,6 +211,7 @@ export function initVirtualKeyboard() {
 
 // ── Playlist Picker Modal ──
 export function showPlaylistPicker(playlists, { multi = true } = {}) {
+  if (dialogOpen('playlistPicker')) return Promise.resolve(multi ? [] : null);
   return new Promise((resolve) => {
     const selected = new Set();
     // Zero playlists is a supported state: the "+ New playlist" row is the whole
@@ -214,6 +251,19 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
 
     const addBtn = modal.querySelector('.pl-pick-add');
 
+    // Until this existed the picker closed itself with three copies of
+    // `overlay.remove(); resolve(...)` and had no Escape key at all, so there
+    // was nothing for the Back handler to call that would settle the Promise.
+    const done = (val, fromPopstate) => {
+      if (!popDialog(entry, fromPopstate)) return;
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(val);
+    };
+    const entry = { kind: 'playlistPicker', cancel: (fromPopstate) => done(multi ? [] : null, fromPopstate) };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(multi ? [] : null); } };
+    document.addEventListener('keydown', onKey);
+
     // "+ New playlist" row — create-and-pick-immediately in both modes. A
     // cancelled name modal keeps the picker open; a successful create closes it
     // and resolves with the fresh playlist (object in single mode, array of one
@@ -226,8 +276,7 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
       try {
         const res = await apiJson('/api/library/playlist', { method: 'POST', body: { name } });
         const newPl = { id: res && res.id, name, songCount: 0 };
-        overlay.remove();
-        resolve(multi ? [newPl] : newPl);
+        done(multi ? [newPl] : newPl);
       } catch (err) {
         showToast(err.message || 'Failed to create playlist');
       }
@@ -243,22 +292,19 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
         });
       });
       if (addBtn) addBtn.addEventListener('click', () => {
-        overlay.remove();
-        resolve([...selected].map(i => playlists[i]));
+        done([...selected].map(i => playlists[i]));
       });
     }
 
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay || e.target.closest('.pl-pick-cancel')) {
-        overlay.remove();
-        resolve(multi ? [] : null);
+        done(multi ? [] : null);
       }
       // Single-select fallback (non-multi mode)
       if (!multi) {
         const btn = e.target.closest('.pl-pick-btn');
         if (btn) {
-          overlay.remove();
-          resolve(playlists[parseInt(btn.dataset.plIdx)]);
+          done(playlists[parseInt(btn.dataset.plIdx)]);
         }
       }
     });
@@ -267,6 +313,7 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
       b.addEventListener('mouseenter', () => b.style.background = 'rgba(255,255,255,.06)');
       b.addEventListener('mouseleave', () => b.style.background = 'none');
     });
+    pushDialog(entry);
   });
 }
 
@@ -274,6 +321,7 @@ export function showPlaylistPicker(playlists, { multi = true } = {}) {
 // browsers suppress after repeated dialogs ("don't allow this site to prompt").
 // Resolves to the trimmed string, or null on cancel / empty.
 export function showInputModal(title, defaultValue = '', { okLabel = 'OK', placeholder = '' } = {}) {
+  if (dialogOpen('input')) return Promise.resolve(null);
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay open';
@@ -291,7 +339,13 @@ export function showInputModal(title, defaultValue = '', { okLabel = 'OK', place
     document.body.appendChild(overlay);
     const input = modal.querySelector('.input-modal-field');
     input.value = defaultValue || '';
-    const done = (val) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(val); };
+    const done = (val, fromPopstate) => {
+      if (!popDialog(entry, fromPopstate)) return;
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(val);
+    };
+    const entry = { kind: 'input', cancel: (fromPopstate) => done(null, fromPopstate) };
     const submit = () => { const v = input.value.trim(); done(v || null); };
     const onKey = (e) => {
       if (e.key === 'Enter') { e.preventDefault(); submit(); }
@@ -301,6 +355,7 @@ export function showInputModal(title, defaultValue = '', { okLabel = 'OK', place
     modal.querySelector('.input-modal-ok').addEventListener('click', submit);
     modal.querySelector('.input-modal-cancel').addEventListener('click', () => done(null));
     overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+    pushDialog(entry);
     setTimeout(() => autoFocus(input, { select: true }), 30);
   });
 }
@@ -309,6 +364,7 @@ export function showInputModal(title, defaultValue = '', { okLabel = 'OK', place
 // { name, description } (description may be ""), or null on cancel / empty name.
 // Enter in the name field submits; the textarea keeps normal newline behavior.
 export function showPlaylistFormModal({ title = 'Playlist', name = '', description = '', okLabel = 'Save' } = {}) {
+  if (dialogOpen('playlistForm')) return Promise.resolve(null);
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay open';
@@ -329,7 +385,13 @@ export function showPlaylistFormModal({ title = 'Playlist', name = '', descripti
     const descEl = modal.querySelector('.pl-form-desc');
     nameEl.value = name || '';
     descEl.value = description || '';
-    const done = (val) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(val); };
+    const done = (val, fromPopstate) => {
+      if (!popDialog(entry, fromPopstate)) return;
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(val);
+    };
+    const entry = { kind: 'playlistForm', cancel: (fromPopstate) => done(null, fromPopstate) };
     const submit = () => {
       const n = nameEl.value.trim();
       if (!n) { autoFocus(nameEl); return; } // name is required — keep the modal open
@@ -343,6 +405,7 @@ export function showPlaylistFormModal({ title = 'Playlist', name = '', descripti
     modal.querySelector('.pl-form-ok').addEventListener('click', submit);
     modal.querySelector('.pl-form-cancel').addEventListener('click', () => done(null));
     overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+    pushDialog(entry);
     setTimeout(() => autoFocus(nameEl, { select: true }), 30);
   });
 }
@@ -350,6 +413,7 @@ export function showPlaylistFormModal({ title = 'Playlist', name = '', descripti
 // Confirmation modal — replaces window.confirm(). Resolves true (OK) / false
 // (cancel/escape/backdrop). The OK button uses the danger (red) style by default.
 export function showConfirmModal(title, message = '', { okLabel = 'Delete', danger = true } = {}) {
+  if (dialogOpen('confirm')) return Promise.resolve(false);
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay open';
@@ -367,15 +431,25 @@ export function showConfirmModal(title, message = '', { okLabel = 'Delete', dang
       </div>`;
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
-    const done = (val) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(val); };
+    const done = (val, fromPopstate) => {
+      if (!popDialog(entry, fromPopstate)) return;
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(val);
+    };
+    const entry = { kind: 'confirm', cancel: (fromPopstate) => done(false, fromPopstate) };
+    // A danger confirm is the one dialog with no undo behind it (deleting a
+    // playlist), so neither the resting focus nor a stray Enter may be the
+    // destructive answer. The harmless dialogs keep Enter as OK.
     const onKey = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); done(false); }
-      else if (e.key === 'Enter') { e.preventDefault(); done(true); }
+      else if (e.key === 'Enter') { e.preventDefault(); done(!danger); }
     };
     document.addEventListener('keydown', onKey);
     modal.querySelector('.confirm-ok').addEventListener('click', () => done(true));
     modal.querySelector('.confirm-cancel').addEventListener('click', () => done(false));
     overlay.addEventListener('click', (e) => { if (e.target === overlay) done(false); });
-    setTimeout(() => { modal.querySelector('.confirm-ok').focus(); }, 30);
+    pushDialog(entry);
+    setTimeout(() => { modal.querySelector(danger ? '.confirm-cancel' : '.confirm-ok').focus(); }, 30);
   });
 }

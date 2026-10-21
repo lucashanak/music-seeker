@@ -10,7 +10,10 @@
   color: var(--text-muted); display: flex; align-items: center; justify-content: center;
   cursor: pointer; transition: var(--transition);
   box-shadow: 0 4px 16px rgba(0,0,0,.4);
-  opacity: .55;
+  /* .55 left it reading as disabled while it sat on top of real content (the
+     empty library state, the first card on a tag page). Resting opacity now
+     says "this is a live control"; hover/focus still lifts it to full. */
+  opacity: .85;
 }
 #feedbackFab:hover, #feedbackFab:focus-visible {
   opacity: 1; color: var(--accent); border-color: var(--accent); transform: translateY(-1px);

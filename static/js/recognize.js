@@ -86,6 +86,21 @@ async function requestMicStream() {
 // The backend now classifies recognize failures instead of a flat 404;
 // prefer its `detail` message (already tuned per status) and only fall back
 // to a generic explanation if it's missing.
+// getUserMedia rejects with DOMException names, whose .message is written for a
+// developer ("Permission denied", "Requested device not found"). The two the
+// user can act on get a sentence that says what to do; anything else keeps the
+// browser's own text, which is more informative than a guess would be.
+function micErrorMessage(e) {
+  const name = e && e.name;
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return "Microphone blocked — allow it in your browser's site settings";
+  }
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+    return 'No microphone found';
+  }
+  return (e && e.message) || 'unknown error';
+}
+
 function classifyRecognizeError(status, detail) {
   if (detail) return detail;
   if (status === 404) return "No match. Shazam mostly knows commercially released recordings — covers, live versions and instrumentals often aren't in it.";
@@ -169,7 +184,7 @@ export function init() {
       ]);
     } catch (e) {
       resetMic();
-      micLog('Mic error: ' + e.message);
+      micLog('Mic error: ' + micErrorMessage(e));
       return;
     }
 
@@ -367,7 +382,7 @@ export function init() {
       }, 12000);
     } catch (e) {
       resetMic();
-      micLog('Mic error: ' + e.message);
+      micLog('Mic error: ' + micErrorMessage(e));
       return;
     }
   });

@@ -4,7 +4,7 @@
 
 import { store } from './store.js';
 import { apiJson } from './api.js';
-import { $, showToast, autoFocus } from './utils.js';
+import { $, showToast, autoFocus, dialogOpen, historyBack } from './utils.js';
 
 let _lastScreenshot = ''; // data:image/jpeg;base64,... or '' if capture failed/unchecked
 let _busy = false; // re-entrancy guard — capture can take seconds; ignore taps while in flight
@@ -136,6 +136,7 @@ function _downscaleToJpeg(canvas, maxWidth, maxHeight, quality) {
 
 // ── Modal ──
 function _openModal({ captureFailed = false } = {}) {
+  if (dialogOpen('feedback')) return;  // one report form at a time, one history entry
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay open';
   // position/inset/display/align-items/justify-content/backdrop-filter all
@@ -212,7 +213,20 @@ function _openModal({ captureFailed = false } = {}) {
     btn.addEventListener('click', () => setKind(btn.dataset.kind));
   });
 
-  const done = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
+  // Registered on the shared dialog stack so hardware Back closes this form
+  // instead of navigating the page it was reporting about.
+  const done = (fromPopstate) => {
+    const stack = store.dialogStack || [];
+    const i = stack.lastIndexOf(entry);
+    if (i === -1) return;
+    stack.splice(i, 1);
+    if (!fromPopstate) historyBack();
+    document.removeEventListener('keydown', onKey);
+    overlay.remove();
+  };
+  const entry = { kind: 'feedback', cancel: (fromPopstate) => done(fromPopstate) };
+  (store.dialogStack || (store.dialogStack = [])).push(entry);
+  history.pushState({ layer: 'dialog' }, '');
   const onKey = (e) => {
     if (e.key === 'Escape') { e.preventDefault(); done(); }
     else if (e.key === 'Enter' && e.target === titleEl) { e.preventDefault(); submit(); }
@@ -259,7 +273,7 @@ function _openModal({ captureFailed = false } = {}) {
   }
 
   submitBtn.addEventListener('click', submit);
-  modal.querySelector('.fb-cancel').addEventListener('click', done);
+  modal.querySelector('.fb-cancel').addEventListener('click', () => done());
   overlay.addEventListener('click', (e) => { if (e.target === overlay) done(); });
   setTimeout(() => autoFocus(titleEl), 30);
 }

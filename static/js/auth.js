@@ -39,16 +39,34 @@ export async function checkVersion() {
 }
 
 // ── Logout ──
-export function logout() {
+// Everything here that belongs to the person signing out. ms_device_id,
+// ms_player_engine and ms_dj_* describe the device, not the account, so they
+// stay — the next person to sign in on this phone keeps its own settings.
+const USER_KEYS = ['ms_token', 'ms_party_session', 'ms_recs_feedback_v1'];
+const USER_KEY_PREFIXES = ['ms_recent_searches'];
+
+export async function logout() {
+  // The queue is written on a debounce, so without this flush the last seconds
+  // of listening would be saved under whoever signs in next. It has to happen
+  // while currentUser is still set — that is who the save is attributed to.
+  try { await getPlayerModule().then(m => m.flushQueue && m.flushQueue()); } catch {}
   store.authToken = '';
   store.currentUser = null;
   store.streamToken = null;
-  localStorage.removeItem('ms_token');
-  $('#appContainer').style.display = 'none';
-  $('#loginScreen').style.display = '';
   if (store.jobsInterval) clearInterval(store.jobsInterval);
   if (store.streamTokenInterval) { clearInterval(store.streamTokenInterval); store.streamTokenInterval = null; }
   try { stopRemote(); } catch {}
+  try {
+    Object.keys(localStorage).forEach(k => {
+      if (USER_KEYS.includes(k) || USER_KEY_PREFIXES.some(pre => k.startsWith(pre))) localStorage.removeItem(k);
+    });
+  } catch {}
+  // Reload rather than hide the app: just swapping the screens left the audio
+  // playing, the system notification showing the signed-out user's track, and
+  // every module holding its own copy of their state. A fresh document is the
+  // only teardown that cannot be forgotten.
+  const appVer = (() => { try { return localStorage.getItem('app_installed_version'); } catch { return null; } })();
+  location.href = '/' + (appVer ? '?app_version=' + encodeURIComponent(appVer) : '');
 }
 
 // ── Login ──
@@ -113,6 +131,8 @@ export async function initApp() {
     const me = await apiJson('/api/auth/me');
     store.currentUser = me;
     $('#navUsername').textContent = me.username;
+    const accountName = $('#accountUsername');
+    if (accountName) accountName.textContent = me.username;
     $('#loginScreen').style.display = 'none';
     $('#appContainer').style.display = '';
 
@@ -219,7 +239,11 @@ export function init() {
   // Run version check immediately (was an IIFE in original)
   checkVersion();
 
-  $('#logoutBtn').addEventListener('click', logout);
+  $('#logoutBtn').addEventListener('click', () => logout());
+  // The whole top bar is display:none below 640px, so on a phone this is the
+  // only way out that is not the destructive "Clear All & Logout".
+  const accountLogout = $('#accountLogoutBtn');
+  if (accountLogout) accountLogout.addEventListener('click', () => logout());
 
   $('#loginForm').addEventListener('submit', (e) => { e.preventDefault(); doLogin(); });
   $('#loginUser').addEventListener('keydown', e => {
@@ -229,10 +253,18 @@ export function init() {
   // Listen for auth:logout event from api.js (avoids circular import)
   document.addEventListener('auth:logout', logout);
 
+  // Which server this is. The published apps default to the author's instance,
+  // so a self-hoster could not tell from the login screen which one answered.
+  const instance = $('#loginInstance');
+  if (instance) instance.textContent = location.host;
+
   // Auto-login if token exists
   if (store.authToken) {
     initApp();
   } else {
     $('#loginScreen').style.display = '';
+    // autoFocus is a no-op on touch — raising the keyboard on load is exactly
+    // the behaviour it exists to prevent, and that is wanted here too.
+    autoFocus($('#loginUser'));
   }
 }

@@ -36,11 +36,21 @@ async def _get(method: str, params: dict | None = None) -> dict:
     return data
 
 
+# Last.fm answers with this same grey star for everything it has no art for.
+# It is a valid URL that loads, so it is not detectable as "missing" — only by
+# the shape of the address. Returning it would paint a whole Discover page with
+# identical placeholders instead of letting the cards draw their own empty state.
+_PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
+
+
 def _pick_image(images: list) -> str:
     for size in ("extralarge", "large", "medium"):
         for img in images:
-            if img.get("size") == size and img.get("#text"):
-                return img["#text"]
+            text = img.get("#text")
+            # Skipped, not returned: a placeholder in extralarge must not throw
+            # away a real cover sitting in large.
+            if img.get("size") == size and text and _PLACEHOLDER not in text:
+                return text
     return ""
 
 

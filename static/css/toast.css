@@ -1,0 +1,34 @@
+/* toast.css — the transient status message raised by showToast() (utils.js). */
+
+/* The offset used to be written inline as a flat `bottom: 80px`, which is less
+   than the bottom nav (72px) plus the player bar (68px): on a phone the toast
+   reporting an action covered the navigation the user was reaching for. It has
+   to follow the same ladder as #feedbackFab (feedback.css), and a rule is the
+   only place that can. z-index 999 keeps it above modals (200), which is where
+   its error messages are usually needed. */
+#toastMsg {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(16px + env(safe-area-inset-bottom, 0));
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 13px;
+  z-index: 999;
+  transition: opacity .3s;
+}
+
+/* Above 640px there is no bottom nav, so the toast only has to clear the player
+   bar — and only while one is on screen. */
+body.player-active #toastMsg {
+  bottom: calc(68px + 16px + env(safe-area-inset-bottom, 0));
+}
+
+@media (max-width: 640px) {
+  /* --bottom-nav-height is a border-box height that already contains the nav's
+     own safe-area padding, so it is not added a second time here. */
+  #toastMsg { bottom: calc(var(--bottom-nav-height) + 16px); }
+  body.player-active #toastMsg {
+    bottom: calc(var(--bottom-nav-height) + 68px + 16px + env(safe-area-inset-bottom, 0));
+  }
+}

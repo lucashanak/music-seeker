@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- GENERATED FILE - built from frontend/partials/ by scripts/build-index.sh. Do not edit directly; edit the partial and rebuild. -->
-<html lang="cs">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -22,6 +22,7 @@
 <link rel="stylesheet" href="/static/css/responsive.css?v=__CACHE_BUST__">
 <link rel="stylesheet" href="/static/css/contextmenu.css?v=__CACHE_BUST__">
 <link rel="stylesheet" href="/static/css/feedback.css?v=__CACHE_BUST__">
+<link rel="stylesheet" href="/static/css/toast.css?v=__CACHE_BUST__">
 <style>
   /* ── Visible kebab (⋯) button: opens the context menu (mobile-friendly) ── */
   .kebab-btn {
@@ -76,20 +77,6 @@
      left the heart floating 16px above its own row, so it only applies to a
      card that is not a row. */
   #libraryTracks .card:not(.song-row) .like-btn { top: 50%; bottom: auto; right: 52px; transform: translateY(-50%); }
-  /* ── Recent searches (chips shown when the input is focused & empty) ── */
-  .recent-searches { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
-  .recent-chip {
-    background: var(--bg-elevated); color: var(--text);
-    border: 1px solid var(--border); border-radius: 16px;
-    padding: 6px 14px; font-size: 13px; cursor: pointer;
-    transition: background .15s, border-color .15s;
-  }
-  .recent-chip:hover { background: var(--bg-card, rgba(255,255,255,.08)); border-color: var(--accent); }
-  .recent-clear {
-    background: none; border: none; color: var(--text-muted);
-    font-size: 12px; cursor: pointer; padding: 6px 8px; margin-left: 4px;
-  }
-  .recent-clear:hover { color: var(--text); }
   /* ── Keyboard navigation highlight on search result cards ── */
   #searchResults .card.kbd-active { outline: 2px solid var(--accent); outline-offset: -2px; }
 </style>
@@ -114,6 +101,10 @@
       <button class="btn-login" type="submit" id="loginBtn">Sign In</button>
     </form>
     <div class="login-error" id="loginError"></div>
+    <div class="login-meta">
+      <span class="login-instance" id="loginInstance"></span>
+      <span class="login-session">Stays signed in for 30 days</span>
+    </div>
   </div>
 </div>
 
@@ -1027,8 +1018,24 @@
 
   <div class="settings-group">
   <div class="settings-group-label">Account &amp; App</div>
+  <!-- Open by default: this is the only way to sign out below 640px, where the
+       whole top bar is hidden, so hiding it inside a closed section would be
+       the same defect one notch weaker. -->
+  <details class="setting-section" id="accountSection" open>
+    <summary class="setting-section-title"><svg class="setting-section-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span class="setting-section-label">Account</span></summary>
+    <div class="setting-section-body">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;">Signed in as</div>
+          <div id="accountUsername" style="font-size:15px;font-weight:600;margin-top:2px;word-break:break-all;"></div>
+        </div>
+        <button class="btn-save" id="accountLogoutBtn" style="background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);">Log out</button>
+      </div>
+    </div>
+  </details>
+
   <details class="setting-section" id="spotifySection">
-    <summary class="setting-section-title"><svg class="setting-section-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14.5c2.5-1 5.5-1 8 .5M7.5 11c3-1.2 6.5-1 9.5 1M7 8c3.5-1.2 8-.8 11 1.5"/></svg><span class="setting-section-label">Account</span></summary>
+    <summary class="setting-section-title"><svg class="setting-section-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14.5c2.5-1 5.5-1 8 .5M7.5 11c3-1.2 6.5-1 9.5 1M7 8c3.5-1.2 8-.8 11 1.5"/></svg><span class="setting-section-label">Spotify</span></summary>
     <div class="setting-section-body">
       <div id="spotifyStatus" style="font-size:13px;margin-bottom:12px;"></div>
       <div style="margin-bottom:16px;">
@@ -1106,7 +1113,7 @@
         <button class="btn-save" id="refreshCacheBtn" style="flex:1;background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);">
           Refresh
         </button>
-        <button class="btn-save" id="clearCacheBtn" style="flex:1;background:var(--bg-elevated);color:var(--text);border:1px solid var(--border);">
+        <button class="btn-save" id="clearCacheBtn" style="flex:1;background:none;color:var(--red);border:1px solid var(--red);">
           Clear All &amp; Logout
         </button>
       </div>
@@ -1137,9 +1144,9 @@
         <details class="perm-section">
           <summary class="perm-section-title">Methods</summary>
           <div class="perm-section-body">
-            <label class="perm-check" title="Stahuje audio z YouTube, metadata ze Spotify"><span>YouTube</span> <input type="checkbox" id="newMethYtdlp" checked></label>
-            <label class="perm-check" title="P2P stahování přes síť Soulseek, preferuje zvolený formát"><span>Soulseek</span> <input type="checkbox" id="newMethSlskd" checked></label>
-            <label class="perm-check" title="Torrent stahování přes Lidarr, monitoruje diskografie"><span>Torrent</span> <input type="checkbox" id="newMethLidarr" checked></label>
+            <label class="perm-check" title="Downloads audio from YouTube, metadata from Spotify"><span>YouTube</span> <input type="checkbox" id="newMethYtdlp" checked></label>
+            <label class="perm-check" title="P2P download over the Soulseek network, prefers the chosen format"><span>Soulseek</span> <input type="checkbox" id="newMethSlskd" checked></label>
+            <label class="perm-check" title="Torrent download via Lidarr, monitors discographies"><span>Torrent</span> <input type="checkbox" id="newMethLidarr" checked></label>
           </div>
         </details>
         <button class="btn-add-user" id="addUserBtn">Add User</button>
