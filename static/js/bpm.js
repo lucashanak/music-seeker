@@ -280,7 +280,7 @@ export function createBpmFilter(tracksContainerId, opts = {}) {
     }
     if (dropped.length) {
       const msg = `${dropped.length} tracks not analyzed`;
-      if (allowAnalyze) _showAnalyzeToast(msg, () => _analyzeContainer(tracksContainerId));
+      if (allowAnalyze) showToast(msg, false, { actionLabel: 'Analyze', duration: 5000, onAction: () => _analyzeContainer(tracksContainerId) });
       else showToast('BPM only available for tracks in your library');
     }
     return kept;
@@ -302,7 +302,7 @@ export function createBpmFilter(tracksContainerId, opts = {}) {
       .sort((a, b) => a.bpm - b.bpm)
       .map(x => x.t);
     if (!tracks.length) {
-      if (allowAnalyze) _showAnalyzeToast('No analyzed tracks to ramp', () => _analyzeContainer(tracksContainerId));
+      if (allowAnalyze) showToast('No analyzed tracks to ramp', false, { actionLabel: 'Analyze', duration: 5000, onAction: () => _analyzeContainer(tracksContainerId) });
       else showToast('BPM only available for tracks in your library');
       return;
     }
@@ -359,29 +359,6 @@ export function initTempoFilter(tracksContainerId, opts = {}) {
 
   tracksEl.parentNode.insertBefore(filter, tracksEl);
   return filter;
-}
-
-// Toast with an "Analyze" action button (showToast has no action support).
-function _showAnalyzeToast(msg, onAnalyze) {
-  let toast = $('#bpmActionToast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'bpmActionToast';
-    toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--bg-elevated);color:var(--text);padding:10px 16px;border-radius:20px;font-size:13px;z-index:999;opacity:0;transition:opacity .3s;border:1px solid var(--border);display:flex;align-items:center;gap:12px;';
-    document.body.appendChild(toast);
-  }
-  toast.innerHTML = '';
-  const span = document.createElement('span');
-  span.textContent = msg;
-  const btn = document.createElement('button');
-  btn.textContent = 'Analyze';
-  btn.style.cssText = 'background:var(--accent);color:#000;border:none;border-radius:14px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;';
-  btn.addEventListener('click', () => { toast.style.opacity = '0'; onAnalyze && onAnalyze(); });
-  toast.appendChild(span);
-  toast.appendChild(btn);
-  toast.style.opacity = '1';
-  clearTimeout(toast._timer);
-  toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 5000);
 }
 
 // Trigger the existing Analyze flow by clicking the on-screen scan button if

@@ -326,3 +326,108 @@ The pin lives in `player._raw_pins`, a dict in this process. If analysis ever mo
 a `ProcessPoolExecutor` (see Memory limits), the child sees an empty dict and the pin
 check stops working; the replace and lock layers would then have to carry it, and the
 lock would have to become a file lock.
+
+## Back is one level, and every overlay is a level
+
+The whole app is one document, so the browser's Back button is the only way the
+system has of saying "the thing I was looking at before". Three rules keep that
+honest; all three exist because a press used to do nothing, or two things.
+
+### A layer is visible when `offsetParent !== null`, never when `style.display !== 'none'`
+
+The detail views (`#playlistDetail`, `#showDetail`, `#podcastEpisodes`,
+`#tagDetailView`, `#artistDetail`, `#albumDetail`, `#libraryDetail`,
+`#likedSongsDetail`) live *inside* a page, not beside it. Switching pages hides
+the page, not the layer, so the layer stays marked visible on a screen nobody is
+looking at — and `handlePopstate` would close *that* instead of acting on the
+page. `offsetParent` is null as soon as any ancestor is hidden, so it answers the
+question that was actually being asked.
+
+**The one case where it is wrong:** `offsetParent` is null for every
+`position: fixed` element, visible or not. Those (the bottom nav, the player bar,
+the queue panel, the full player) are tracked by their own flag in `store`
+instead — `store.queuePanelOpen`, `store.fullPlayerOpen`, `store.partyOpen`,
+`store.genreOpen`. `position: sticky` is fine.
+
+`switchPage` also hides all eight layers on every page change (`LAYER_IDS` in
+`router.js`). Both halves are needed: the test stops a hidden layer from eating
+a press, the reset stops it reappearing over the results when the page comes
+back.
+
+### A spent `{layer}` entry is stepped over, not swallowed
+
+Each overlay pushes `history.pushState({ layer: '…' })` when it opens. If the
+overlay is already gone by the time its entry is popped (the usual case after a
+page switch), nothing above claims it and the press would do nothing. The
+handler calls `history.back()` again instead, at most `MAX_LAYER_HOPS` times;
+past that it lands on the current page and writes a matching `history.state`
+rather than risk walking out of the app.
+
+### Every dialog pushes a layer and settles its own Promise
+
+`store.dialogStack` is a LIFO of `{ kind, cancel }`. A dialog registers itself
+when it opens (`pushDialog` in `utils.js`, which also pushes the history entry)
+and removes itself when it closes (`popDialog`, which calls `historyBack()`
+unless the close came *from* a popstate). The Back branch for dialogs is the
+**first** thing `handlePopstate` does, above every other overlay flag: a modal is
+always the topmost thing on screen, and Back used to close the queue panel
+underneath it and leave the modal hanging.
+
+Why a stack and not `document.querySelector('.modal-overlay')`: `querySelector`
+returns the **oldest** overlay, which with the playlist picker underneath its own
+"New playlist" name modal is exactly the wrong one. The old code also called
+`overlay.remove()`, which destroys the DOM but never resolves the Promise — an
+`await showPlaylistPicker(...)` hung forever.
+
+**Writing a new dialog:** give it a `kind`, build a `done(value, fromPopstate)`
+that goes through `popDialog` first (which makes it idempotent), register
+`{ kind, cancel: fp => done(<cancel value>, fp) }`, call `pushDialog` once the
+DOM is in place, and short-circuit the opener with `dialogOpen(kind)` so a second
+copy cannot stack a second history entry. `showPlaylistPicker`, `showInputModal`,
+`showPlaylistFormModal`, `showConfirmModal` and the feedback form all follow this.
+
+Still outside it: `.ctx-menu` (`contextmenu.js`) and the dialogs in `settings.js`
+and `playlistimport.js`, which are still caught by the `.modal-overlay` fallback.
+That fallback sits **above** the eight in-page detail layers and below the
+overlay flags that are painted over it (full player 201, queue panels 249/250,
+party 1000). It has to: `.modal-overlay` is `z-index: 200`, so one of these is
+over any detail behind it, and testing the details first closed the detail at
+the back, switched the page, and left the dialog hanging over a screen it no
+longer belonged to. The fallback only ever `remove()`s, so it still does not
+settle the dialog's Promise — the fix for that is to bring those four into
+`dialogStack`, not to reorder the handler.
+
+## Signing out
+
+`logout()` (`auth.js`) does not hide the app — it reloads the document. Hiding it
+left the audio playing, the `mediaSession` notification showing the signed-out
+user's track, and every module holding its own copy of their state.
+
+The order matters: `flushQueue()` is awaited **before** `store.currentUser` is
+cleared, because the queue save is debounced and is attributed to whoever is
+signed in. Then the account's own keys go (`ms_token`, `ms_party_session`,
+`ms_recs_feedback_v1`, anything starting `ms_recent_searches`), then
+`location.href = '/'`. `ms_device_id`, `ms_player_engine` and `ms_dj_*` describe
+the device and stay.
+
+There are three ways out, and they are deliberately not the same:
+
+| control | where | what it does |
+|---|---|---|
+| `#logoutBtn` | top bar, hidden below 640px | the path above |
+| `#accountLogoutBtn` | Settings → Account (open by default) | the same path |
+| `#clearCacheBtn` | Settings → App, drawn in `--red` | also wipes caches and every local setting |
+
+The Account section exists because below 640px the entire top bar is
+`display: none`, which left "Clear All & Logout" as the only reachable exit — a
+destructive reset in place of signing out.
+
+## Provider placeholder images
+
+A provider's "no artwork" image is a **valid URL that loads**. It cannot be
+detected by testing for an empty field; it is recognised by the shape of the
+address. Last.fm answers with one universal grey star
+(`…/2a96cbd8b46e442fc41c2b86b821562f.png`), which `_pick_image`
+(`app/services/lastfm.py`) now skips — skips, not returns on, so a placeholder in
+`extralarge` cannot hide a real cover in `large`. Dropping it lets the card draw
+its own empty state. The same rule applies to Deezer's empty-hash artist avatar.

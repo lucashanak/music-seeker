@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- GENERATED FILE - built from frontend/partials/ by scripts/build-index.sh. Do not edit directly; edit the partial and rebuild. -->
-<html lang="cs">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -22,6 +22,7 @@
 <link rel="stylesheet" href="/static/css/responsive.css?v=__CACHE_BUST__">
 <link rel="stylesheet" href="/static/css/contextmenu.css?v=__CACHE_BUST__">
 <link rel="stylesheet" href="/static/css/feedback.css?v=__CACHE_BUST__">
+<link rel="stylesheet" href="/static/css/toast.css?v=__CACHE_BUST__">
 <style>
   /* ── Visible kebab (⋯) button: opens the context menu (mobile-friendly) ── */
   .kebab-btn {
@@ -76,20 +77,6 @@
      left the heart floating 16px above its own row, so it only applies to a
      card that is not a row. */
   #libraryTracks .card:not(.song-row) .like-btn { top: 50%; bottom: auto; right: 52px; transform: translateY(-50%); }
-  /* ── Recent searches (chips shown when the input is focused & empty) ── */
-  .recent-searches { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
-  .recent-chip {
-    background: var(--bg-elevated); color: var(--text);
-    border: 1px solid var(--border); border-radius: 16px;
-    padding: 6px 14px; font-size: 13px; cursor: pointer;
-    transition: background .15s, border-color .15s;
-  }
-  .recent-chip:hover { background: var(--bg-card, rgba(255,255,255,.08)); border-color: var(--accent); }
-  .recent-clear {
-    background: none; border: none; color: var(--text-muted);
-    font-size: 12px; cursor: pointer; padding: 6px 8px; margin-left: 4px;
-  }
-  .recent-clear:hover { color: var(--text); }
   /* ── Keyboard navigation highlight on search result cards ── */
   #searchResults .card.kbd-active { outline: 2px solid var(--accent); outline-offset: -2px; }
 </style>
