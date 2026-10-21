@@ -7,6 +7,10 @@
 // Vlastní vedení dávky. Autoři celků ho needitují; když potřebují něco navíc,
 // napíšou si to ve svém souboru nebo o změnu požádají.
 
+import fs from 'node:fs';
+import path from 'node:path';
+// `URL` níž je adresa instance, ne konstruktor — jmenná kolize.
+import { URL as WebURL } from 'node:url';
 import pw from '/home/lucas/music-seeker/node_modules/playwright/index.js';
 
 const { chromium, devices } = pw;
@@ -31,7 +35,7 @@ export const SHOT_DIR = process.env.MS_SHOTS || '/tmp/ms-audit-shots';
  * `waitUntil: 'load'` plus usazení: s 'domcontentloaded' klik na Sign In předběhl
  * navěšení handleru a požadavek na /api/auth/login nikdy neodešel.
  */
-export async function open({ viewport = 'desktop', device = 'audit', login = true } = {}) {
+export async function open({ viewport = 'desktop', device = 'audit', login = true, worktree = null } = {}) {
   const vp = typeof viewport === 'string' ? VIEWPORTS[viewport] : viewport;
   if (!vp) throw new Error(`neznámý viewport: ${viewport}`);
   const browser = await chromium.launch();
@@ -42,6 +46,7 @@ export async function open({ viewport = 'desktop', device = 'audit', login = tru
     deviceScaleFactor: vp.deviceScaleFactor,
     userAgent: vp.isMobile ? devices['Pixel 5'].userAgent : undefined,
   });
+  if (worktree) await serveWorktree(context, worktree);
   const page = await context.newPage();
   // Vlastní id zařízení na dráhu: fronta a Up Next jsou per-zařízení, takže dvě
   // dráhy se stejným id si navzájem přepisují playlist.
@@ -62,6 +67,65 @@ export async function open({ viewport = 'desktop', device = 'audit', login = tru
     await page.waitForTimeout(1200);
   }
   return { browser, context, page, errors, viewport: vp };
+}
+
+// ── Zelená polovina orákula ────────────────────────────────────────────────
+// Kontrola, která se zezelená tím, že si do stránky vloží vlastní náhradní
+// posluchač, neměří opravu — měří tu náhradu. Dvě review dráhy na to nezávisle
+// přišly: trinact mutaci autorova kodu zustalo pro takove kontroly neviditelnych.
+//
+// Tohle servíruje stránce SKUTEČNÉ soubory z worktree. Jediná past je cache
+// bust: entrypoint.sh při startu kontejneru přepíše `.js'` na `.js?v=N'` a
+// `__CACHE_BUST__` v index.html. Syrový soubor z worktree to razítko nemá, takže
+// by se moduly načetly podruhé pod jinou adresou a stránka by běžela se dvěma
+// instancemi store/queue/player. Razítko se proto čte z živé stránky a doplňuje.
+
+async function _zjistiRazitko() {
+  const res = await fetch(URL + '/');
+  const html = await res.text();
+  const m = html.match(/\.js\?v=([0-9A-Za-z]+)/);
+  if (!m) throw new Error('v produkční stránce není cache-bust razítko');
+  return m[1];
+}
+
+function _typ(file) {
+  if (file.endsWith('.js')) return 'text/javascript; charset=utf-8';
+  if (file.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (file.endsWith('.html')) return 'text/html; charset=utf-8';
+  return 'application/octet-stream';
+}
+
+/**
+ * Naservíruje stránce soubory z `root` (worktree) místo nasazených.
+ * Volá se PŘED přihlášením, tedy před prvním `goto`.
+ */
+export async function serveWorktree(context, root, opts = {}) {
+  const stamp = opts.stamp || (await _zjistiRazitko());
+  const podano = [];
+
+  await context.route('**/static/**', async (route) => {
+    const p = new WebURL(route.request().url()).pathname.replace(/^\/static\//, '');
+    const file = path.join(root, 'static', p);
+    if (!file.startsWith(path.join(root, 'static')) || !fs.existsSync(file)) return route.continue();
+    let body = fs.readFileSync(file, 'utf8');
+    if (file.endsWith('.js')) body = body.replace(/\.js'/g, `.js?v=${stamp}'`);
+    body = body.replace(/__CACHE_BUST__/g, stamp);
+    podano.push(p);
+    await route.fulfill({ status: 200, contentType: _typ(file), body });
+  });
+
+  // Dokument sám: autor, který sahal na partialy, musí mít spuštěný
+  // scripts/build-index.sh — jinak dostane stránka starý shell a nová značka
+  // v něm nebude.
+  const index = path.join(root, 'static', 'index.html');
+  await context.route(URL + '/', async (route) => {
+    if (route.request().resourceType() !== 'document' || !fs.existsSync(index)) return route.continue();
+    const body = fs.readFileSync(index, 'utf8').replace(/__CACHE_BUST__/g, stamp);
+    podano.push('index.html');
+    await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body });
+  });
+
+  return { stamp, podano };
 }
 
 /** Vyhledání; `type` přepne záložku (track/album/artist/playlist/show). */
