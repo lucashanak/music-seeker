@@ -326,3 +326,106 @@ The pin lives in `player._raw_pins`, a dict in this process. If analysis ever mo
 a `ProcessPoolExecutor` (see Memory limits), the child sees an empty dict and the pin
 check stops working; the replace and lock layers would then have to carry it, and the
 lock would have to become a file lock.
+
+## The search page: layers, the empty state, and provider noise
+
+### Artist, album and show detail are layers *inside* the search page
+
+`#artistDetail`, `#albumDetail` and `#showDetail` are children of `#pageSearch`, so
+`store.currentPage` stays `'search'` while one of them is open. Two things follow and
+both were live bugs:
+
+- Anything on the search page that reacts to "we are on Search" has to ask whether the
+  result list is *actually on screen*, not which page is selected. **The test is
+  `#searchResults.offsetParent !== null`, never `style.display`** — the layer is a
+  sibling, so the list's own `display` says nothing about whether a layer covers it.
+  Infinite scroll uses this; without it, scrolling an album detail paged the hidden list
+  underneath and baked dozens of stale cards into it.
+- Starting a new search has to close the open layer first. Switching a type tab or
+  typing a new query calls `closeArtistDetail()` / `closeAlbumDetail()` /
+  `closeShowDetail()` through the **static** import from `spotify.js`. The import cycle
+  between the two modules is fine (neither is read during the other's evaluation), and a
+  dynamic `import()` would make closing asynchronous — the search would then start
+  behind the layer again.
+
+The genre chart is a layer too, but it has no element of its own: it repaints
+`#searchResults`. The router cannot see it by visibility, so `openGenre` pushes
+`{ layer: 'genre' }` and sets `store.genreOpen`; `closeGenre(fromPopstate)` is exported
+for the router's popstate branch and calls `historyBack()` only when the close did not
+come from one.
+
+### The empty box is a screen, not a blank
+
+`renderBrowse()` is the **only** renderer of `#searchResults` in the empty state: recent
+searches first, genre tiles under them. Recent searches used to be a second renderer —
+chips that appeared only while the input was focused, which on a phone meant only with
+the keyboard up, and that hid themselves 150 ms after blur. Two renderers of one list
+have to agree on the state after a delete, so there is now one.
+
+- The list is stored per account under `ms_recent_searches_${username}`. The old global
+  key handed one user's search history to whoever logged in next in the same browser,
+  and the list is now visible without any interaction at all. The legacy key is dropped
+  on init.
+- Emptying the input calls `_cancelSearch()`. Without it an older request still in
+  flight comes back and paints results over the screen we just drew.
+
+A failed `/api/genres` is **not** cached. It used to be stored as an empty list and
+answered with a blank page for the rest of the session; the cache now stays `null` and
+the page offers Try again.
+
+### A provider that fell over is not an empty result
+
+`/api/search/all` returns an `errors` map keyed by `track|artist|album|playlist`. All
+four down → one message with a retry button instead of "No results found"; some down →
+the affected section renders as an error strip rather than being left out, so a partial
+outage does not read as "there simply are no albums".
+
+**`errors` is part of the emptiness test, not just of the rendering.** Three branches
+down and the fourth legitimately empty would otherwise fall into "nothing was found" and
+throw the fragment away — strips, Try again buttons and every trace of the outage with
+it, replaced by the one sentence that claims the opposite. The branch therefore reads
+`… && !Object.keys(errors).length`: whenever anything errored, the fragment is rendered
+even when it holds nothing but strips.
+
+The single-type path `/api/search` (the Songs/Artists/Albums/Playlists tabs) does **not**
+return `errors`, so an outage there still ends on "Search failed". Adding it is backend
+work and is deliberately out of this change.
+
+### Placeholder covers are valid URLs
+
+Deezer answers credit entities ("Daft Punk, Pharrell Williams", "Made famous by …") with
+a placeholder cover whose path carries an empty hash:
+`/images/artist//500x500-000000-80-0-0.jpg`. It loads, `naturalWidth` is 500, and the
+`image` field is not empty — so **a placeholder is detected by the shape of the address,
+not by the field being empty**. The same holds for Last.fm's universal star. The Artists
+tab drops entries that have both a placeholder cover and a comma in the name, and runs
+the same `_dedupeByName` the aggregated view already used.
+
+Fuzzy matching also means a nonsense query comes back as a confident page of somebody
+else's music. When no result shares a word with the query, a line says so and the
+results stay below it as suggestions.
+
+"Shares a word" is **the first four characters, not the whole word**, and both sides go
+through the same normalisation. Whole-word equality put "No results for beyonse" above
+eighteen cards headed by Beyoncé, and did the same for "thriler" over Thriller and
+"michaell jacksonn" over Michael Jackson — a typo keeps the opening of a word but not
+the whole of it. Four characters still separates real queries from
+`zzzqqqxyznotathing12345`; words shorter than that are compared whole.
+
+The top result is **not** a second test on top of that. `_pick_top_result`
+(`search_providers.py`) returns nothing only at its last step, when all four branches
+came back empty — and then there is nothing to put the line above either. Measured, the
+nonsense query above still gets a `top`, because the picker falls through to `tracks[0]`
+when nothing matches the query exactly. Gating the line on "the answer has no top" would
+therefore make it dead code; the top is one of the items the single test above already
+covers.
+
+### Hero actions are positioned against the artwork
+
+The top-result hero's play / add / radio buttons used to be placed by inline pixel
+arithmetic computed from the desktop artwork size, which the mobile breakpoint had no
+way to override — at 390px they ended up beside the cover instead of on it. The geometry
+is CSS now (`.hero-act-0/1/2` anchored to `--hero-art`, which the breakpoint redefines);
+JS only says which button is how many places from the right. An artist hero carries a
+play button that fetches `/api/artist/{id}/top` and hands it to `playTracks`; the artist
+cards in the grid do not, because each tap there would pay for its own request.

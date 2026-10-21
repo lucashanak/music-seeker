@@ -130,24 +130,35 @@
   background: var(--bg-card); border-radius: 16px; padding: 20px;
   position: relative; display: flex; flex-direction: column; gap: 4px;
   overflow: visible;
+  /* One number for the artwork square; everything anchored to it reads from
+     here, so the mobile size below cannot drift out of sync. */
+  --hero-art: 180px;
 }
 /* .card-play-btn's shared cards.css rule anchors to `100cqw` (the artwork's
    height, since .card-img is width:100%;aspect-ratio:1) — that doesn't hold
-   here: .top-result-img is a FIXED 180px square (140px below the 640px
-   breakpoint), unrelated to the hero card's own (much wider, up to 340px)
-   inline size. Fall back to a fixed px offset instead: 20px card padding-top
-   + 180px artwork - 8px inset - 36px button height = 156px (116px at the
-   140px mobile artwork size, kept in sync with the breakpoint below). This
-   selector's specificity (2 classes) already wins over the shared rule, so
-   no !important is needed. */
+   here: .top-result-img is a fixed square unrelated to the hero card's own
+   (much wider, up to 340px) inline size. Anchor to the artwork instead:
+   20px card padding + artwork - 8px inset - 36px button = its bottom row.
+   This selector's specificity (2 classes) already wins over the shared rule,
+   so no !important is needed. */
 .top-result-card .card-play-btn,
 .top-result-card .card-radio-btn,
-.top-result-card .card-addpl-btn { top: 156px; bottom: auto; }
-/* Horizontal placement of the radio/add buttons is set in JS (buildTopResultCard),
-   because it depends on whether a play button exists for this item type; only the
-   artwork-relative `top` is static, so it lives here with the play button. */
+.top-result-card .card-addpl-btn {
+  top: calc(20px + var(--hero-art) - 44px); bottom: auto;
+}
+/* Which button sits how many places from the artwork's right edge is decided in
+   JS (it depends on the item type), but the geometry is here — as inline pixels
+   computed from the desktop artwork it could not be overridden at 390px, and
+   the radio/add buttons then floated off the cover onto the empty card beside
+   it. Three slots still fit inside the 140px mobile artwork. */
+.top-result-card .hero-act-0 { left: calc(20px + var(--hero-art) - 44px); right: auto; }
+.top-result-card .hero-act-1 { left: calc(20px + var(--hero-art) - 88px); right: auto; }
+.top-result-card .hero-act-2 { left: calc(20px + var(--hero-art) - 132px); right: auto; }
+/* The hero is the one card you are meant to be able to start without hunting:
+   hover-reveal leaves it invisible on every touch device above 640px. */
+.top-result-card .card-play-btn { opacity: 1; transform: none; }
 .top-result-img {
-  width: 180px; height: 180px; max-width: 100%; border-radius: 8px;
+  width: var(--hero-art); height: var(--hero-art); max-width: 100%; border-radius: 8px;
   object-fit: cover; background: var(--bg-elevated); margin-bottom: 12px;
 }
 .top-result-card.artist-card .top-result-img { border-radius: 50%; }
@@ -212,14 +223,79 @@
 }
 .song-list .song-row:hover .card-addpl-btn { opacity: 1; transform: none; }
 .song-list .song-row .card-addpl-btn:hover { background: var(--bg-elevated); }
-/* The card overlay "In Library" badge is position:absolute (built for cover art)
-   and would float over the track title on a flat row. Drop it and instead tint
-   the track number of in-library rows — clean and non-overlapping. */
-.song-list .song-row .in-library-badge { display: none; }
+/* A numbered row has its own marker — the track number turns accent — so the
+   pill, which is built to sit over cover art, stays hidden there. */
+.song-list-numbered .song-row .in-library-badge { display: none; }
 .song-list .song-row.in-library .song-num { color: var(--accent); }
+/* A search row had no marker at all: the pill was hidden and all that was left
+   was a green outline, which reads as "selected". The tick goes on the corner
+   of the artwork rather than into the trailing cluster — at 390px that cluster
+   is what the title is already fighting for room with, and the brief is that
+   the title must not get any shorter than it is today. */
+.song-list:not(.song-list-numbered) .song-row { position: relative; }
+.song-list:not(.song-list-numbered) .song-row .in-library-badge {
+  position: absolute; left: 38px; top: 38px; right: auto; bottom: auto;
+  display: flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; padding: 0; letter-spacing: 0;
+  border: 2px solid var(--bg); border-radius: 50%;
+  background: var(--accent); color: #000; box-shadow: none;
+  font-size: 0; /* hides the pill's "In Library" text, the tick is drawn below */
+}
+.song-list:not(.song-list-numbered) .song-row .in-library-badge::before {
+  content: '\2713'; font-size: 10px; font-weight: 700; line-height: 1;
+}
 
 /* Circular artist thumbnails on result cards. */
 .card.artist-card .card-img { border-radius: 50%; }
+
+/* The radio button draws a line icon like every other control on a card. */
+.card-radio-btn svg { display: block; }
+
+/* ── Recent searches (empty search box) ──
+   A list above the genre tiles, not chips behind the keyboard. */
+.recent-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 28px; }
+.recent-item {
+  display: flex; align-items: center; gap: 8px;
+  border-radius: 8px;
+}
+.recent-item:hover { background: var(--bg-elevated); }
+.recent-item-q {
+  flex: 1; min-width: 0; text-align: left;
+  background: none; border: none; cursor: pointer; font-family: inherit;
+  font-size: 15px; color: var(--text); padding: 11px 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.recent-item-del {
+  flex-shrink: 0; width: 34px; height: 34px; margin-right: 4px;
+  background: none; border: none; border-radius: 50%; cursor: pointer;
+  color: var(--text-dim); font-size: 14px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.recent-item-del:hover { color: var(--text); background: var(--bg-card); }
+
+/* ── A provider that fell over, as opposed to an empty result ── */
+.retry-btn {
+  margin-top: 12px; padding: 9px 18px; border-radius: 20px;
+  background: var(--accent); border: 1px solid var(--accent); color: #000;
+  font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.retry-btn:hover { opacity: .88; }
+.section-error {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px;
+  padding: 14px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-card);
+  font-size: 13px; color: var(--text-muted);
+}
+.section-error .retry-btn { margin-top: 0; padding: 7px 14px; font-size: 12px; }
+
+/* Fuzzy matching answers nonsense with a full page of somebody else's music;
+   this line says so and leaves the page below as suggestions. */
+.no-match-note {
+  margin: 4px 0 18px; padding: 12px 14px;
+  border-left: 3px solid var(--accent); border-radius: var(--radius-sm);
+  background: var(--bg-card); color: var(--text-muted); font-size: 14px;
+}
+.no-match-note strong { color: var(--text); }
 
 /* Aligned to the app's single mobile breakpoint (640px — see responsive.css,
    which switches the card grids, nav, modal, etc. at max-width:640px). This
@@ -230,13 +306,9 @@
    everywhere else and responsive.css is out of this fix's scope. */
 @media (max-width: 640px) {
   .top-result-row { grid-template-columns: 1fr; gap: 16px; }
-  .top-result-img { width: 140px; height: 140px; }
+  /* Everything anchored to the artwork follows this one number. */
+  .top-result-card { --hero-art: 140px; }
   .top-result-name { font-size: 22px; }
-  /* Keep in sync with .top-result-img's shrink above: 20px padding-top +
-     140px artwork - 8px inset - 36px button height = 116px. */
-  .top-result-card .card-play-btn,
-  .top-result-card .card-radio-btn,
-  .top-result-card .card-addpl-btn { top: 116px; }
   .song-list .song-row .card-play-btn,
   .song-list .song-row .card-addpl-btn { opacity: 1; }
   /* Universal-search rows now carry play + add + kebab + heart; at this width the

@@ -1,18 +1,34 @@
 // search.js — doSearch, renderResults, checkLibrary, renderCards, infinite scroll, card helpers
 
 import { store } from './store.js';
-import { $, $$, esc, escAttr, formatDuration, autoFocus } from './utils.js';
+import { $, $$, esc, escAttr, formatDuration, autoFocus, historyBack, showToast } from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { loadPlaylistDetail, loadShowDetail, loadArtistDetail, loadAlbumDetail } from './spotify.js';
+// The cycle with spotify.js is deliberate and already load-bearing (it imports
+// renderResults from here): both sides are only reached from event handlers, so
+// neither module is read during the other's evaluation. The close* functions go
+// through the same static import — a dynamic one would make closing async, and
+// the search would then start before the detail layer was gone.
+import {
+  loadPlaylistDetail, loadShowDetail, loadArtistDetail, loadAlbumDetail,
+  closeArtistDetail, closeAlbumDetail, closeShowDetail,
+} from './spotify.js';
 import { attachContextMenu, wasLongPress, makeKebabButton, _addToNavidromePlaylist } from './contextmenu.js';
 import { makeHeartButton } from './likes.js';
 import { setPlayContext } from './playcontext.js';
 
 // ── Card Helper Functions ──
-export function cardPlayBtn(item) {
+// opts.hero: the top-result card. An artist gets a play button only there — it
+// is a single element, so one extra request for the artist's top tracks is
+// affordable; in a grid of six artist cards every tap would pay for it.
+export function cardPlayBtn(item, opts = {}) {
   const type = item.type || 'track';
-  if (type === 'playlist' || type === 'show' || type === 'artist') return '';
+  if (type === 'artist') return opts.hero ? _playBtnHtml() : '';
+  if (type === 'playlist' || type === 'show') return '';
+  return _playBtnHtml();
+}
+
+function _playBtnHtml() {
   return '<button class="card-play-btn" title="Play"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>';
 }
 
@@ -25,7 +41,9 @@ export function cardDlBtn(item) {
 export function cardRadioBtn(item) {
   const type = item.type || 'track';
   if (type === 'playlist' || type === 'show' || type === 'episode') return '';
-  return '<button class="card-radio-btn" title="Play Radio">&#x1f4fb;</button>';
+  // Line icon like every other control on a card; the emoji rendered in the
+  // system font and sat a couple of pixels off the circle's centre.
+  return '<button class="card-radio-btn" title="Play Radio"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M20 7H7.6l4.6-1.9-.6-1.5L4.3 6.6A2 2 0 0 0 3 8.5V19a2 2 0 0 0 2 2h15a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zm0 12H5V9h15v10zM7.5 11a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm6 0h5v1.5h-5V11zm0 3h5v1.5h-5V14z"/></svg></button>';
 }
 
 export function cardAddPlBtn(item) {
@@ -60,7 +78,15 @@ export function cardSubHtml(item) {
   if ((type === 'album' || type === 'episode') && artist) {
     return explicitBadge(item) + `<span class="clickable" data-search-type="artist" data-search-q="${escAttr(artist)}">${esc(artist)}</span>`;
   }
+  // An artist's `artist` field repeats its own name, so the subtitle read
+  // "Daft Punk / Daft Punk". The useful line there is what the card IS.
+  if (type === 'artist') return 'Artist';
   return esc(artist);
+}
+
+// "1 episodes" was the giveaway that nobody had looked at a single-item show.
+function countLabel(n, one, many) {
+  return `${esc(n)} ${Number(n) === 1 ? one : many}`;
 }
 
 // ── Route a card/hero click to the right detail view (or download modal) ──
@@ -125,7 +151,7 @@ export function buildCardElement(item, fromPage) {
         <div class="card-sub">${cardSubHtml(item)}</div>
         <div class="card-meta">
           ${item.year ? `<span>${esc(item.year)}</span>` : ''}
-          ${item.total_tracks ? `<span>${esc(item.total_tracks)} ${item.type === 'show' ? 'episodes' : 'tracks'}</span>` : ''}
+          ${item.total_tracks ? `<span>${item.type === 'show' ? countLabel(item.total_tracks, 'episode', 'episodes') : countLabel(item.total_tracks, 'track', 'tracks')}</span>` : ''}
           ${item.release_date ? `<span>${esc(item.release_date)}</span>` : ''}
           ${item.duration_ms ? `<span>${formatDuration(item.duration_ms)}</span>` : ''}
         </div>
@@ -268,14 +294,29 @@ export function restoreSearch() {
 }
 
 // ── Recent searches (localStorage, last ~8 distinct queries) ──
-const RECENT_KEY = 'ms_recent_searches';
+// They used to be chips shown only while the box was focused, which on a phone
+// meant "only with the keyboard up". The list now belongs to the empty-state
+// screen and renderBrowse() is its only renderer — two renderers of the same
+// list have to agree on the state after a delete, and the chip row additionally
+// hid itself 150 ms after blur.
 const RECENT_MAX = 8;
+
+// Per account: the old global key handed the previous user's search history to
+// whoever logged in next on the same browser, and it is now visible with no
+// interaction at all.
+function _recentKey() {
+  return `ms_recent_searches_${store.currentUser?.username || ''}`;
+}
 
 function getRecentSearches() {
   try {
-    const arr = JSON.parse(localStorage.getItem(RECENT_KEY));
+    const arr = JSON.parse(localStorage.getItem(_recentKey()));
     return Array.isArray(arr) ? arr : [];
   } catch { return []; }
+}
+
+function _saveRecentSearches(list) {
+  try { localStorage.setItem(_recentKey(), JSON.stringify(list)); } catch {}
 }
 
 function addRecentSearch(q) {
@@ -284,49 +325,49 @@ function addRecentSearch(q) {
   let list = getRecentSearches().filter(x => x.toLowerCase() !== q.toLowerCase());
   list.unshift(q);
   list = list.slice(0, RECENT_MAX);
-  try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch {}
+  _saveRecentSearches(list);
+}
+
+function removeRecentSearch(q) {
+  _saveRecentSearches(getRecentSearches().filter(x => x !== q));
+  renderBrowse();
 }
 
 function clearRecentSearches() {
-  try { localStorage.removeItem(RECENT_KEY); } catch {}
-  renderRecentSearches();
+  try { localStorage.removeItem(_recentKey()); } catch {}
+  renderBrowse();
 }
 
-// Render recent-search chips, but only while the input is focused AND empty.
-function renderRecentSearches() {
-  const wrap = $('#recentSearches');
-  if (!wrap) return;
-  const input = $('#searchInput');
-  const focused = document.activeElement === input;
+// Markup only — renderBrowse() owns #searchResults and paints this above the
+// genre tiles.
+function _recentSearchesHtml() {
   const list = getRecentSearches();
-  if (!focused || (input && input.value.trim()) || !list.length) {
-    wrap.style.display = 'none';
-    wrap.innerHTML = '';
-    return;
-  }
-  wrap.innerHTML = list.map(q =>
+  if (!list.length) return '';
+  return '<div class="search-section-header"><h3>Recent searches</h3>'
+    + '<button type="button" class="section-showall" id="recentClear">Clear</button></div>'
+    + '<div class="recent-list">'
     // escAttr (not esc) inside the attribute: esc() leaves quotes intact, and the
     // value is attacker-reachable (provider artist name → data-search-q → input
     // → addRecentSearch → localStorage → here).
-    `<button type="button" class="recent-chip" data-recent-q="${escAttr(q)}">${esc(q)}</button>`
-  ).join('') + '<button type="button" class="recent-clear" id="recentClear">Clear</button>';
-  wrap.style.display = 'flex';
-  $$('.recent-chip', wrap).forEach(chip => {
-    chip.addEventListener('mousedown', (e) => e.preventDefault()); // keep input focus
-    chip.addEventListener('click', () => {
-      const input2 = $('#searchInput');
-      input2.value = chip.dataset.recentQ;
-      $('#searchClear').style.display = 'block';
-      wrap.style.display = 'none';
-      clearTimeout(store.searchTimeout);
-      doSearch();
-    });
-  });
-  const clearBtn = $('#recentClear', wrap);
-  if (clearBtn) {
-    clearBtn.addEventListener('mousedown', (e) => e.preventDefault());
-    clearBtn.addEventListener('click', clearRecentSearches);
-  }
+    + list.map(q => `<div class="recent-item">
+        <button type="button" class="recent-item-q" data-recent-q="${escAttr(q)}">${esc(q)}</button>
+        <button type="button" class="recent-item-del" data-recent-del="${escAttr(q)}" title="Remove" aria-label="Remove ${escAttr(q)}">&#x2715;</button>
+      </div>`).join('')
+    + '</div>';
+}
+
+function _wireRecentSearches(el) {
+  $$('.recent-item-q', el).forEach(btn => btn.addEventListener('click', () => {
+    $('#searchInput').value = btn.dataset.recentQ;
+    $('#searchClear').style.display = 'block';
+    clearTimeout(store.searchTimeout);
+    doSearch();
+  }));
+  $$('.recent-item-del', el).forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    removeRecentSearch(btn.dataset.recentDel);
+  }));
+  $('#recentClear', el)?.addEventListener('click', clearRecentSearches);
 }
 
 // ── Browse tiles (what an empty search box shows) ──
@@ -341,28 +382,47 @@ function _tileHue(name) {
   return h;
 }
 
+// A failed load used to be cached as an empty list and answered with an empty
+// page for the rest of the session. Keep the cache null on failure so the
+// retry button has something to retry.
+function _browseErrorHtml(msg) {
+  return `<div class="empty-state"><p>${esc(msg)}</p>`
+    + '<button type="button" class="retry-btn" id="browseRetry">Try again</button></div>';
+}
+
 export async function renderBrowse() {
   const el = $('#searchResults');
   if (!el) return;
+  store.genreOpen = false;
   el.classList.remove('grid');
+  const recent = _recentSearchesHtml();
+  let failed = false;
   if (!_genreCache) {
-    el.innerHTML = `<div class="browse-grid">${Array(12).fill('<div class="skeleton skeleton-tile"></div>').join('')}</div>`;
+    el.innerHTML = recent + `<div class="browse-grid">${Array(12).fill('<div class="skeleton skeleton-tile"></div>').join('')}</div>`;
+    _wireRecentSearches(el);
     try {
       const data = await apiJson('/api/genres');
-      _genreCache = Array.isArray(data.genres) ? data.genres : [];
-    } catch { _genreCache = []; }
+      const genres = Array.isArray(data.genres) ? data.genres : [];
+      if (genres.length) _genreCache = genres; else failed = true;
+    } catch { failed = true; }
   }
   // The box may have been typed into while the genres were loading — a stale
   // tile wall must not land on top of real results.
   if ($('#searchInput').value.trim()) return;
-  if (!_genreCache.length) { el.innerHTML = ''; return; }
-  el.innerHTML = '<div class="search-section-header"><h3>Browse all</h3></div><div class="browse-grid">'
+  if (failed || !_genreCache) {
+    el.innerHTML = recent + _browseErrorHtml('Could not load the genre list.');
+    _wireRecentSearches(el);
+    $('#browseRetry', el)?.addEventListener('click', renderBrowse);
+    return;
+  }
+  el.innerHTML = recent + '<div class="search-section-header"><h3>Browse all</h3></div><div class="browse-grid">'
     + _genreCache.map(g => `
       <button type="button" class="genre-tile" data-genre-id="${escAttr(g.id)}" data-genre-name="${escAttr(g.name)}" style="--tile-hue:${_tileHue(g.name)}">
         <span class="genre-tile-name">${esc(g.name)}</span>
         ${g.image ? `<img class="genre-tile-img" src="${escAttr(g.image)}" alt="" loading="lazy">` : ''}
       </button>`).join('')
     + '</div>';
+  _wireRecentSearches(el);
   $$('.genre-tile', el).forEach(tile => tile.addEventListener('click', () => {
     openGenre(tile.dataset.genreId, tile.dataset.genreName);
   }));
@@ -389,10 +449,25 @@ function _cardSection(title, items, sink) {
 
 // A genre's charts: top tracks as rows (so starting one queues the rest), then
 // the artists, albums and playlists carrying it.
+// The genre chart is a layer like artist/album detail, but it has no DOM
+// element of its own (it repaints #searchResults), so the router cannot spot it
+// by visibility — it goes on the flag instead. historyBack() only when the user
+// asked for it; a popstate has already moved history itself.
+export function closeGenre(fromPopstate) {
+  if (!store.genreOpen) return;
+  store.genreOpen = false;
+  renderBrowse();
+  if (!fromPopstate) historyBack();
+}
+
 async function openGenre(id, name) {
   // Takes over the search generation so an in-flight query can't repaint over
   // this, and clears searchQuery so infinite scroll stays out of it.
   const { gen, signal } = _beginSearch();
+  // Without an entry of its own, Back was swallowed here for good: the router's
+  // anti-exit guard pushes the popped item straight back.
+  history.pushState({ layer: 'genre' }, '');
+  store.genreOpen = true;
   const el = $('#searchResults');
   store.searchHasMore = false;
   store.searchQuery = '';
@@ -406,7 +481,7 @@ async function openGenre(id, name) {
   } catch (e) {
     if (gen !== _searchGen) return;
     el.innerHTML = head + `<div class="empty-state"><p>Could not load ${esc(name)}: ${esc(e.message)}</p></div>`;
-    $('#genreBack')?.addEventListener('click', renderBrowse);
+    $('#genreBack')?.addEventListener('click', () => closeGenre());
     return;
   }
   if (gen !== _searchGen) return;
@@ -428,7 +503,7 @@ async function openGenre(id, name) {
   });
   el.innerHTML = head;
   el.appendChild(frag);
-  $('#genreBack')?.addEventListener('click', renderBrowse);
+  $('#genreBack')?.addEventListener('click', () => closeGenre());
   if (sink.items.length) checkLibrary(sink.items, el, sink.cards);
   _setKbdActive(-1);
 }
@@ -474,8 +549,6 @@ function _handleSearchKeydown(e) {
     doSearch();
   } else if (e.key === 'Escape') {
     _setKbdActive(-1);
-    const wrap = $('#recentSearches');
-    if (wrap) wrap.style.display = 'none';
     $('#searchInput').blur();
   }
 }
@@ -492,6 +565,9 @@ let _searchGen = 0;
 let _searchAbort = null;
 
 function _beginSearch() {
+  // Any search repaints #searchResults, so whatever the genre layer put there
+  // is gone — the flag must not outlive it.
+  store.genreOpen = false;
   try { _searchAbort?.abort(); } catch {}
   _searchAbort = (typeof AbortController === 'function') ? new AbortController() : null;
   return { gen: ++_searchGen, signal: _searchAbort ? _searchAbort.signal : undefined };
@@ -630,19 +706,25 @@ export async function doSearch(append) {
     const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=${store.searchType}&limit=${pageSize}&offset=${store.searchOffset}`, { signal });
     if (gen !== _searchGen) return; // superseded — leave DOM/store to the newer search
     if (data.results.length < pageSize) store.searchHasMore = false;
+    // Paging stays on the raw page: the server's offset counts what it sent,
+    // not what survived the hygiene pass below.
+    const shown = store.searchType === 'artist'
+      ? _dedupeByName(_dropCreditEntities(data.results))
+      : data.results;
     if (asRows) {
-      _renderTrackRows(data.results, append);
+      _renderTrackRows(shown, append);
     } else if (!append) {
-      renderResults(data.results, '#searchResults', 'search');
+      renderResults(shown, '#searchResults', 'search');
     } else {
       const grid = $('#searchResults');
-      const newCards = data.results.map(item => buildCardElement(item, 'search'));
+      const newCards = shown.map(item => buildCardElement(item, 'search'));
       newCards.forEach(card => grid.appendChild(card));
       addCardKebabs(newCards);
-      checkLibrary(data.results, grid, newCards);
+      checkLibrary(shown, grid, newCards);
     }
     store.searchOffset += data.results.length;
     if (!append) {
+      _noteIfNothingMatches(q, shown);
       saveSearchState();
       addRecentSearch(q);
       _setKbdActive(-1);
@@ -667,7 +749,7 @@ function buildTopResultCard(item, fromPage) {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div class="card top-result-card${artistCls}" data-item='${JSON.stringify(item).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-      ${cardPlayBtn(item)}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="top-result-img" ${item.image ? `src="${escAttr(item.image)}"` : ''} alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
+      ${cardPlayBtn(item, { hero: true })}${cardRadioBtn(item)}${cardAddPlBtn(item)}${cardFavBtn(item)}<img class="top-result-img" ${item.image ? `src="${escAttr(item.image)}"` : ''} alt="" loading="lazy" onerror="this.style.background='var(--bg-elevated)'">
       <div class="top-result-name">${esc(item.name)}</div>
       <div class="top-result-type">${sub}</div>
     </div>
@@ -682,19 +764,47 @@ function buildTopResultCard(item, fromPage) {
     _playOrRoute(card, it, fromPage);
   });
   _wireAddPlBtn(card);
+  if (type === 'artist') _wireHeroArtistPlay(card, item);
   // The shared .card-radio-btn / .card-addpl-btn rules pin these to a card's
   // bottom-LEFT, which on the tall hero lands on the name/type labels rather
-  // than on cover art. Line them up to the left of the play button instead —
-  // bottom-right is the corner the hero already reserves for actions.
-  let right = card.querySelector('.card-play-btn') ? 52 : 8;
-  ['.card-addpl-btn', '.card-radio-btn'].forEach(sel => {
+  // than on cover art. They belong in the artwork's bottom-right corner — but
+  // the offsets are CSS now (.hero-act-N in search.css), because the inline
+  // pixels were computed from the desktop artwork size and the mobile
+  // breakpoint had no way to override them: on a 390px screen the buttons
+  // ended up beside the cover instead of on it. All JS still says is which
+  // button is how many places from the right.
+  let slot = 0;
+  ['.card-play-btn', '.card-addpl-btn', '.card-radio-btn'].forEach(sel => {
     const btn = card.querySelector(sel);
-    if (!btn) return;
-    btn.style.left = 'auto';
-    btn.style.right = right + 'px';
-    right += 44;
+    if (btn) btn.classList.add(`hero-act-${slot++}`);
   });
   return card;
+}
+
+// An artist hero plays its top tracks, the way it does on Spotify. The track
+// list is not in the search payload, so it is fetched on the click — which is
+// why only the hero gets the button and the artist grid cards do not.
+function _wireHeroArtistPlay(card, item) {
+  const btn = card.querySelector('.card-play-btn');
+  if (!btn || !item.id) return;
+  btn.addEventListener('click', async (e) => {
+    // The document-level .card-play-btn delegation would try to resolve the
+    // artist itself as a playable track.
+    e.stopPropagation();
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const qs = item.provider ? `?provider=${encodeURIComponent(item.provider)}&limit=10` : '?limit=10';
+      const data = await apiJson(`/api/artist/${encodeURIComponent(item.id)}/top${qs}`);
+      const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+      if (!tracks.length) { showToast('No popular tracks for this artist', true); return; }
+      (await import('./upnext.js')).playTracks(tracks, 0);
+    } catch (err) {
+      showToast(`Could not start ${item.name}: ${err.message}`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 // ── Compact song rows (list, not cards) — reuse card-play delegation + kebab/heart ──
@@ -742,7 +852,9 @@ export function renderSongRows(tracks, sink, opts = {}) {
     row.appendChild(makeKebabButton(() => {
       try { const it = JSON.parse(row.dataset.item); return { item: it, type: it.type || 'track', context: { inLibrary: !!it.inLibrary } }; } catch { return null; }
     }));
-    row.appendChild(makeHeartButton(item));
+    // Spotify puts the heart first in the trailing cluster — ♡, length, ⋯.
+    // Appending it left it to the right of both.
+    row.insertBefore(makeHeartButton(item), row.querySelector('.song-duration'));
     row.addEventListener('click', (e) => {
       if (wasLongPress()) return;
       if (e.target.closest('.clickable') || e.target.closest('.card-play-btn') || e.target.closest('.card-addpl-btn')
@@ -826,6 +938,84 @@ function _dedupeByName(list) {
   });
 }
 
+// Deezer answers with a placeholder cover whose path carries an empty hash
+// (/images/artist//500x500-…). It is a real URL that loads, so an empty-field
+// test finds nothing; the shape of the address is the only tell. Combined with
+// a comma in the name it reliably marks a credit entity ("Daft Punk, Pharrell
+// Williams", "Made famous by Daft Punk") rather than a real artist.
+const PROVIDER_PLACEHOLDER_IMG = /\/images\/[a-z]+\/\/\d+x\d+/;
+
+function _dropCreditEntities(list) {
+  return list.filter(it => !(it && typeof it.image === 'string'
+    && PROVIDER_PLACEHOLDER_IMG.test(it.image)
+    && String(it.name || '').includes(',')));
+}
+
+// Deezer matches fuzzily enough that nonsense comes back as a confident page of
+// somebody else's music. Say so above the results and leave them as suggestions.
+//
+// Whole-word equality was too strict: a typo keeps the opening of the word but
+// not the whole of it, so "beyonse" over a page headed by Beyoncé, "thriler"
+// over Thriller and "michaell jacksonn" over Michael Jackson all got told
+// "No results" above the very thing they were looking for. Two words count as
+// the same word when they open the same way; four characters is enough to keep
+// "zzzqqqxyznotathing12345" apart from everything a provider can return, and
+// short words are compared whole rather than padded.
+const _MATCH_PREFIX = 4;
+
+function _sharesOpening(a, b) {
+  const n = Math.min(_MATCH_PREFIX, a.length, b.length);
+  return n >= 2 && a.slice(0, n) === b.slice(0, n);
+}
+
+// The top result is not a second, independent test. `_pick_top_result` in
+// app/services/search_providers.py only returns nothing at its last step, i.e.
+// when all four branches came back empty — and then there is nothing to put the
+// note above either. "Only say it when the answer has no top" would therefore make
+// this note dead code; measured, `top` is non-null even for
+// "zzzqqqxyznotathing12345" (it falls through to tracks[0]). The top is already
+// one of `items` here, so the single test below covers it.
+function _nothingMatches(q, items) {
+  // Both sides go through the same _normName, so diacritics can never split a
+  // pair on their own ("beyonce" the query vs. "Beyoncé" the result).
+  const words = [...new Set(_normName(q).split(' ').filter(w => w.length > 1))];
+  if (!words.length || !items.length) return false;
+  return !items.some(it => _normName(`${(it && it.name) || ''} ${(it && it.artist) || ''}`)
+    .split(' ').some(w => words.some(qw => _sharesOpening(qw, w))));
+}
+
+function _noteIfNothingMatches(q, items) {
+  const el = $('#searchResults');
+  if (!el || !_nothingMatches(q, items)) return;
+  const note = document.createElement('div');
+  note.className = 'no-match-note';
+  note.innerHTML = `No results for <strong>${esc(q)}</strong>`;
+  el.insertBefore(note, el.firstChild);
+}
+
+// The four branches /api/search/all runs; `errors` is keyed by these.
+const SEARCH_ALL_TYPES = ['track', 'artist', 'album', 'playlist'];
+
+function _sectionErrorStrip(title, onRetry) {
+  const section = document.createElement('div');
+  section.className = 'search-section';
+  const header = document.createElement('div');
+  header.className = 'search-section-header';
+  header.innerHTML = `<h3>${esc(title)}</h3>`;
+  section.appendChild(header);
+  const strip = document.createElement('div');
+  strip.className = 'section-error';
+  strip.innerHTML = `<span>Couldn&rsquo;t load ${esc(title.toLowerCase())}.</span>`;
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'retry-btn';
+  retry.textContent = 'Try again';
+  retry.addEventListener('click', onRetry);
+  strip.appendChild(retry);
+  section.appendChild(strip);
+  return section;
+}
+
 // ── All-mode aggregated search (Spotify-style sections) ──
 async function doSearchAll() {
   const { gen, signal } = _beginSearch();
@@ -845,12 +1035,23 @@ async function doSearchAll() {
     const data = await apiJson('/api/search/all?q=' + encodeURIComponent(q) + '&limit_per_type=8', { signal });
     if (gen !== _searchGen) return; // superseded — don't repaint under a newer query
     const top = data.top || null;
+    const errors = (data.errors && typeof data.errors === 'object') ? data.errors : {};
     const tracks = _withoutTop(top, Array.isArray(data.tracks) ? data.tracks : []);
     // Artists only: same-name albums/playlists are frequently distinct releases
     // or distinct user playlists, so collapsing them would hide real results.
-    const artists = _dedupeByName(_withoutTop(top, Array.isArray(data.artists) ? data.artists : []));
+    const artists = _dedupeByName(_dropCreditEntities(_withoutTop(top, Array.isArray(data.artists) ? data.artists : [])));
     const albums = _withoutTop(top, Array.isArray(data.albums) ? data.albums : []);
     const playlists = _withoutTop(top, Array.isArray(data.playlists) ? data.playlists : []);
+
+    // Every branch down: that is a dead provider, not an empty result, and the
+    // user has to be able to ask again.
+    if (SEARCH_ALL_TYPES.every(t => errors[t])) {
+      resultsEl.classList.remove('grid');
+      resultsEl.innerHTML = _browseErrorHtml('Search is unavailable right now.');
+      $('#browseRetry', resultsEl)?.addEventListener('click', () => doSearchAll());
+      store.searchLoading = false;
+      return;
+    }
 
     resultsEl.classList.remove('grid');
     const frag = document.createDocumentFragment();
@@ -895,6 +1096,9 @@ async function doSearchAll() {
 
     // 2-4) Artists / Albums / Playlists sections
     const _section = (title, type, items) => {
+      // A provider that fell over gets a visible strip. Leaving the section out
+      // made a partial outage look like "there simply are no albums".
+      if (errors[type]) { frag.appendChild(_sectionErrorStrip(title, () => doSearchAll())); return; }
       if (!items.length) return;
       const section = document.createElement('div');
       section.className = 'search-section';
@@ -914,15 +1118,22 @@ async function doSearchAll() {
       slice.forEach(it => allItems.push(it));
       cards.forEach(c => allCards.push(c));
     };
+    if (errors.track) frag.appendChild(_sectionErrorStrip('Songs', () => doSearchAll()));
     _section('Artists', 'artist', artists);
     _section('Albums', 'album', albums);
     _section('Playlists', 'playlist', playlists);
 
-    if (!top && !tracks.length && !artists.length && !albums.length && !playlists.length) {
+    // `errors` has to be part of the emptiness test. Three branches down and the
+    // fourth legitimately empty is not "nothing was found" — throwing the
+    // fragment away there would hide the strips, the Try again buttons and every
+    // trace of the outage behind the one sentence that says the opposite.
+    if (!top && !tracks.length && !artists.length && !albums.length && !playlists.length
+        && !Object.keys(errors).length) {
       resultsEl.innerHTML = '<div class="empty-state"><p>No results found</p></div>';
     } else {
       resultsEl.innerHTML = '';
       resultsEl.appendChild(frag);
+      _noteIfNothingMatches(q, allItems);
       $$('.section-showall', resultsEl).forEach(btn => {
         btn.addEventListener('click', () => {
           const type = btn.dataset.showall;
@@ -946,8 +1157,28 @@ async function doSearchAll() {
   $('#searchLoadMore').style.display = 'none';
 }
 
+// Artist, album and show detail all live inside #pageSearch, so switching a tab
+// or typing a new query searched BEHIND them: the tab turned green, the results
+// repainted out of sight, and "← Back to results" was the only way out. Each
+// close() also pops the history entry its layer pushed, exactly as that button
+// does. offsetParent, not style.display — see docs/architecture.md.
+function _closeOpenDetail() {
+  const layers = [
+    ['#artistDetail', closeArtistDetail],
+    ['#albumDetail', closeAlbumDetail],
+    ['#showDetail', closeShowDetail],
+  ];
+  for (const [sel, close] of layers) {
+    const el = $(sel);
+    if (el && el.offsetParent !== null) { close(); return; }
+  }
+}
+
 // ── Init (called from app.js) ──
 export function init() {
+  // The recent-search list used to live under one key for the whole browser.
+  try { localStorage.removeItem('ms_recent_searches'); } catch {}
+
   // Quick "refresh app" button next to the mic — clears the asset cache and
   // reloads with a cache-bust (same effect as Settings → Refresh), so users can
   // pull a new frontend without hunting through Settings. Keeps login.
@@ -964,16 +1195,21 @@ export function init() {
 
   $('#searchInput').addEventListener('input', () => {
     clearTimeout(store.searchTimeout);
-    $('#searchClear').style.display = $('#searchInput').value ? 'block' : 'none';
+    const value = $('#searchInput').value;
+    $('#searchClear').style.display = value ? 'block' : 'none';
     _setKbdActive(-1);
-    renderRecentSearches();
+    _closeOpenDetail();
+    if (!value.trim()) {
+      // Without this an older request still in flight comes back and paints its
+      // results over the empty-state screen we are about to draw.
+      _cancelSearch();
+      store.searchQuery = '';
+      store.searchHasMore = false;
+      saveSearchState();
+      renderBrowse();
+      return;
+    }
     store.searchTimeout = setTimeout(doSearch, 400);
-  });
-  // Recent-search chips appear when the input is focused and empty.
-  $('#searchInput').addEventListener('focus', renderRecentSearches);
-  $('#searchInput').addEventListener('blur', () => {
-    // Delay so a chip click (which blurs the input) still registers.
-    setTimeout(() => { const w = $('#recentSearches'); if (w) w.style.display = 'none'; }, 150);
   });
   $('#searchInput').addEventListener('keydown', _handleSearchKeydown);
   $('#searchClear').addEventListener('click', () => {
@@ -988,7 +1224,6 @@ export function init() {
     _setKbdActive(-1);
     saveSearchState();
     autoFocus($('#searchInput'));
-    renderRecentSearches();
   });
 
   $$('.type-btn[data-type]').forEach(btn => {
@@ -996,6 +1231,7 @@ export function init() {
       $$('.type-btn[data-type]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       store.searchType = btn.dataset.type;
+      _closeOpenDetail();
       doSearch();
     });
   });
@@ -1005,7 +1241,13 @@ export function init() {
     const scrollBottom = window.innerHeight + window.scrollY;
     if (scrollBottom < document.body.offsetHeight - 300) return;
 
-    if (store.currentPage === 'search' && !store.searchLoading && store.searchHasMore && store.searchQuery) {
+    // currentPage stays 'search' while an artist/album/show detail is open —
+    // those layers live inside #pageSearch — so scrolling one of them used to
+    // page the hidden result list underneath. Ask whether the list is actually
+    // on screen; style.display doesn't answer that for a layer inside a page.
+    const results = $('#searchResults');
+    if (store.currentPage === 'search' && results && results.offsetParent !== null
+        && !store.searchLoading && store.searchHasMore && store.searchQuery) {
       doSearch(true);
     }
   });
