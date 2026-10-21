@@ -13,12 +13,19 @@ body.player-active { --player-height: 68px; }
   width: var(--player-progress, 0%); background: var(--accent); transition: width .15s linear;
 }
 body.player-active .player-bar { display: flex; }
+/* With the small queue panel open, .queue-backdrop (z-index 249) lay over the bar,
+   which stayed visible through the blur and looked live — every tap on Play only
+   closed the queue. The class is set by openQueuePanel and cleared by
+   closeQueuePanel; it is deliberately NOT derived from the backdrop, which the big
+   player's queue panel shares and over which the bar must stay. */
+.player-bar.queue-open { z-index: 250; }
 .player-bar .player-img { width: 46px; height: 46px; border-radius: 10px; object-fit: cover; flex-shrink: 0; background: var(--bg-elevated); cursor: pointer; transition: box-shadow .2s; }
 .player-bar .player-img:hover { box-shadow: 0 0 16px rgba(162,230,64,.15); }
 .player-bar .player-text { min-width: 0; flex: 1; cursor: pointer; }
 .player-bar .player-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player-bar .player-artist-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .player-bar .player-artist { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#playerArtist:hover, #fpArtist:hover, #fpTitle:hover { text-decoration: underline; }
 .player-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .player-controls button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
 .player-controls button:hover { color: var(--text); background: rgba(255,255,255,.05); }
@@ -39,7 +46,8 @@ body.player-active .player-bar { display: flex; }
 .full-player-backdrop { display: none; }
 .full-player {
   position: fixed; inset: 0; z-index: 201; display: flex; flex-direction: column;
-  background: linear-gradient(180deg, rgba(28,28,40,0.99) 0%, rgba(10,10,16,0.99) 100%);
+  background-color: var(--bg);
+  background-image: linear-gradient(180deg, rgb(28,28,40) 0%, rgb(10,10,16) 100%);
   transform: translateY(100%); transition: transform .35s cubic-bezier(.32,.72,0,1);
   overflow: hidden;
 }
@@ -83,6 +91,9 @@ body.player-active .player-bar { display: flex; }
 .fp-actions { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 0 32px 24px; flex-shrink: 0; width: 100%; }
 .fp-actions button { background: none; border: none; color: var(--text-muted); cursor: pointer; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all var(--transition); }
 .fp-actions button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+/* Removing from a playlist deletes the track on the server. Tooltips do not exist on
+   touch, so the warning has to be in the glyph and in the colour. */
+.player-actions .pl-remove-btn:hover, .fp-actions .pl-remove-btn:hover { color: var(--red, #ef4444); }
 
 /* Clusters: DJ controls / track actions / output — separated by thin
    dividers instead of one flat row of 8-9 icons. */
@@ -172,7 +183,18 @@ body.player-active .player-bar { display: flex; }
 .fp-queue-panel .queue-drag-handle { order: -1; margin: 8px auto 0; }
 .fp-queue-panel .panel-header { order: 0; }
 .queue-drag-handle { width: 40px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.25); margin: 8px auto 0; flex-shrink: 0; }
+/* The header of both queue panels now carries Save as well as Clear and ✕. On a
+   phone that row is wider than the panel, and without wrapping the ✕ is pushed off
+   the screen entirely — measured: #queuePanelClose outside the viewport. */
+.queue-panel .panel-header, .fp-queue-panel .panel-header { flex-wrap: wrap; row-gap: 6px; }
 .queue-list { flex: 1; overflow-y: auto; padding: 8px; }
+/* Where the queue the user built ends and the recommender's tail begins. */
+.qi-autoplay-sep {
+  display: flex; align-items: center; gap: 8px;
+  margin: 10px 12px 6px; font-size: 10px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim);
+}
+.qi-autoplay-sep::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 .queue-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; cursor: pointer; transition: background .15s; }
 .queue-item:hover { background: rgba(255,255,255,.04); }
 .queue-item.now-playing { background: var(--accent-dim); border: 1px solid rgba(162,230,64,.2); }
@@ -194,6 +216,13 @@ body.player-active .player-bar { display: flex; }
   .queue-item:hover .qi-remove { opacity: 1; }
   .queue-item .qi-drag { opacity: 0.4; }
   .queue-item:hover .qi-drag { opacity: 1; }
+}
+/* A phone row carries a 36px thumbnail and five controls, leaving .qi-info about
+   150 px — two different tracks both read "Get Lucky …". The tempo badge and the ✕
+   are the two the row can do without: the kebab removes as well, and the badge is
+   information rather than an action. Above 640 px there is room for both. */
+@media (max-width: 640px) {
+  .queue-item .qi-bpm, .queue-item .qi-remove { display: none; }
 }
 .queue-item.qi-dragging { opacity: 0.4; }
 .queue-item.qi-drag-over { border-top: 2px solid var(--accent); margin-top: -2px; }
