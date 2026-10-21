@@ -26,7 +26,7 @@ const VP = (args.find(a => a.startsWith('--vp=')) || '--vp=desktop').slice(5);
 const ONLY = (args.find(a => a.startsWith('--only=')) || '').slice(7);
 const wtArg = args.find(a => a === '--worktree' || a.startsWith('--worktree='));
 const WORKTREE = wtArg
-  ? (wtArg.includes('=') ? wtArg.slice('--worktree='.length) : '/home/lucas/music-seeker-wt/oprava-4-c2-prehravac')
+  ? (wtArg.includes('=') ? wtArg.slice('--worktree='.length) : (process.env.MS_TREE || '/home/lucas/music-seeker'))
   : null;
 
 // ── Společné kroky ──────────────────────────────────────────────────────────

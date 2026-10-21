@@ -111,6 +111,10 @@ export const store = {
   playerPlaying: false,
   playerVolume: 1.0,
   queuePanelOpen: false,
+  // Žánrový žebříček je vrstva bez vlastního prvku v DOM, takže router nemá
+  // podle čeho poznat, že je otevřená — drží si ji tady (search.js ji nastavuje,
+  // handlePopstate se na ni ptá).
+  genreOpen: false,
   playerSaveTimer: null,
 
   // ── Playlist Mode ──

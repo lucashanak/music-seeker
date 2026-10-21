@@ -24,7 +24,7 @@
 
 import { open, search, goPage, makeReport, URL as PROD } from './helpers.mjs';
 
-const ROOT = '/home/lucas/music-seeker-wt/oprava-4-c3-navigace';
+const ROOT = process.env.MS_TREE || '/home/lucas/music-seeker';
 // Which tree the page is served from. Empty = production's own deployed files.
 const TREE = process.env.MS_TREE || (process.env.MS_PATCH === '1' ? ROOT : null);
 const PATCH = !!TREE;

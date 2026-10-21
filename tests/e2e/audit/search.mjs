@@ -31,7 +31,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { open, search, makeReport } from '/home/lucas/music-seeker/tests/e2e/audit/helpers.mjs';
 
-const ROOT = '/home/lucas/music-seeker-wt/oprava-4-c1-vyhledavani';
+const ROOT = process.env.MS_TREE || '/home/lucas/music-seeker';
 
 // ── třetí orákulum: strom PŘED opravou R1.1 ────────────────────────────────
 // Pruh „No results for" nasazená produkce vůbec nekreslí — je celý nový v téhle
