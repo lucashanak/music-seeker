@@ -514,6 +514,62 @@ function _cancelSearch() {
 // queues everything loaded so far, not just the twenty that arrived together.
 let _trackRowQueue = [];
 
+// How deep the queue should be once you start playing from the results. The
+// rows on screen used to BE the queue, so a tap on a fresh search queued the
+// twenty that had loaded and then stopped. Playing now pulls the next pages in
+// behind you, exactly as scrolling would have.
+const QUEUE_TARGET = 100;
+let _toppingUp = false;
+
+// playTracks() adopts a list's context array as store.playerQueue, so anything
+// pushed into that same array lands in the live queue. The identity check is
+// what tells us the thing playing is still this list.
+async function _growLiveQueue(ctx, added) {
+  if (!added.length || store.playerQueue !== ctx) return false;
+  // The server-side mirror was written when playback started and knows nothing
+  // about these, and the queue panel paints from a snapshot.
+  try { (await import('./upnext.js')).mirrorAdd(added); } catch {}
+  try { (await import('./queue.js')).renderQueue(); } catch {}
+  return true;
+}
+
+async function _topUpQueue() {
+  if (_toppingUp || store.searchType !== 'track') return;
+  _toppingUp = true;
+  try {
+    while (_trackRowQueue.length < QUEUE_TARGET && store.searchHasMore && store.searchQuery) {
+      const ctx = _trackRowQueue;
+      const before = ctx.length;
+      await doSearch(true);
+      const added = ctx.slice(before);
+      if (!added.length) break;   // superseded search, or the list was replaced
+      if (!await _growLiveQueue(ctx, added)) break;   // playing something else now
+    }
+  } catch (e) {
+    console.warn('Queue top-up failed', e);
+  } finally {
+    _toppingUp = false;
+  }
+}
+
+// The All tab shows six songs under the top result. Starting one of those used
+// to queue just those six; this pulls the full Songs tab in behind them.
+async function _topUpAllSongs(ctx, q) {
+  if (_toppingUp || !q) return;
+  _toppingUp = true;
+  try {
+    const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=track&limit=50&offset=0`);
+    const seen = new Set(ctx.map(t => String(t.id)));
+    const added = (data.results || []).filter(t => !seen.has(String(t.id)));
+    ctx.push(...added);
+    await _growLiveQueue(ctx, added);
+  } catch (e) {
+    console.warn('Queue top-up failed', e);
+  } finally {
+    _toppingUp = false;
+  }
+}
+
 function _renderTrackRows(tracks, append) {
   const el = $('#searchResults');
   const existing = append ? el.querySelector('.song-list') : null;
@@ -526,6 +582,11 @@ function _renderTrackRows(tracks, append) {
   if (existing) {
     while (list.firstChild) existing.appendChild(list.firstChild);
   } else {
+    // Starting a song here is what asks for a deeper queue — both the ▶ button
+    // and a tap on the row, which clicks that same button.
+    list.addEventListener('click', (e) => {
+      if (e.target.closest('.card-play-btn')) _topUpQueue();
+    });
     el.innerHTML = '';
     el.appendChild(list);
   }
@@ -548,13 +609,16 @@ export async function doSearch(append) {
   // what you scan down, and a card per song fits four of them on a phone.
   // Albums, artists and playlists stay in the grid, where the cover IS the item.
   const asRows = store.searchType === 'track';
+  // Rows are a third the height of a card, and they double as the play queue,
+  // so the song list pulls Deezer's full page instead of a grid-sized one.
+  const pageSize = asRows ? 50 : 20;
   if (!append) {
     store.searchOffset = 0;
     store.searchHasMore = true;
     store.searchQuery = q;
     const el = $('#searchResults');
     el.classList.toggle('grid', !asRows);
-    el.innerHTML = Array(asRows ? 10 : 8)
+    el.innerHTML = Array(asRows ? 12 : 8)
       .fill(asRows ? '<div class="skeleton skeleton-row"></div>' : '<div class="skeleton skeleton-card"></div>')
       .join('');
   }
@@ -563,9 +627,9 @@ export async function doSearch(append) {
   // the card skeletons.
   if (append) $('#searchLoadMore').style.display = '';
   try {
-    const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=${store.searchType}&limit=20&offset=${store.searchOffset}`, { signal });
+    const data = await apiJson(`/api/search?q=${encodeURIComponent(q)}&type=${store.searchType}&limit=${pageSize}&offset=${store.searchOffset}`, { signal });
     if (gen !== _searchGen) return; // superseded — leave DOM/store to the newer search
-    if (data.results.length < 20) store.searchHasMore = false;
+    if (data.results.length < pageSize) store.searchHasMore = false;
     if (asRows) {
       _renderTrackRows(data.results, append);
     } else if (!append) {
@@ -791,7 +855,14 @@ async function doSearchAll() {
         ph.className = 'search-section-header';
         ph.innerHTML = '<h3>Songs</h3><button class="section-showall" data-showall="track">Show all</button>';
         panel.appendChild(ph);
-        panel.appendChild(renderSongRows(tracks.slice(0, 6), { items: allItems, cards: allCards }));
+        // A mutable context array: playing a row here tops it up to the full
+        // Songs tab in the background (see _topUpAllSongs).
+        const songCtx = tracks.slice(0, 6);
+        const songList = renderSongRows(songCtx, { items: allItems, cards: allCards }, { context: songCtx });
+        songList.addEventListener('click', (e) => {
+          if (e.target.closest('.card-play-btn')) _topUpAllSongs(songCtx, q);
+        });
+        panel.appendChild(songList);
         row.appendChild(panel);
       }
       frag.appendChild(row);
