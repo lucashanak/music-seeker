@@ -335,26 +335,25 @@
       </div>
     </div>
     <p class="page-subtitle">Playlists saved on this server.</p>
-    <!-- Own one-item grid, deliberately NOT inside #libraryGrid: renderLibraryGrid
-         overwrites that grid's innerHTML (empty state included), which would wipe
-         the tile on the first playlist render. A `.grid` of its own gives it the
-         same column width as a playlist card without sharing their container. -->
-    <div class="grid" id="likedSongsRow" style="margin-bottom:18px;">
-      <div class="card" id="likedSongsTile">
-        <div class="card-img" style="background:linear-gradient(135deg,#1db954,#1a1a2e);display:flex;align-items:center;justify-content:center;font-size:28px;color:#fff;">&#9829;</div>
-        <div class="card-body">
-          <div class="card-title">Liked Songs</div>
-          <div class="card-sub" id="likedSongsCount"></div>
+    <!-- Vlastní seznam o jedné položce, záměrně MIMO #libraryGrid:
+         renderLibraryGrid přepisuje jeho innerHTML (včetně prázdného stavu),
+         takže by při prvním vykreslení playlistů řádek zmizel. -->
+    <div class="coll-list" id="likedSongsRow" style="margin-bottom:12px;">
+      <div class="coll-row" id="likedSongsTile">
+        <div class="coll-thumb" style="background:linear-gradient(135deg,#1db954,#1a1a2e);color:#fff;">&#9829;</div>
+        <div class="coll-info">
+          <div class="coll-title">Liked Songs</div>
+          <div class="coll-meta" id="likedSongsCount"></div>
         </div>
       </div>
     </div>
-    <div id="libraryGrid" class="grid"></div>
+    <div id="libraryGrid"></div>
     <!-- Imported playlists: saved from a shared link, stored app-side (NOT in
          Navidrome). Hidden entirely until the user saves one. -->
     <section id="importedSection" class="imported-section" style="display:none;">
       <h3 class="imported-title">Imported playlists <span class="imported-count" id="importedCount"></span></h3>
       <p class="imported-sub">Saved from a shared Spotify/Deezer link. These stream — they aren't in Navidrome until you download them.</p>
-      <div id="importedGrid" class="grid"></div>
+      <div id="importedGrid"></div>
     </section>
   </div>
   <div id="likedSongsDetail" style="display:none; margin-top:24px;">

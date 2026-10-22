@@ -231,3 +231,40 @@
 .podcast-sub-actions select { background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 6px; font-size: 12px; }
 .btn-unsub { background: none; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 12px; padding: 4px 10px; cursor: pointer; }
 .btn-unsub:hover { border-color: #e74c3c; color: #e74c3c; }
+
+/* ── Sbírky jako řádky (knihovna) ──
+   Mřížka je pro hledání, kde obal je ta položka; knihovna je seznam věcí, které
+   uživatel zná a hledá v nich podle jména. Stejné rozdělení má Spotify. */
+.coll-list { display: flex; flex-direction: column; gap: 2px; }
+.coll-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 12px; border-radius: 8px; cursor: pointer;
+  position: relative; transition: background .15s;
+}
+.coll-row:hover { background: var(--bg-elevated); }
+.coll-thumb {
+  width: 48px; height: 48px; flex-shrink: 0; border-radius: 6px;
+  object-fit: cover; background: var(--bg-elevated);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; color: var(--text);
+}
+.coll-list-round .coll-thumb { border-radius: 50%; }
+.coll-info { min-width: 0; flex: 1; }
+.coll-title {
+  font-size: 15px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.coll-meta {
+  font-size: 12px; color: var(--text-muted); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Kebab sedí v řádku, ne absolutně nad obalem jako na kartě. */
+.coll-row .kebab-btn {
+  position: static; width: 32px; height: 32px; flex-shrink: 0;
+  opacity: 1; transform: none;
+}
+.coll-row .fav-new-badge,
+.coll-row .fav-auto-dl-badge {
+  position: static; flex-shrink: 0; margin-left: 4px;
+}
+.skeleton-coll { height: 64px; border-radius: 8px; margin-bottom: 2px; }

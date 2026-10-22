@@ -1,6 +1,11 @@
 /* ── Player Bar ── */
 :root { --player-height: 0px; }
 body.player-active { --player-height: 68px; }
+/* The bar is fixed, so without this it sits on top of the last rows of every
+   page — a hundred-and-sixty-fifth track in a playlist is simply not reachable.
+   The mobile breakpoint has had this since the bottom nav arrived; the desktop
+   layout never got it. */
+body.player-active main { padding-bottom: calc(var(--player-height) + 24px); }
 .player-bar {
   position: fixed; bottom: 0; left: 0; right: 0; height: 68px; z-index: 99;
   background: linear-gradient(180deg, rgba(22,22,32,0.97), rgba(12,12,18,0.98));

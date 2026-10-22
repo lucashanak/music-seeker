@@ -1,6 +1,7 @@
 // favorites.js — Favorites page, follow/unfollow, loadFavoritedArtistIds, release check
 
 import { store } from './store.js';
+import { renderCollRows, collSkeleton } from './collrow.js';
 import { $, $$, esc, showToast } from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
@@ -38,7 +39,7 @@ export async function toggleFavoriteArtist(item, btnEl) {
 export async function loadFavorites() {
   const grid = $('#favoritesGrid');
   const empty = $('#favoritesEmpty');
-  grid.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  collSkeleton(grid, 6);
   empty.style.display = 'none';
   try {
     const data = await apiJson('/api/favorites');
@@ -49,35 +50,19 @@ export async function loadFavorites() {
       empty.style.display = '';
       return;
     }
-    grid.innerHTML = artists.map(a => `
-      <div class="card fav-card" data-artist-id="${a.id}" data-item='${JSON.stringify({id: a.id, name: a.name, artist: a.name, image: a.image, type: "artist", provider: a.provider || ""}).replace(/&/g, "&amp;").replace(/'/g, "&#39;")}'>
-        <img class="card-img" ${a.image ? `src="${a.image}"` : ''} alt="" loading="lazy" style="border-radius:50%;" onerror="this.style.background='var(--bg-elevated)'">
-        ${a.new_release ? '<div class="fav-new-badge">NEW</div>' : ''}
-        ${a.auto_download ? '<div class="fav-auto-dl-badge" title="Auto-download enabled">&#x21E9; Auto</div>' : ''}
-        <div class="card-body">
-          <div class="card-title">${esc(a.name)}</div>
-          <div class="card-sub">${a.new_release ? esc(a.new_release.name) : (a.last_album_name ? esc(a.last_album_name) : '')}</div>
-        </div>
-      </div>
-    `).join('');
-    $$('.fav-card', grid).forEach(card => {
-      const at = () => artists.find(a => a.id === card.dataset.artistId);
-      card.addEventListener('click', () => {
-        if (wasLongPress(card)) return;
-        const artist = at();
-        if (!artist) return;
-        // #artistDetail lives inside #pageSearch, which is hidden while the
-        // Library page is up — so the page has to come forward first, or the
-        // detail renders into something nobody can see.
-        import('./router.js')
-          .then(r => { if (r.switchPage) r.switchPage('search'); return import('./spotify.js'); })
-          .then(m => m.loadArtistDetail && m.loadArtistDetail(artist.id, 'library', { provider: artist.provider || '', name: artist.name, image: artist.image }));
-      });
-      card.appendChild(makeKebabButton(() => _favoriteMenu(at())));
-    });
-    attachContextMenu(grid, {
-      selector: '.fav-card[data-item]',
-      getItem: (targetEl) => _favoriteMenu(artists.find(a => a.id === targetEl.dataset.artistId)),
+    renderCollRows(grid, artists, {
+      round: true,
+      thumb: (a) => a.image || '',
+      title: (a) => a.name,
+      meta: (a) => (a.new_release ? a.new_release.name : (a.last_album_name || 'Artist')),
+      badges: (a) => `${a.new_release ? '<div class="fav-new-badge">NEW</div>' : ''}${a.auto_download ? '<div class="fav-auto-dl-badge" title="Auto-download enabled">&#x21E9; Auto</div>' : ''}`,
+      // #artistDetail lives inside #pageSearch, which is hidden while the
+      // Library page is up — so the page has to come forward first, or the
+      // detail renders into something nobody can see.
+      onClick: (a) => import('./router.js')
+        .then(r => { if (r.switchPage) r.switchPage('search'); return import('./spotify.js'); })
+        .then(m => m.loadArtistDetail && m.loadArtistDetail(a.id, 'library', { provider: a.provider || '', name: a.name, image: a.image })),
+      menu: (a) => _favoriteMenu(a),
     });
   } catch (e) {
     grid.innerHTML = `<div class="empty-state"><p>Failed to load favorites: ${e.message}</p></div>`;

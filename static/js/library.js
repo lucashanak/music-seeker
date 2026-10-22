@@ -4,6 +4,7 @@ import { store } from './store.js';
 import { $, $$, esc, escAttr, showToast, historyBack, showPlaylistPicker, showInputModal, showPlaylistFormModal, showConfirmModal, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { renderSongList } from './search.js';
+import { renderCollRows, collSkeleton } from './collrow.js';
 import { fetchPlaylistBpm, addBpmBadges, createBpmFilter, addScanButton } from './bpm.js';
 import { attachContextMenu, buildActionsFor, showContextMenu, wasLongPress, makeKebabButton } from './contextmenu.js';
 import { getPlayerModule } from './player_active.js';
@@ -166,7 +167,7 @@ export async function loadLibrary() {
   // Its own section, its own store — loaded in parallel so a Navidrome outage
   // doesn't take the imported playlists down with it (or vice versa).
   loadSavedImports();
-  grid.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  collSkeleton(grid, 6);
   try {
     const data = await apiJson('/api/library/playlists');
     libraryCache = data.playlists || [];
@@ -209,31 +210,13 @@ function renderImportedGrid() {
   section.style.display = '';
   const countEl = $('#importedCount');
   if (countEl) countEl.textContent = playlists.length === 1 ? '1 playlist' : `${playlists.length} playlists`;
-  grid.innerHTML = playlists.map((pl, i) => `
-    <div class="card lib-card imported-card" data-imp-idx="${i}">
-      ${pl.image ? `<img class="card-img" src="${escAttr(pl.image)}" alt="" loading="lazy">` : `<div class="card-img" style="background:linear-gradient(135deg,var(--accent),#1a1a2e);display:flex;align-items:center;justify-content:center;font-size:28px;color:var(--text);">&#9835;</div>`}
-      <div class="imported-badge">Imported</div>
-      <div class="card-body">
-        <div class="card-title">${esc(pl.name)}</div>
-        <div class="card-sub">${pl.count || 0} track${pl.count === 1 ? '' : 's'}${pl.source ? ' · ' + esc(_IMPORT_SOURCE_LABEL[pl.source] || pl.source) : ''}</div>
-      </div>
-    </div>`).join('');
-
-  $$('.imported-card', grid).forEach(card => {
-    const at = () => (savedImportsCache || [])[parseInt(card.dataset.impIdx)];
-    card.addEventListener('click', () => {
-      if (wasLongPress(card)) return;
-      const pl = at();
-      if (pl) _openSavedImport(pl);
-    });
-    // Visible kebab: the same menu right-click / long-press gives.
-    card.appendChild(makeKebabButton(() => _savedImportMenu(at())));
-  });
-  // #importedGrid is persistent and attachContextMenu binds once, so the
-  // handler must read the cache by index — never a captured array.
-  attachContextMenu(grid, {
-    selector: '.imported-card',
-    getItem: (targetEl) => _savedImportMenu((savedImportsCache || [])[parseInt(targetEl.dataset.impIdx)]),
+  renderCollRows(grid, playlists, {
+    thumb: (pl) => pl.image || '',
+    fallback: () => '&#9835;',
+    title: (pl) => pl.name,
+    meta: (pl) => `${pl.count || 0} track${pl.count === 1 ? '' : 's'}${pl.source ? ' · ' + (_IMPORT_SOURCE_LABEL[pl.source] || pl.source) : ''} · Imported`,
+    onClick: (pl) => _openSavedImport(pl),
+    menu: (pl) => _savedImportMenu(pl),
   });
 }
 
@@ -326,33 +309,14 @@ async function _deleteSavedImport(pl) {
 }
 
 function renderLibraryGrid(playlists, grid) {
-  if (!playlists.length) {
-    grid.innerHTML = '<div class="empty-state"><p>No playlists yet — tap + New Playlist above, or download an album to get started.</p></div>';
-    return;
-  }
-  grid.innerHTML = playlists.map((pl, i) => `
-    <div class="card lib-card" data-lib-idx="${i}">
-      ${pl.image ? `<img class="card-img" src="${escAttr(pl.image)}" alt="" loading="lazy">` : `<div class="card-img" style="background:linear-gradient(135deg,var(--accent),#1a1a2e);display:flex;align-items:center;justify-content:center;font-size:28px;color:var(--text);">&#9835;</div>`}
-      <div class="card-body">
-        <div class="card-title">${esc(pl.name)}</div>
-        <div class="card-sub">${pl.songCount} tracks${pl.duration ? ' · ' + _fmtTotal(pl.duration) : ''}</div>
-      </div>
-    </div>`).join('');
-
-  $$('.lib-card', grid).forEach(card => {
-    const at = () => playlists[parseInt(card.dataset.libIdx)];
-    card.addEventListener('click', () => {
-      if (wasLongPress(card)) return;
-      const pl = at();
-      if (pl) loadLibraryDetail(pl.id);
-    });
-    // Same menu right-click / long-press gives, but visible — on touch there
-    // was no other route to rename or delete.
-    card.appendChild(makeKebabButton(() => _libraryPlaylistMenu(at())));
-  });
-  attachContextMenu(grid, {
-    selector: '.lib-card',
-    getItem: (targetEl) => _libraryPlaylistMenu(playlists[parseInt(targetEl.dataset.libIdx)]),
+  renderCollRows(grid, playlists, {
+    emptyHtml: '<div class="empty-state"><p>No playlists yet — tap + New Playlist above, or download an album to get started.</p></div>',
+    thumb: (pl) => pl.image || '',
+    fallback: () => '&#9835;',
+    title: (pl) => pl.name,
+    meta: (pl) => `${pl.songCount} tracks${pl.duration ? ' · ' + _fmtTotal(pl.duration) : ''}`,
+    onClick: (pl) => loadLibraryDetail(pl.id),
+    menu: (pl) => _libraryPlaylistMenu(pl),
   });
 }
 
