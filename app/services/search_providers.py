@@ -47,6 +47,14 @@ async def _deezer_limit() -> None:
             await asyncio.sleep(_DEEZER_WINDOW - (now - _deezer_calls[0]) + 0.05)
 
 ITUNES_BASE = "https://itunes.apple.com"
+# Which Apple storefront to search. The iTunes API answers for the United
+# States whatever the caller's address is, while Deezer and YouTube Music both
+# answer for the region they are called from — so left alone, iTunes is the one
+# provider searching a different market than the user lives in. Measured
+# (`scratchpad/autor3-5-c6/itunes-storefront.txt`): "olympic" on the US
+# storefront returns none of the Czech band's work at all and the search is
+# about the Games, while on CZ it is theirs fourteen rows of sixteen.
+ITUNES_COUNTRY = "CZ"
 
 # Bounds for paginated playlist fetches
 _PLAYLIST_MAX_PAGES = 5
@@ -339,7 +347,10 @@ async def deezer_genres() -> list[dict]:
         return cached
     async with httpx.AsyncClient(timeout=10) as client:
         await _deezer_limit()
-        resp = await client.get(f"{DEEZER_BASE}/genre")
+        # Deezer localises genre names by the CALLER's IP, and the app runs on a
+        # Czech host: without this header half the wall came back "Taneční
+        # hudba", "Alternativní hudba", "Pro děti" next to Pop, Rock and Jazz.
+        resp = await client.get(f"{DEEZER_BASE}/genre", headers={"Accept-Language": "en"})
         resp.raise_for_status()
         data = resp.json()
     genres = [
@@ -370,11 +381,7 @@ async def deezer_genre_chart(genre_id: str, limit: int = 20) -> dict:
     chart = {
         "tracks": [_deezer_track(t) for t in _rows("tracks")],
         "albums": [_deezer_album(a) for a in _rows("albums")],
-        "artists": [{
-            "id": str(a["id"]), "name": a.get("name", ""), "artist": a.get("name", ""),
-            "image": a.get("picture_big", ""), "url": a.get("link", ""),
-            "fans": a.get("nb_fan", 0), "type": "artist",
-        } for a in _rows("artists")],
+        "artists": _chart_artists(_rows("tracks")),
         "playlists": [{
             "id": str(p["id"]), "name": p.get("title", ""),
             "artist": (p.get("user") or {}).get("name", ""),
@@ -384,6 +391,34 @@ async def deezer_genre_chart(genre_id: str, limit: int = 20) -> dict:
     }
     _cache_put(_genre_chart_cache, key, chart, 64)
     return chart
+
+
+def _chart_artists(track_rows: list[dict]) -> list[dict]:
+    """The artists behind a genre chart's tracks, in the chart's own order.
+
+    Deezer scopes `/chart/{genre}` properly for tracks and albums but hands back
+    its own REGIONAL top for `artists`: measured on Pop, Rock, Rap, Jazz and
+    Metal, all ten names were identical to `/chart/0` every time, so "Rock"
+    listed Taylor Swift, Yzomandias and a German audiobook channel. The track
+    rows are the only genre-true source of artists the endpoint offers.
+
+    Mapped from the RAW rows rather than from `_deezer_track`, because that
+    mapper keeps the album cover as `image` — a derived artist card built from
+    it would wear a record sleeve instead of a portrait.
+    """
+    artists, seen = [], set()
+    for row in track_rows:
+        a = row.get("artist") or {}
+        artist_id = str(a.get("id", ""))
+        if not artist_id or artist_id in seen:
+            continue
+        seen.add(artist_id)
+        artists.append({
+            "id": artist_id, "name": a.get("name", ""), "artist": a.get("name", ""),
+            "image": a.get("picture_big", ""), "url": a.get("link", ""),
+            "type": "artist",
+        })
+    return artists
 
 
 async def deezer_artist_radio(artist_id: str) -> list[dict]:
@@ -569,6 +604,7 @@ async def itunes_search(query: str, search_type: str = "track", limit: int = 20)
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(f"{ITUNES_BASE}/search", params={
             "term": query, "media": media, "entity": entity, "limit": limit,
+            "country": ITUNES_COUNTRY,
         })
         resp.raise_for_status()
         data = resp.json()
@@ -908,6 +944,58 @@ _ARTIST_DOMINANCE_MIN = 3
 _ARTIST_DOMINANCE_SAMPLE = 10
 
 
+# What a joined credit is actually joined with. Measured over 839 credits from
+# the live Deezer, iTunes and YouTube Music pages of eighteen queries
+# (`scratchpad/autor3-5-c6/sonda-credity.txt`): a comma and " & " are the only
+# two that ever appear. " feat. ", " ft. ", " x ", " with ", " and " and " vs "
+# appear zero times, because all three providers keep the guest inside the
+# TITLE ("Dresscode (feat. Yzomandias)") and out of the credit — so splitting on
+# them would only be a guess that can cut a name in half.
+_CREDIT_JOINERS = re.compile(r",|\s&\s")
+
+
+def _credit_names(credit: str) -> list[str]:
+    """Every artist a joined credit may stand for: each part of it, and the whole.
+
+    The whole has to stay in, because both joiners are also part of some names
+    ("Earth, Wind & Fire", "Crosby, Stills & Nash"); splitting alone would turn
+    those into performers who do not exist and lose the one who does.
+    """
+    return [_normalize(credit)] + [_normalize(p) for p in _CREDIT_JOINERS.split(credit)]
+
+
+def _artist_owns(artist: dict, rows: list[dict]) -> int:
+    """How many of these rows are credited to this artist.
+
+    Matching falls back to the name because only Deezer stamps `artist_id` on a
+    row; iTunes and YouTube Music publish the credit as text only. Both of them
+    join several performers into one string — "Queen, David Bowie" on YouTube
+    Music, "Żabson & Yzomandias" on iTunes — so the credit is read as a list as
+    well as whole.
+    """
+    name = _normalize(artist.get("name", ""))
+    artist_id = str(artist.get("id", ""))
+    hits = 0
+    for row in rows:
+        row_id = str(row.get("artist_id", ""))
+        credit = str(row.get("artist", ""))
+        if artist_id and row_id and row_id == artist_id:
+            hits += 1
+        elif name and name in _credit_names(credit):
+            hits += 1
+    return hits
+
+
+def _artist_owns_enough(artist: dict, rows: list[dict]) -> bool:
+    """Is this page already mostly the artist's own work?
+
+    The question an exact name match cannot answer on its own: somebody on
+    Deezer is named after almost every famous song, so "Creep" matches a band
+    as well as the Radiohead track.
+    """
+    return _artist_owns(artist, rows) >= min(_ARTIST_DOMINANCE_MIN, len(rows))
+
+
 def _cache_get(store: dict, key: str, ttl: float):
     """(value, True) on a live hit, (None, False) otherwise."""
     hit = store.get(key)
@@ -1016,11 +1104,7 @@ async def _deezer_popular_first(query: str, search_type: str, limit: int, offset
     # The name matching above is exact but still blind: "Creep" is a real band
     # as well as the Radiohead song. Asking whether the ordinary results are
     # already mostly this artist is what tells the two apart.
-    sample = plain[:_ARTIST_DOMINANCE_SAMPLE]
-    name = _normalize(artist.get("name", ""))
-    hits = sum(1 for t in sample
-               if t.get("artist_id") == artist["id"] or _normalize(t.get("artist", "")) == name)
-    if hits < min(_ARTIST_DOMINANCE_MIN, len(sample)):
+    if not _artist_owns_enough(artist, plain[:_ARTIST_DOMINANCE_SAMPLE]):
         return None
 
     head = (await _deezer_artist_top_cached(artist["id"]) if search_type == "track"
@@ -1116,12 +1200,33 @@ def _normalize(name: str) -> str:
 
 def _pick_top_result(query: str, tracks: list[dict], artists: list[dict],
                      albums: list[dict], playlists: list[dict]) -> dict | None:
-    """Pick the single best 'top result' across all result types (Spotify-style)."""
+    """Pick the single best 'top result' across all result types (Spotify-style).
+
+    An exact name match is not enough on its own — somebody is named after
+    almost every famous song — but how big the namesake is cannot decide it
+    either. Measured on Deezer: the artists Lukáš actually searches for sit at
+    Portishead 584 k, Khruangbin 99 k and every Czech act far below that
+    (Chinaski 17 728, Olympic 5 071, Kryptor 148), so any absolute fan count
+    that clears "Creep" (4 020) takes the artist card away from them as well.
+    Two of the providers do not publish a fan count at all.
+
+    What separates the two cases is how much of the page the artist already
+    owns: measured over the tracks and albums of sixteen artist queries and ten
+    song titles, the artist queries score 3-16 of 16 and the song titles 0-1.
+    Only the head of each list is read, because `limit_per_type` goes up to 20
+    and the deep rows are relevance sweepings: asking for 20 a type put five
+    rows of the 8 076-fan band "Hurt" on the page and handed them the card.
+    """
     norm = _normalize(query)
-    # (1) exact artist name match
-    for a in artists:
-        if _normalize(a.get("name", "")) == norm:
-            return a
+    head = tracks[:_ARTIST_DOMINANCE_SAMPLE] + albums[:_ARTIST_DOMINANCE_SAMPLE]
+    # Deezer's relevance order is not size order, so take the biggest namesake
+    # rather than the first one listed. Where no provider publishes `fans` this
+    # falls back to the first exact match, which is what it always was.
+    named = max((a for a in artists if _normalize(a.get("name", "")) == norm),
+                key=lambda a: a.get("fans", 0), default=None)
+    # (1) exact artist name match, when the page is already mostly their work
+    if named is not None and _artist_owns_enough(named, head):
+        return named
     # (2) exact track/album name match (prefer track)
     for t in tracks:
         if _normalize(t.get("name", "")) == norm:
@@ -1132,6 +1237,9 @@ def _pick_top_result(query: str, tracks: list[dict], artists: list[dict],
     # (3)-(6) first available, tracks first
     if tracks:
         return tracks[0]
+    # A small namesake is still better than an artist nobody asked for.
+    if named is not None:
+        return named
     if artists:
         return artists[0]
     if albums:

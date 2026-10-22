@@ -34,11 +34,29 @@ class Job:
     playlist_tracks: list = field(default_factory=list)  # [{name, artist}]
     playlist_id: str = ""  # existing Navidrome playlist to add track to after download
     username: str = ""
+    # Finished here, but the actual downloading happens elsewhere (Lidarr). The
+    # status stays DONE on purpose: every filter in this module keys on the three
+    # terminal statuses, and an unknown one would also make _load_history() raise
+    # and drop the entire history on a rollback.
+    handed_off: bool = False
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["status"] = self.status.value
         d.pop("playlist_tracks", None)  # don't expose large track list in API
+        return d
+
+    def to_history(self) -> dict:
+        """What goes on disk — deliberately narrower than the API shape.
+
+        An older image reads this file with `Job(**entry)`, where an unknown key
+        raises inside the blanket `except` below and silently drops the whole
+        history. Fields added after the format settled therefore stay out of it;
+        `handed_off` describes a hand-off this process made, which is what the
+        live panel needs and what an entry older than the process cannot claim.
+        """
+        d = self.to_dict()
+        d.pop("handed_off", None)
         return d
 
 
@@ -70,7 +88,7 @@ def _save_history():
     """Persist finished jobs to disk."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     finished = [
-        j.to_dict() for j in _jobs.values()
+        j.to_history() for j in _jobs.values()
         if j.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
     ]
     # Keep last 500 entries
