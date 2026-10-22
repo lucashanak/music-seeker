@@ -335,11 +335,17 @@
       </div>
     </div>
     <p class="page-subtitle">Playlists saved on this server.</p>
-    <div class="card lib-card" id="likedSongsTile" style="margin-bottom:18px;">
-      <div class="card-img" style="background:linear-gradient(135deg,#1db954,#1a1a2e);display:flex;align-items:center;justify-content:center;font-size:28px;color:#fff;">&#9829;</div>
-      <div class="card-body">
-        <div class="card-title">Liked Songs</div>
-        <div class="card-sub" id="likedSongsCount"></div>
+    <!-- Own one-item grid, deliberately NOT inside #libraryGrid: renderLibraryGrid
+         overwrites that grid's innerHTML (empty state included), which would wipe
+         the tile on the first playlist render. A `.grid` of its own gives it the
+         same column width as a playlist card without sharing their container. -->
+    <div class="grid" id="likedSongsRow" style="margin-bottom:18px;">
+      <div class="card" id="likedSongsTile">
+        <div class="card-img" style="background:linear-gradient(135deg,#1db954,#1a1a2e);display:flex;align-items:center;justify-content:center;font-size:28px;color:#fff;">&#9829;</div>
+        <div class="card-body">
+          <div class="card-title">Liked Songs</div>
+          <div class="card-sub" id="likedSongsCount"></div>
+        </div>
       </div>
     </div>
     <div id="libraryGrid" class="grid"></div>
@@ -375,14 +381,13 @@
         <p id="libDetailDesc" class="playlist-hero-desc" style="display:none;"></p>
         <p id="libDetailCount"></p>
       </div>
-      <div class="playlist-hero-actions">
+      <div class="playlist-hero-actions" id="libHeroActions">
         <button class="btn-download btn-hero-primary" id="playLibPlaylist">&#9654; Play All</button>
+        <!-- "+ Add All" keeps the second slot it has always had. The action
+             there is ADDITIVE; Shuffle, which throws the queue away, sits
+             after it so a reached-for click cannot discard a built-up queue. -->
         <button class="btn-download btn-hero-secondary" id="queueLibPlaylist">+ Add All</button>
-        <button class="btn-download btn-hero-secondary" id="renameLibPlaylist">Edit</button>
-        <button class="btn-download btn-hero-secondary" id="coverLibPlaylist">Change cover</button>
-        <button class="btn-download btn-hero-secondary" id="duplicateLibPlaylist">Duplicate</button>
-        <button class="btn-download btn-hero-secondary" id="mergeLibPlaylist">Merge</button>
-        <button class="btn-download btn-hero-danger" id="deleteLibPlaylist">Delete</button>
+        <button class="btn-download btn-hero-secondary" id="shuffleLibPlaylist">&#128256; Shuffle</button>
       </div>
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
@@ -390,7 +395,7 @@
         <input type="checkbox" id="libBulkToggle" style="width:14px;height:14px;accent-color:var(--accent);">
         Select all
       </label>
-      <div id="libBulkActions" style="display:none;gap:8px;display:none;align-items:center;">
+      <div id="libBulkActions" style="display:none;gap:8px;align-items:center;">
         <span id="libBulkCount" style="font-size:12px;color:var(--text-muted);"></span>
         <button class="btn-check-new" id="libBulkCopy" style="font-size:12px;padding:6px 12px;">Copy to...</button>
         <button class="btn-delete-show" id="libBulkRemove" style="font-size:12px;padding:6px 12px;">Remove</button>
@@ -483,7 +488,7 @@
       <label style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none;"><input type="checkbox" id="podcastBulkToggle" style="margin-right:4px;">Select all</label>
     </div>
     <div id="podcastEpisodesList"></div>
-    <div id="podcastBulkBar" style="display:none;position:sticky;bottom:0;background:var(--bg-card);border-top:1px solid var(--border);padding:12px 16px;display:none;align-items:center;justify-content:space-between;">
+    <div id="podcastBulkBar" style="display:none;position:sticky;bottom:0;background:var(--bg-card);border-top:1px solid var(--border);padding:12px 16px;align-items:center;justify-content:space-between;">
       <span id="podcastBulkCount" style="font-size:13px;color:var(--text-muted);">0 selected</span>
       <button id="podcastBulkDelete" class="btn-delete-show">Delete Selected</button>
     </div>
@@ -498,7 +503,8 @@
   </div>
   <div id="favoritesGrid" class="grid"></div>
   <div id="favoritesEmpty" class="empty-state" style="display:none;">
-    <p>No favorite artists yet. Click the heart icon on any artist to follow them.</p>
+    <p>No favorite artists yet. Open an artist and choose Follow &mdash; followed artists show up here with their new releases.</p>
+    <button class="btn-check-new empty-state-cta" id="favoritesEmptyFind">Find artists</button>
   </div>
   </div><!-- /pageFavorites sub-view -->
 </main><!-- /pageLibrary -->
@@ -1450,9 +1456,9 @@
       <button class="panel-close" id="panelClose">&times;</button>
     </div>
   </div>
-  <div class="jobs-list" id="jobsList">
-    <div class="empty-state"><p>No downloads yet</p></div>
-  </div>
+  <!-- Filled by downloads.js refreshJobs (empty state included) so the wording
+       and the "Find something to download" route live in exactly one place. -->
+  <div class="jobs-list" id="jobsList"></div>
 </div>
 
 <script type="module" src="/static/js/app.js?v=__CACHE_BUST__"></script>

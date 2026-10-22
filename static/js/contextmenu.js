@@ -645,6 +645,11 @@ function _openArtist(item) {
 // ── Public navigation helpers (reused by the now-playing UI) ──
 // Mirror the "Show artist" / "Show album" context-menu actions: navigate by
 // id when available, otherwise fall back to a name search (same as the menu).
+// Jump to Search with the type preselected. Empty states use it to offer a way
+// out instead of only stating that there is nothing here.
+export function searchForType(searchType, q) {
+  _searchFor(searchType, q);
+}
 export function openArtistByName(name) {
   if (name) _searchFor('artist', name);
 }

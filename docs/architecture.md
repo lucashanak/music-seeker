@@ -620,3 +620,117 @@ is CSS now (`.hero-act-0/1/2` anchored to `--hero-art`, which the breakpoint red
 JS only says which button is how many places from the right. An artist hero carries a
 play button that fetches `/api/artist/{id}/top` and hands it to `playTracks`; the artist
 cards in the grid do not, because each tap there would pay for its own request.
+
+### The downloads panel does not claim a download it has not made
+
+Handing a release to Lidarr finishes the job *here* and starts the work *there*.
+The panel used to say `DONE` with a green dot and fire a "Download Complete"
+notification while Lidarr was still searching, and the one sentence that
+explained this ("Search triggered in Lidarr, download will proceed in
+background") was clipped to a single line at "backgro…".
+
+The job carries a **flag beside its status**, `handed_off`, not a status of its
+own. A new enum value would have to be taught to three filters in `jobs.py`, and
+`jobs.py` raises on an unknown status when it loads history — so a rollback with
+such a job on disk would lose the whole history silently. With the flag,
+persistence, restart and "Clear history" are untouched. The front end reads it
+in `_jobCard` (`downloads.js`): the badge says **Sent to Lidarr** in the muted
+colour rather than the accent green, the completion notification is skipped, and
+`.job-progress-text` wraps instead of ellipsing.
+
+Two more rules hold in the same panel:
+
+- **A bar at zero means "no number", not "no progress".** For a single-track
+  download the backend's `int((i - 1) / total * 100)` is 0 for its whole life, so
+  a static empty groove reads as stuck. When `status === 'running'` and
+  `progress` is falsy the bar gets `.indeterminate` and animates; the groove is
+  `rgba(255,255,255,.12)` because `var(--bg-input)` (`#1a1a2a`) on a
+  `var(--bg-elevated)` card (`#1c1c2e`) is a two-point difference nobody sees.
+- **A failing `/api/jobs` is shown, not swallowed.** The old bare `catch {}` left
+  the panel displaying a stale list with no hint it had stopped updating — this
+  instance returned 502 twice during one audit. The list now keeps what it had
+  and puts a `.jobs-error` line above it.
+
+Running and finished jobs are drawn as two counted groups. Dropping a single
+finished job is **not** offered: `DELETE /api/jobs/{id}` cancels a *running* job
+(`jobs.cancel_job`), and the only removal is the bulk `clear_history()`. A
+client-side "hide it for me" would come back on the next reload.
+
+### Removing a playlist track names the row AND numbers it
+
+`_removeTrackFromPlaylist` sends `POST .../remove-by-name { name, artist, index }`
+— both halves, never the index alone.
+
+The name alone deletes the *first* track with that name, which on a playlist
+holding the same song twice is not the row the menu was opened on. The index
+alone is worse: `DELETE /tracks { indices: [i] }` hands the number straight to
+Subsonic's `songIndexToRemove`, so a view that has drifted from the server —
+another device reordered the playlist while this tab sat open — **deletes a
+different track**, silently and for real. Sending both lets the backend decide
+against fresh data: `library.remove_track_by_name` re-reads the playlist, honours
+the index only while the name and artist still sit on it, otherwise falls back to
+the name match, and 404s when there is no match at all. The worst case is a
+removal that does not happen, not one that hits a stranger.
+
+The index comes from the data, not the document: `_renderLibDetailTracks` binds
+each rendered row to its array element (`card._libTrack`), and `_libTrackIndex`
+answers with `currentLibPlaylistTracks.indexOf(...)`. A number stamped at render
+time would be the DOM order *at that moment*, which a drag-reorder splice leaves
+behind. Both the row's × and the row's ⋯ go through this one function, and both
+ask for confirmation first. (The checkbox multi-select is a separate set, is
+still keyed by position, and still goes through `DELETE /tracks` — it removes a
+batch the user has just ticked off on screen, and has no per-row name to send.)
+
+### The Library hero is Play, + Add All, Shuffle and one ⋯
+
+A library playlist used to open on seven stacked buttons — Play All, Add All,
+Edit, Change cover, Duplicate, Merge and a red **Delete** no louder than Edit.
+The hero now carries Play All, **+ Add All** and Shuffle; the remaining five are
+entries in a kebab (`_libPlaylistMenu` in `library.js`) and their handlers are
+the same functions, lifted out of `init()` rather than rewritten.
+
+**The second slot belongs to the additive action, and that is a rule, not a
+layout accident.** "+ Add All" has always sat there, so that is where the reach
+goes. Shuffle is not a neighbour of it in kind: it calls `playTracks`, which
+*discards the whole queue* and starts playing. A Shuffle promoted into that slot
+turns a years-old muscle-memory tap into the loss of a queue the user spent the
+evening building, with no undo. Shuffle therefore comes after it, and
+"Add all to queue" is deliberately **absent** from the kebab — one action, one
+place.
+
+Two neighbouring rules in the same page:
+
+- The **Liked Songs tile stays outside `#libraryGrid`**, in a one-item `.grid` of
+  its own. `renderLibraryGrid` overwrites that grid's `innerHTML` (empty state
+  included), so a tile inside it would be wiped by the first playlist render, and
+  a `.lib-card` class would hand it to the grid's click and context-menu
+  selectors as `playlists[undefined]`. Its own `.grid` gives it the same column
+  width without sharing the container.
+- The **tile's count waits for the data.** `loadLibrary` calls
+  `loadLikes().then(_refreshLikedCount)`: `likeschange` is emitted by `toggleLike`
+  alone, so the initial load announces itself to nobody and a synchronous
+  `likedCount()` read showed "0 songs" until the view was opened once.
+
+### An empty state names a way out
+
+Downloads, Podcasts and Favorites each end on a button that jumps to Search with
+the right type preselected (`searchForType` in `contextmenu.js`). The Favorites
+sentence no longer says "click the heart icon on any artist": that heart is
+`opacity: 0` until hover, so the advice was unfollowable precisely on the devices
+that have a mouse. Tapping a followed artist now opens the artist page — the
+download dialog, which is the only place the auto-download switch lives, moved to
+that card's ⋯ as "Download options…".
+
+The download dialog itself carries the two actions its own kebab already offered:
+a like heart and "add to a playlist". They are built by `downloads.js` into the
+existing `.modal-quick-row` rather than written into the partial, and they are
+imported dynamically because `contextmenu.js` imports `downloads.js`.
+
+### The downloads panel marks its own nav entry
+
+`switchPage('downloads')` toggles the panel and returns *before* the code that
+paints the active nav item, so the panel could be open with "Library" still
+highlighted. The panel is not a page, so nothing else will do it: `openPanel()`
+and `closePanel()` set and clear `.active` on `#downloadsToggle` and
+`#bnavDownloads` themselves, restoring it to `store.currentPage` on close.
+`.downloads-btn.active` had no style at all and is defined in `downloads.css`.

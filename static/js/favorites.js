@@ -4,7 +4,7 @@ import { store } from './store.js';
 import { $, $$, esc, showToast } from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { attachContextMenu, wasLongPress } from './contextmenu.js';
+import { attachContextMenu, wasLongPress, makeKebabButton, buildActionsFor, searchForType } from './contextmenu.js';
 
 // ── Load Favorited Artist IDs ──
 export async function loadFavoritedArtistIds() {
@@ -61,25 +61,43 @@ export async function loadFavorites() {
       </div>
     `).join('');
     $$('.fav-card', grid).forEach(card => {
+      const at = () => artists.find(a => a.id === card.dataset.artistId);
       card.addEventListener('click', () => {
         if (wasLongPress(card)) return;
-        const artistId = card.dataset.artistId;
-        const artist = artists.find(a => a.id === artistId);
-        if (artist) openFavoriteModal(artist);
+        const artist = at();
+        if (!artist) return;
+        // #artistDetail lives inside #pageSearch, which is hidden while the
+        // Library page is up — so the page has to come forward first, or the
+        // detail renders into something nobody can see.
+        import('./router.js')
+          .then(r => { if (r.switchPage) r.switchPage('search'); return import('./spotify.js'); })
+          .then(m => m.loadArtistDetail && m.loadArtistDetail(artist.id, 'library', artist.provider || ''));
       });
+      card.appendChild(makeKebabButton(() => _favoriteMenu(at())));
     });
     attachContextMenu(grid, {
       selector: '.fav-card[data-item]',
-      getItem: (targetEl) => {
-        try {
-          const item = JSON.parse(targetEl.dataset.item);
-          return { item, type: 'artist', context: { isFavorite: true } };
-        } catch { return null; }
-      },
+      getItem: (targetEl) => _favoriteMenu(artists.find(a => a.id === targetEl.dataset.artistId)),
     });
   } catch (e) {
     grid.innerHTML = `<div class="empty-state"><p>Failed to load favorites: ${e.message}</p></div>`;
   }
+}
+
+// The card itself now opens the artist, so the download dialog — the only place
+// the auto-download switch lives — needs its own entry in the menu.
+function _favoriteMenu(artist) {
+  if (!artist) return null;
+  const item = {
+    id: artist.id, name: artist.name, artist: artist.name,
+    image: artist.image, type: 'artist', provider: artist.provider || '',
+  };
+  const actions = buildActionsFor(item, 'artist', { isFavorite: true });
+  actions.push({
+    label: 'Download options…', icon: '&#11015;',
+    onClick: () => openFavoriteModal(artist),
+  });
+  return { title: artist.name, actions };
 }
 
 export function openFavoriteModal(artist) {
@@ -96,6 +114,10 @@ export function openFavoriteModal(artist) {
 
 // ── Init ──
 export function init() {
+  // An empty Favorites page used to end on a sentence and nothing else.
+  const emptyFind = $('#favoritesEmptyFind');
+  if (emptyFind) emptyFind.addEventListener('click', () => searchForType('artist', ''));
+
   // Check new releases button
   $('#checkReleasesBtn').addEventListener('click', async () => {
     const btn = $('#checkReleasesBtn');
