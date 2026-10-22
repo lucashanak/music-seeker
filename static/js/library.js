@@ -1039,7 +1039,10 @@ function _libPlaylistMenu() {
 function _queueLibPlaylist() {
   const tracks = getLibTracksForPlayer();
   if (!tracks.length) return;
-  store.playlistMode = currentLibPlaylistId ? { id: currentLibPlaylistId, name: currentLibPlaylistName } : null;
+  // Deliberately NOT adopting this playlist as the active one. addToQueue mirrors
+  // whatever it queues into store.playlistMode, so pointing that at the playlist
+  // we are reading from makes it write itself back into itself: the acceptance run
+  // clicked this three times and took a six-track playlist to forty-eight.
   getPlayerModule().then(m => m.addToQueue(tracks));
 }
 

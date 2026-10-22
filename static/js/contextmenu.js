@@ -213,9 +213,11 @@ export function buildActionsFor(item, type, context = {}) {
   // ── Track-like items (track, queue-track, recommendation, episode) ──
   const isTracklike = (type === 'track' || type === 'queue-track' || type === 'recommendation' || type === 'episode' || it.type === 'track');
 
-  // "Add to playlist" vs "Add to Up Next": _addToQueue appends to the in-memory
-  // queue, which only persists as a real playlist when playlistMode is set.
-  const addLabel = store.playlistMode ? 'Add to playlist' : 'Add to Up Next';
+  // Both of these append to the in-memory queue; the playlist is only where that
+  // queue happens to be mirrored. Calling it "Add to playlist" put it next to
+  // "Add to other playlist…", which really does add to a playlist, and the two
+  // read as the same action with different wording.
+  const addLabel = 'Add to queue';
 
   if (type === 'queue-track') {
     actions.push({
