@@ -176,14 +176,11 @@
         <input class="search-input" id="searchInput" type="text" placeholder="Title, artist, or lyrics...">
         <button id="searchClear" title="Clear">&times;</button>
       </div>
-      <button class="btn-mic" id="micBtn" title="Identify song with microphone">
+      <button class="btn-mic" id="micBtn" title="Identify song with microphone" aria-label="Identify song with microphone">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
       </button>
       <button class="btn-mic" id="partyBtn" title="Party mode: keep listening & collect songs into a playlist" aria-label="Party recognition">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.8 11.3 2 22l10.7-3.79"/><path d="M4 3h.01"/><path d="M22 8h.01"/><path d="M15 2h.01"/><path d="M22 20h.01"/><path d="m22 2-2.24.75a2.9 2.9 0 0 0-1.96 3.12c.19 1.57-.79 3.06-2.3 3.5a4 4 0 0 1-4.24-1.14"/><path d="M11.5 12.5 15 16"/></svg>
-      </button>
-      <button class="btn-mic" id="appRefreshBtn" title="Refresh app (clear cache & reload)" aria-label="Refresh app">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
       </button>
     </div>
     <div class="mic-status" id="micStatus"></div>
@@ -221,7 +218,7 @@
     <div class="skeleton" style="height:40px; width:200px; margin:0 auto;"></div>
   </div>
   <div id="showDetail" style="display:none; margin-top:24px;">
-    <button id="backToSearch" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back to results</button>
+    <button id="backToSearch" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back</button>
     <div class="playlist-hero">
       <img id="showDetailImg" class="playlist-hero-img">
       <div class="playlist-hero-info">
@@ -237,7 +234,7 @@
     <div id="showEpisodes" class="grid"></div>
   </div>
   <div id="artistDetail" style="display:none; margin-top:24px;">
-    <button id="backFromArtist" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back to results</button>
+    <button id="backFromArtist" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back</button>
     <div class="playlist-hero">
       <img id="artistDetailImg" class="playlist-hero-img" style="border-radius:50%;">
       <div class="playlist-hero-info">
@@ -245,8 +242,9 @@
         <p id="artistDetailCount"></p>
       </div>
       <div class="playlist-hero-actions" style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="btn-download btn-hero-primary" id="playArtistTop" style="width:auto; padding:12px 28px; display:none;">&#9654; Play</button>
-        <button class="btn-download btn-hero-secondary" id="downloadArtist" style="width:auto; padding:12px 28px;">Download All Albums</button>
+        <button class="btn-download btn-hero-primary" id="playArtistTop" disabled>&#9654; Play</button>
+        <button class="btn-download btn-hero-secondary" id="shuffleArtistTop" disabled><svg class="hero-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Shuffle</button>
+        <button class="btn-download btn-hero-secondary" id="downloadArtist">Download All Albums</button>
       </div>
     </div>
     <!-- "Popular": the artist's most-played tracks, like Spotify's artist page.
@@ -254,6 +252,8 @@
     <div id="artistTop"></div>
     <div class="search-section-header" id="artistAlbumsHeader" style="display:none;"><h3>Albums</h3></div>
     <div id="artistAlbums" class="grid"></div>
+    <div class="search-section-header" id="artistSinglesHeader" style="display:none;"><h3>Singles and EPs</h3></div>
+    <div id="artistSingles" class="grid"></div>
   </div>
   <div id="albumDetail" style="display:none; margin-top:24px;">
     <button id="backFromAlbum" class="tag-back-btn" style="margin-bottom:18px;">&larr; Back</button>
@@ -266,10 +266,10 @@
       </div>
       <div class="playlist-hero-actions">
         <button class="btn-download btn-hero-primary" id="playAlbum">&#9654; Play All</button>
-        <button class="btn-download btn-hero-secondary" id="shuffleAlbum">&#128256; Shuffle</button>
+        <button class="btn-download btn-hero-secondary" id="shuffleAlbum"><svg class="hero-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Shuffle</button>
         <button class="btn-download btn-hero-secondary" id="queueAlbum">+ Add All</button>
         <button class="btn-download btn-hero-secondary" id="addAlbumToPlaylist">Add to playlist…</button>
-        <button class="btn-download" id="downloadAlbum" style="width:auto; padding:12px 28px;">Download All</button>
+        <button class="btn-download btn-hero-secondary" id="downloadAlbum">Download All</button>
       </div>
     </div>
     <div id="albumTracks" class="grid"></div>
