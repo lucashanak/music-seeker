@@ -1,7 +1,7 @@
 // downloads.js — Download modal (openModal/closeModal), downloads panel (openPanel/closePanel), refreshJobs, job management
 
 import { store } from './store.js';
-import { $, $$, esc, showToast, historyBack, setArt} from './utils.js';
+import { $, $$, esc, showToast, historyBack, setArt, showConfirmModal } from './utils.js';
 import { apiFetch, apiJson } from './api.js';
 import { getPlayerModule } from './player_active.js';
 import { forgetBpmUnavailable } from './bpm.js';
@@ -60,6 +60,8 @@ export function openModal(item) {
     delBtn.textContent = type === 'album' ? 'Delete Album from Library' : 'Delete from Library';
   }
   $('#downloadModal').classList.add('open');
+
+  _syncModalTrackActions(item, type);
 
   // Update radio/favorite buttons visibility
   const isRadioable = type === 'track' || type === 'album' || type === 'artist';
@@ -124,6 +126,48 @@ export function closeModal(fromPopstate) {
   if (!fromPopstate) historyBack();
 }
 
+// Like + "Add to playlist" live beside Radio and Follow in the quick row. They
+// are built here rather than in the partial because they need the modal's
+// current item, and the heart has to repaint when the like state changes.
+let _modalLikeBtn = null;
+let _modalPlaylistBtn = null;
+
+async function _buildModalTrackActions() {
+  const row = $('#downloadModal .modal-quick-row');
+  if (!row || _modalLikeBtn) return;
+  const { makeHeartButton } = await import('./likes.js');
+  // Plain `like-btn`: the heart rule in the head's <style> comes after
+  // modal.css, so a `modal-chip` here would be overridden into a heart anyway.
+  _modalLikeBtn = makeHeartButton(() => store.modalItem || {});
+  _modalLikeBtn.title = 'Like this track';
+  _modalPlaylistBtn = document.createElement('button');
+  _modalPlaylistBtn.type = 'button';
+  _modalPlaylistBtn.className = 'modal-chip';
+  _modalPlaylistBtn.title = 'Add to a playlist in your library';
+  _modalPlaylistBtn.innerHTML = '&#9776; Playlist';
+  _modalPlaylistBtn.addEventListener('click', async () => {
+    if (!store.modalItem) return;
+    const item = { ...store.modalItem };
+    const m = await import('./contextmenu.js');
+    m._addToNavidromePlaylist(item);
+  });
+  row.insertBefore(_modalLikeBtn, $('#modalRadio'));
+  row.appendChild(_modalPlaylistBtn);
+}
+
+// Both actions are track-only: a playlist row takes a track id, and a like is
+// keyed by artist + title.
+function _syncModalTrackActions(item, type) {
+  _buildModalTrackActions().then(() => {
+    const show = type === 'track';
+    if (_modalLikeBtn) {
+      _modalLikeBtn.style.display = show ? '' : 'none';
+      if (show && _modalLikeBtn._refreshLike) _modalLikeBtn._refreshLike();
+    }
+    if (_modalPlaylistBtn) _modalPlaylistBtn.style.display = show ? '' : 'none';
+  });
+}
+
 const METHOD_HINTS = {
   'yt-dlp': 'Downloads from YouTube. Choose audio quality below.',
   slskd: 'Searches the Soulseek network. Prefers the format you pick; if no peer has it, takes the best other copy available.',
@@ -147,9 +191,28 @@ function updateOptionGroups() {
 }
 
 // ── Downloads Panel ──
+
+// Which nav entries wear `.active` while the panel is up. The panel is not a
+// page, so nothing else sets or clears this for it.
+function _markNavActive(on) {
+  $$('.nav-btn[data-page], .bnav-btn[data-page]').forEach(b => b.classList.remove('active'));
+  const downloads = [$('#downloadsToggle'), $('#bnavDownloads')];
+  if (on) {
+    downloads.forEach(b => b && b.classList.add('active'));
+    return;
+  }
+  downloads.forEach(b => b && b.classList.remove('active'));
+  // Back to whichever page is actually showing underneath.
+  const page = store.currentPage;
+  if (!page) return;
+  [$(`.nav-btn[data-page="${page}"]`), $(`.bnav-btn[data-page="${page}"]`)]
+    .forEach(b => b && b.classList.add('active'));
+}
+
 export function openPanel() {
   store.panelOpen = true;
   $('#downloadsPanel').classList.add('open');
+  _markNavActive(true);
   history.pushState({ layer: 'panel' }, '');
 }
 
@@ -157,48 +220,111 @@ export function closePanel(fromPopstate) {
   if (!store.panelOpen) return;
   store.panelOpen = false;
   $('#downloadsPanel').classList.remove('open');
+  _markNavActive(false);
   if (!fromPopstate) historyBack();
 }
 
 // ── Jobs ──
+
+const _ACTIVE = new Set(['running', 'queued']);
+
+// A job handed to Lidarr finishes here and starts there. `handed_off` is a flag
+// beside the status, not a status of its own: a new enum value would have to be
+// taught to three filters in jobs.py, and an unknown one raises on history load.
+function _jobIsHandedOff(j) {
+  return !!j.handed_off;
+}
+
+function _jobCard(j) {
+  const active = _ACTIVE.has(j.status);
+  const handed = _jobIsHandedOff(j);
+  // No percentage exists for a single-track download, so show that it is moving
+  // rather than a bar frozen at zero.
+  const unknownProgress = j.status === 'running' && !(j.progress > 0);
+  return `
+      <div class="job-item">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+          <div class="job-title" style="flex:1; min-width:0;">${esc(j.title)}</div>
+          <span class="job-status ${j.status}${handed ? ' handed-off' : ''}">${handed ? 'Sent to Lidarr' : esc(j.status)}</span>
+        </div>
+        <div class="job-meta">
+          <span>${esc(j.method || '')} / ${esc(j.format || '')}</span>
+          ${active ? `<button class="job-cancel" data-job-id="${esc(j.id)}">Cancel</button>` : ''}
+          ${(j.status === 'failed' || j.status === 'cancelled') ? `<button class="job-retry" data-job-id="${esc(j.id)}">Retry</button>` : ''}
+        </div>
+        ${active ? `<div class="job-progress-bar${unknownProgress ? ' indeterminate' : ''}"><div class="job-progress-fill" style="width:${unknownProgress ? 40 : (j.progress || 0)}%"></div></div>` : ''}
+        ${j.progress_text ? `<div class="job-progress-text">${esc(j.progress_text)}</div>` : ''}
+        ${j.error ? `<div class="job-progress-text" style="color:var(--red)">${esc(j.error)}</div>` : ''}
+      </div>`;
+}
+
+function _jobsGroup(title, list) {
+  if (!list.length) return '';
+  return `<div class="jobs-group"><div class="jobs-group-title">${esc(title)} &middot; ${list.length}</div>${list.map(_jobCard).join('')}</div>`;
+}
+
+function _renderJobsEmpty() {
+  $('#jobsList').innerHTML = `
+    <div class="empty-state">
+      <p>No downloads yet. Find a track, album or playlist and it will show up here while it downloads.</p>
+      <button class="btn-check-new empty-state-cta" id="jobsEmptyFind">Find something to download</button>
+    </div>`;
+  const btn = $('#jobsEmptyFind');
+  if (btn) btn.addEventListener('click', () => {
+    closePanel();
+    import('./contextmenu.js').then(m => m.searchForType('track', ''));
+  });
+}
+
+// A failing /api/jobs used to leave the panel showing a stale list with no hint
+// that it had stopped updating — this instance returned 502 twice during the
+// audit. Say so, above whatever was last rendered.
+function _showJobsError(message) {
+  const list = $('#jobsList');
+  if (!list) return;
+  let box = list.querySelector('.jobs-error');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'jobs-error';
+    list.prepend(box);
+  }
+  box.textContent = `Downloads list is out of date — ${message}`;
+}
+
+function _clearJobsError() {
+  const box = $('#jobsList') && $('#jobsList').querySelector('.jobs-error');
+  if (box) box.remove();
+}
+
 export async function refreshJobs() {
   if (!store.authToken) {
     if (store.jobsInterval) { clearInterval(store.jobsInterval); store.jobsInterval = null; }
     return;
   }
+  let jobs;
   try {
     const data = await apiJson('/api/jobs');
-    const jobs = data.jobs || [];
-    checkJobCompletions(jobs);
-    const active = jobs.filter(j => j.status === 'running' || j.status === 'queued').length;
-    $('#jobsBadge').textContent = active || '';
-    const mobileBadge = $('#jobsBadgeMobile');
-    if (mobileBadge) mobileBadge.textContent = active || '';
-    if (!jobs.length) { $('#jobsList').innerHTML = '<div class="empty-state"><p>No downloads yet</p></div>'; return; }
-    $('#jobsList').innerHTML = jobs.map(j => `
-      <div class="job-item">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <div class="job-title" style="flex:1; min-width:0;">${esc(j.title)}</div>
-          <span class="job-status ${j.status}">${j.status}</span>
-        </div>
-        <div class="job-meta">
-          <span>${j.method} / ${j.format}</span>
-          ${(j.status === 'running' || j.status === 'queued') ? `<button class="job-cancel" data-job-id="${j.id}">Cancel</button>` : ''}
-          ${(j.status === 'failed' || j.status === 'cancelled') ? `<button class="job-retry" data-job-id="${j.id}">Retry</button>` : ''}
-        </div>
-        ${(j.status === 'running' || j.status === 'queued') ? `<div class="job-progress-bar"><div class="job-progress-fill" style="width:${j.progress}%"></div></div>` : ''}
-        ${j.progress_text ? `<div class="job-progress-text">${esc(j.progress_text)}</div>` : ''}
-        ${j.error ? `<div class="job-progress-text" style="color:var(--red)">${esc(j.error)}</div>` : ''}
-      </div>
-    `).join('');
-    // Attach cancel/retry handlers
-    $$('.job-cancel', $('#jobsList')).forEach(btn => {
-      btn.addEventListener('click', () => cancelJob(btn.dataset.jobId));
-    });
-    $$('.job-retry', $('#jobsList')).forEach(btn => {
-      btn.addEventListener('click', () => retryJob(btn.dataset.jobId));
-    });
-  } catch {}
+    jobs = data.jobs || [];
+  } catch (e) {
+    _showJobsError(e && e.message ? e.message : 'the server did not answer');
+    return;
+  }
+  _clearJobsError();
+  checkJobCompletions(jobs);
+  const active = jobs.filter(j => _ACTIVE.has(j.status));
+  $('#jobsBadge').textContent = active.length || '';
+  const mobileBadge = $('#jobsBadgeMobile');
+  if (mobileBadge) mobileBadge.textContent = active.length || '';
+  if (!jobs.length) { _renderJobsEmpty(); return; }
+  const finished = jobs.filter(j => !_ACTIVE.has(j.status));
+  $('#jobsList').innerHTML = _jobsGroup('In progress', active) + _jobsGroup('Finished', finished);
+  // Attach cancel/retry handlers
+  $$('.job-cancel', $('#jobsList')).forEach(btn => {
+    btn.addEventListener('click', () => cancelJob(btn.dataset.jobId));
+  });
+  $$('.job-retry', $('#jobsList')).forEach(btn => {
+    btn.addEventListener('click', () => retryJob(btn.dataset.jobId));
+  });
 }
 
 async function cancelJob(id) {
@@ -210,7 +336,7 @@ async function retryJob(id) {
   try {
     await apiJson(`/api/jobs/${id}/retry`, { method: 'POST' });
     refreshJobs();
-  } catch (e) { alert('Retry failed: ' + e.message); }
+  } catch (e) { showToast('Retry failed: ' + e.message, true); }
 }
 
 // ── Browser Notifications for Job Completions ──
@@ -221,7 +347,9 @@ export function checkJobCompletions(jobs) {
     // A finished download may be a track the queue marked "no BPM"; ask again.
     if (wasActive && j.status === 'done') forgetBpmUnavailable();
     if (store.notificationsEnabled && wasActive) {
-      if (j.status === 'done') {
+      if (j.status === 'done' && _jobIsHandedOff(j)) {
+        // Nothing has downloaded yet — the panel says where it went.
+      } else if (j.status === 'done') {
         new Notification('MusicSeeker - Download Complete', {
           body: j.title,
           icon: '/static/icon.png',
@@ -270,7 +398,7 @@ export function init() {
       closeModal();
       openPanel();
     } catch (e) {
-      alert('Download failed: ' + e.message);
+      showToast('Download failed: ' + e.message, true);
     } finally {
       btn.disabled = false; btn.textContent = 'Download';
     }
@@ -314,8 +442,10 @@ export function init() {
     btn.disabled = true;
 
     if (isAlbum) {
-      const msg = `Delete album "${item.artist} - ${item.name}" and all its tracks from library?`;
-      if (!confirm(msg)) { btn.disabled = false; return; }
+      const ok = await showConfirmModal('Delete album?',
+        `"${item.artist} - ${item.name}" and all its tracks will be removed from the library.`,
+        { okLabel: 'Delete' });
+      if (!ok) { btn.disabled = false; return; }
       btn.textContent = 'Deleting...';
       try {
         await apiJson('/api/library/album/delete', {
@@ -336,12 +466,13 @@ export function init() {
           method: 'POST',
           body: { name: item.name || '', artist: item.artist || '' },
         });
-        let msg = `Delete "${item.artist} - ${item.name}" from library?`;
+        let msg = 'This removes it from the library permanently.';
         if (check.in_playlists && check.in_playlists.length) {
           msg += `\n\nThis track is in ${check.in_playlists.length} playlist(s):\n` +
             check.in_playlists.map(p => `• ${p.name}`).join('\n');
         }
-        if (!confirm(msg)) { btn.disabled = false; btn.textContent = resetLabel; return; }
+        const ok = await showConfirmModal(`Delete "${item.artist} - ${item.name}"?`, msg, { okLabel: 'Delete' });
+        if (!ok) { btn.disabled = false; btn.textContent = resetLabel; return; }
         btn.textContent = 'Deleting...';
         await apiJson('/api/library/track/delete', {
           method: 'POST',

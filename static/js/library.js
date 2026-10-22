@@ -162,6 +162,7 @@ export async function loadLibrary() {
   if (likedDetail) likedDetail.style.display = 'none';
   $('#libraryList').style.display = '';
   _refreshLikedCount();
+  loadLikes().then(_refreshLikedCount);
   // Its own section, its own store — loaded in parallel so a Navidrome outage
   // doesn't take the imported playlists down with it (or vice versa).
   loadSavedImports();
@@ -339,30 +340,35 @@ function renderLibraryGrid(playlists, grid) {
     </div>`).join('');
 
   $$('.lib-card', grid).forEach(card => {
+    const at = () => playlists[parseInt(card.dataset.libIdx)];
     card.addEventListener('click', () => {
       if (wasLongPress(card)) return;
-      const pl = playlists[card.dataset.libIdx];
+      const pl = at();
       if (pl) loadLibraryDetail(pl.id);
     });
+    // Same menu right-click / long-press gives, but visible — on touch there
+    // was no other route to rename or delete.
+    card.appendChild(makeKebabButton(() => _libraryPlaylistMenu(at())));
   });
   attachContextMenu(grid, {
     selector: '.lib-card',
-    getItem: (targetEl) => {
-      const pl = playlists[parseInt(targetEl.dataset.libIdx)];
-      if (!pl) return null;
-      return {
-        title: pl.name,
-        actions: [
-          { label: 'Open', icon: '&#128194;', onClick: () => loadLibraryDetail(pl.id) },
-          { label: 'Play all', icon: '&#9654;', onClick: () => _playLibraryPlaylist(pl, true) },
-          { label: 'Queue all', icon: '+', onClick: () => _playLibraryPlaylist(pl, false) },
-          { divider: true },
-          { label: 'Rename…', icon: '&#9998;', onClick: () => _renameLibraryPlaylist(pl) },
-          { label: 'Delete playlist', icon: '&times;', danger: true, onClick: () => _deleteLibraryPlaylist(pl) },
-        ],
-      };
-    },
+    getItem: (targetEl) => _libraryPlaylistMenu(playlists[parseInt(targetEl.dataset.libIdx)]),
   });
+}
+
+function _libraryPlaylistMenu(pl) {
+  if (!pl) return null;
+  return {
+    title: pl.name,
+    actions: [
+      { label: 'Open', icon: '&#128194;', onClick: () => loadLibraryDetail(pl.id) },
+      { label: 'Play all', icon: '&#9654;', onClick: () => _playLibraryPlaylist(pl, true) },
+      { label: 'Queue all', icon: '+', onClick: () => _playLibraryPlaylist(pl, false) },
+      { divider: true },
+      { label: 'Rename…', icon: '&#9998;', onClick: () => _renameLibraryPlaylist(pl) },
+      { label: 'Delete playlist', icon: '&times;', danger: true, onClick: () => _deleteLibraryPlaylist(pl) },
+    ],
+  };
 }
 
 async function _fetchPlaylistTracks(id) {
@@ -489,6 +495,9 @@ function _renderLibDetailTracks(id) {
   // Rows, like every other track list — the per-row controls below hang off
   // the elements this returns, which carry .card exactly as the old grid did.
   renderSongList(currentLibPlaylistTracks, '#libraryTracks', { withArt: true, check: false, emptyText: 'This playlist is empty' });
+  // Hold the array element itself, so every per-row action can ask the data
+  // where this track is now instead of trusting the order it was rendered in.
+  $$('#libraryTracks .card').forEach((card, i) => { card._libTrack = currentLibPlaylistTracks[i]; });
   // Tracks from a Navidrome playlist are definitively in the library —
   // mark them so openModal shows the Delete button without waiting for checkLibrary.
   _markTracksInLibrary('#libraryTracks', currentLibPlaylistTracks);
@@ -608,12 +617,18 @@ function _markTracksInLibrary(containerSelector, tracks) {
 // Build the menu info for a library-detail track card. Shared by both the
 // right-click/long-press context menu and the visible ⋯ kebab so they offer
 // identical actions (including multi-select and Remove/Delete from library).
+function _libTrackIndex(cardEl) {
+  return cardEl && cardEl._libTrack ? currentLibPlaylistTracks.indexOf(cardEl._libTrack) : -1;
+}
+
 function _libraryTrackInfo(targetEl, playlistId, playlistName) {
   try {
     const item = JSON.parse(targetEl.dataset.item);
-    const idx = Array.from($$('#libraryTracks .card')).indexOf(targetEl);
-    // If this card is part of a multi-selection, build a multi-track menu
-    if (_selectSet.size > 1 && _selectSet.has(idx)) {
+    const idx = _libTrackIndex(targetEl);
+    // If this card is part of a multi-selection, build a multi-track menu.
+    // _selectSet is keyed by DOM position (the checkboxes), not by track index.
+    const domIdx = Array.from($$('#libraryTracks .card')).indexOf(targetEl);
+    if (_selectSet.size > 1 && _selectSet.has(domIdx)) {
       return _buildMultiSelectMenu(playlistId, playlistName);
     }
     const type = item.type || 'track';
@@ -661,10 +676,21 @@ function _attachLibraryKebabs(playlistId, playlistName) {
 }
 
 async function _removeTrackFromPlaylist(playlistId, item, idx) {
+  if (!(idx >= 0)) { showToast('That track is no longer in this playlist'); return; }
+  const ok = await showConfirmModal('Remove from playlist?',
+    `"${item.artist ? item.artist + ' - ' : ''}${item.name || ''}" stays in your library.`,
+    { okLabel: 'Remove', danger: false });
+  if (!ok) return;
   try {
+    // remove-by-name, WITH the index. The index alone (DELETE /tracks) goes
+    // straight to Subsonic's songIndexToRemove, so a view that has drifted from
+    // the server (another device reordered the playlist) deletes a DIFFERENT
+    // row. remove-by-name re-reads the playlist and only honours the index when
+    // the name and artist still sit on it; otherwise it falls back to the name
+    // match, and removes nothing (404) when there is none.
     await apiJson(`/api/library/playlist/${playlistId}/remove-by-name`, {
       method: 'POST',
-      body: { name: item.name || '', artist: item.artist || '' },
+      body: { name: item.name || '', artist: item.artist || '', index: idx },
     });
     showToast('Removed from playlist');
     loadLibraryDetail(playlistId);
@@ -779,16 +805,16 @@ function _buildMultiSelectMenu(playlistId, playlistName) {
         },
       },
       {
-        label: 'Add to playlist', icon: '+',
+        label: 'Add to queue', icon: '+',
         onClick: () => {
           getPlayerModule().then(m => {
             m.addToQueue(selectedItems);
-            showToast(`Added ${count} to playlist`);
+            showToast(`Added ${count} to queue`);
           });
         },
       },
       {
-        label: 'Add to other playlist…', icon: '&#9776;',
+        label: 'Add to playlist…', icon: '&#9776;',
         onClick: async () => {
           try {
             const data = await apiJson('/api/library/playlists');
@@ -896,20 +922,16 @@ function _updateBulkUI() {
 }
 
 function _addRemoveButtons(playlistId) {
-  $$('#libraryTracks .card').forEach((card, i) => {
+  $$('#libraryTracks .card').forEach((card) => {
     const btn = document.createElement('button');
     btn.className = 'lib-track-remove';
     btn.title = 'Remove from playlist';
     btn.innerHTML = '&times;';
-    btn.addEventListener('click', async (e) => {
+    btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      try {
-        await apiJson(`/api/library/playlist/${playlistId}/tracks`, {
-          method: 'DELETE', body: { indices: [i] },
-        });
-        showToast('Removed from playlist');
-        loadLibraryDetail(playlistId);
-      } catch (err) { showToast('Failed: ' + (err.message || '')); }
+      const track = card._libTrack;
+      if (!track) return;
+      _removeTrackFromPlaylist(playlistId, track, _libTrackIndex(card));
     });
     card.style.position = 'relative';
     card.appendChild(btn);
@@ -966,13 +988,13 @@ export async function openLikedSongs() {
 // `likeschange` so unliking a row removes it (no ghost row) and the count stays
 // in sync without a full reload.
 function _rerenderLikedSongs() {
+  _refreshLikedCount();
   if (!_likedViewOpen) return;
   const tracksEl = $('#likedSongsTracks');
   if (!tracksEl) return;
   const tracks = getLikedTracks();
   const countEl = $('#likedDetailCount');
   if (countEl) countEl.textContent = tracks.length === 1 ? '1 song' : `${tracks.length} songs`;
-  _refreshLikedCount();
   if (!tracks.length) {
     tracksEl.innerHTML = '<div class="empty-state"><p>Songs you like will appear here.</p></div>';
     return;
@@ -992,6 +1014,154 @@ export function closeLikedSongs(fromPopstate) {
 function _getLikedTracksForPlayer() {
   const cards = $$('#likedSongsTracks .card');
   return cards.map(c => { try { return JSON.parse(c.dataset.item); } catch { return null; } }).filter(Boolean);
+}
+
+// ── Hero overflow menu (Add All / Edit / Change cover / Duplicate / Merge / Delete) ──
+// Seven buttons stacked in the hero made Delete exactly as loud as Edit. These
+// are the same handlers, reached through one ⋯ instead.
+function _libPlaylistMenu() {
+  if (!currentLibPlaylistId) return null;
+  return {
+    title: currentLibPlaylistName,
+    actions: [
+      // "Add all to queue" is NOT here — it is the hero's second button
+      // (+ Add All). Listing it twice would be the only duplicated action.
+      { label: 'Edit details…', icon: '&#9998;', onClick: _editLibPlaylist },
+      { label: 'Change cover…', icon: '&#128247;', onClick: _changeLibCover },
+      { label: 'Duplicate…', icon: '&#128203;', onClick: _duplicateLibPlaylist },
+      { label: 'Merge in…', icon: '&#8681;', onClick: _mergeIntoLibPlaylist },
+      { divider: true },
+      { label: 'Delete playlist', icon: '&#128465;', danger: true, onClick: _deleteOpenLibPlaylist },
+    ],
+  };
+}
+
+function _queueLibPlaylist() {
+  const tracks = getLibTracksForPlayer();
+  if (!tracks.length) return;
+  store.playlistMode = currentLibPlaylistId ? { id: currentLibPlaylistId, name: currentLibPlaylistName } : null;
+  getPlayerModule().then(m => m.addToQueue(tracks));
+}
+
+async function _deleteOpenLibPlaylist() {
+  if (!currentLibPlaylistId) return;
+  const id = currentLibPlaylistId;
+  const name = currentLibPlaylistName;
+  const ok = await showConfirmModal('Delete playlist?', `"${name}" will be deleted.`, { okLabel: 'Delete' });
+  if (!ok) return;
+  // Leave the detail view and optimistically drop the card; DELETE fires after
+  // the undo window (undo re-loads the library from the server).
+  closeLibraryDetail();
+  if (Array.isArray(libraryCache)) {
+    libraryCache = libraryCache.filter(p => p.id !== id);
+    const grid = $('#libraryGrid');
+    if (grid) renderLibraryGrid(libraryCache, grid);
+  } else {
+    loadLibrary();
+  }
+  _schedulePlaylistDelete(id, name, () => { libraryCache = null; loadLibrary(); });
+}
+
+async function _editLibPlaylist() {
+  if (!currentLibPlaylistId) return;
+  const result = await showPlaylistFormModal({
+    title: 'Edit playlist',
+    name: currentLibPlaylistName,
+    description: currentLibPlaylistDesc,
+    okLabel: 'Save',
+  });
+  if (!result) return;
+  if (result.name === currentLibPlaylistName && result.description === currentLibPlaylistDesc) return;
+  try {
+    await apiJson(`/api/library/playlist/${currentLibPlaylistId}/details`, {
+      method: 'PUT',
+      body: { name: result.name, description: result.description },
+    });
+    if (store.playlistMode && store.playlistMode.id === currentLibPlaylistId) {
+      store.playlistMode.name = result.name;
+    }
+    libraryCache = null;
+    loadLibraryDetail(currentLibPlaylistId);
+    loadLibrary();
+    showToast('Playlist updated');
+  } catch (e) {
+    showToast('Failed to update');
+  }
+}
+
+async function _changeLibCover() {
+  if (!currentLibPlaylistId) return;
+  const url = await showInputModal('Change cover', '', { okLabel: 'Set cover', placeholder: 'Paste an image URL' });
+  if (!url) return;
+  try {
+    await apiJson(`/api/library/playlist/${currentLibPlaylistId}/cover`, {
+      method: 'POST',
+      body: { image_url: url },
+    });
+    libraryCache = null;
+    loadLibraryDetail(currentLibPlaylistId);
+    loadLibrary();
+    showToast('Cover updated');
+  } catch (e) {
+    showToast('Failed to set cover');
+  }
+}
+
+async function _duplicateLibPlaylist() {
+  if (!currentLibPlaylistId) return;
+  const name = await showInputModal('Duplicate playlist as', currentLibPlaylistName + ' (copy)', { okLabel: 'Duplicate' });
+  if (!name) return;
+  try {
+    // Create new playlist — the endpoint returns the new id directly (no racy name-match)
+    const created = await apiJson('/api/library/playlist', { method: 'POST', body: { name } });
+    let pl = created && created.id ? { id: created.id, name } : null;
+    if (!pl) {
+      // Fallback for older backends that didn't return an id
+      const data = await apiJson('/api/library/playlists');
+      pl = (data.playlists || []).find(p => p.name === name);
+    }
+    if (!pl) throw new Error('Playlist not created');
+    // Add all tracks
+    const songIds = currentLibPlaylistTracks.map(t => t.id).filter(Boolean);
+    if (songIds.length) {
+      await apiJson(`/api/library/playlist/${pl.id}/tracks`, {
+        method: 'PUT',
+        body: { song_ids: songIds },
+      });
+    }
+    libraryCache = null;
+    showToast(`Duplicated as "${name}" (${songIds.length} tracks)`);
+    loadLibraryDetail(pl.id);
+  } catch (e) {
+    showToast('Failed to duplicate');
+  }
+}
+
+async function _mergeIntoLibPlaylist() {
+  if (!currentLibPlaylistId) return;
+  try {
+    const data = await apiJson('/api/library/playlists');
+    const others = (data.playlists || []).filter(p => p.id !== currentLibPlaylistId);
+    if (!others.length) { showToast('No other playlists'); return; }
+    const picked = await showPlaylistPicker(others);
+    if (!picked || !picked.length) return;
+    let added = 0;
+    for (const pl of picked) {
+      const plData = await apiJson(`/api/library/playlist/${pl.id}`);
+      const songIds = (plData.tracks || []).map(t => t.id).filter(Boolean);
+      if (songIds.length) {
+        await apiJson(`/api/library/playlist/${currentLibPlaylistId}/tracks`, {
+          method: 'PUT',
+          body: { song_ids: songIds },
+        });
+        added += songIds.length;
+      }
+    }
+    showToast(`Merged ${added} tracks from ${picked.length} playlist(s)`);
+    loadLibraryDetail(currentLibPlaylistId);
+  } catch (e) {
+    showToast('Failed to merge');
+  }
 }
 
 // ── Get current library playlist context (for recommendations) ──
@@ -1049,117 +1219,25 @@ export function init() {
     }
   });
 
-  // Queue All
+  // Add All — additive, and back in the second slot (R5.2): the hero used to
+  // spell it out there, so that is where the reach goes.
   const queueBtn = $('#queueLibPlaylist');
-  if (queueBtn) queueBtn.addEventListener('click', () => {
+  if (queueBtn) queueBtn.addEventListener('click', _queueLibPlaylist);
+
+  // Shuffle All — third now, after the additive action; Liked Songs and a
+  // Spotify playlist both have one, a library playlist did not.
+  const shuffleBtn = $('#shuffleLibPlaylist');
+  if (shuffleBtn) shuffleBtn.addEventListener('click', () => {
     const tracks = getLibTracksForPlayer();
-    if (tracks.length) {
-      store.playlistMode = currentLibPlaylistId ? { id: currentLibPlaylistId, name: currentLibPlaylistName } : null;
-      getPlayerModule().then(m => m.addToQueue(tracks));
-    }
+    if (!tracks.length) return;
+    store.playlistMode = currentLibPlaylistId ? { id: currentLibPlaylistId, name: currentLibPlaylistName } : null;
+    const shuffled = tracks.slice().sort(() => Math.random() - 0.5);
+    import('./upnext.js').then(m => m.playTracks(shuffled));
   });
 
-  // Delete Playlist
-  const delBtn = $('#deleteLibPlaylist');
-  if (delBtn) delBtn.addEventListener('click', async () => {
-    if (!currentLibPlaylistId) return;
-    const id = currentLibPlaylistId;
-    const name = currentLibPlaylistName;
-    const ok = await showConfirmModal('Delete playlist?', `"${name}" will be deleted.`, { okLabel: 'Delete' });
-    if (!ok) return;
-    // Leave the detail view and optimistically drop the card; DELETE fires after
-    // the undo window (undo re-loads the library from the server).
-    closeLibraryDetail();
-    if (Array.isArray(libraryCache)) {
-      libraryCache = libraryCache.filter(p => p.id !== id);
-      const grid = $('#libraryGrid');
-      if (grid) renderLibraryGrid(libraryCache, grid);
-    } else {
-      loadLibrary();
-    }
-    _schedulePlaylistDelete(id, name, () => { libraryCache = null; loadLibrary(); });
-  });
-
-  // Edit Playlist details (name + description)
-  const renameBtn = $('#renameLibPlaylist');
-  if (renameBtn) renameBtn.addEventListener('click', async () => {
-    if (!currentLibPlaylistId) return;
-    const result = await showPlaylistFormModal({
-      title: 'Edit playlist',
-      name: currentLibPlaylistName,
-      description: currentLibPlaylistDesc,
-      okLabel: 'Save',
-    });
-    if (!result) return;
-    if (result.name === currentLibPlaylistName && result.description === currentLibPlaylistDesc) return;
-    try {
-      await apiJson(`/api/library/playlist/${currentLibPlaylistId}/details`, {
-        method: 'PUT',
-        body: { name: result.name, description: result.description },
-      });
-      if (store.playlistMode && store.playlistMode.id === currentLibPlaylistId) {
-        store.playlistMode.name = result.name;
-      }
-      libraryCache = null;
-      loadLibraryDetail(currentLibPlaylistId);
-      loadLibrary();
-      showToast('Playlist updated');
-    } catch (e) {
-      showToast('Failed to update');
-    }
-  });
-
-  // Change / remove cover
-  const coverBtn = $('#coverLibPlaylist');
-  if (coverBtn) coverBtn.addEventListener('click', async () => {
-    if (!currentLibPlaylistId) return;
-    const url = await showInputModal('Change cover', '', { okLabel: 'Set cover', placeholder: 'Paste an image URL' });
-    if (!url) return;
-    try {
-      await apiJson(`/api/library/playlist/${currentLibPlaylistId}/cover`, {
-        method: 'POST',
-        body: { image_url: url },
-      });
-      libraryCache = null;
-      loadLibraryDetail(currentLibPlaylistId);
-      loadLibrary();
-      showToast('Cover updated');
-    } catch (e) {
-      showToast('Failed to set cover');
-    }
-  });
-
-  // Duplicate Playlist
-  const dupBtn = $('#duplicateLibPlaylist');
-  if (dupBtn) dupBtn.addEventListener('click', async () => {
-    if (!currentLibPlaylistId) return;
-    const name = await showInputModal('Duplicate playlist as', currentLibPlaylistName + ' (copy)', { okLabel: 'Duplicate' });
-    if (!name) return;
-    try {
-      // Create new playlist — the endpoint returns the new id directly (no racy name-match)
-      const created = await apiJson('/api/library/playlist', { method: 'POST', body: { name } });
-      let pl = created && created.id ? { id: created.id, name } : null;
-      if (!pl) {
-        // Fallback for older backends that didn't return an id
-        const data = await apiJson('/api/library/playlists');
-        pl = (data.playlists || []).find(p => p.name === name);
-      }
-      if (!pl) throw new Error('Playlist not created');
-      // Add all tracks
-      const songIds = currentLibPlaylistTracks.map(t => t.id).filter(Boolean);
-      if (songIds.length) {
-        await apiJson(`/api/library/playlist/${pl.id}/tracks`, {
-          method: 'PUT',
-          body: { song_ids: songIds },
-        });
-      }
-      libraryCache = null;
-      showToast(`Duplicated as "${name}" (${songIds.length} tracks)`);
-      loadLibraryDetail(pl.id);
-    } catch (e) {
-      showToast('Failed to duplicate');
-    }
-  });
+  // Everything else the hero used to spell out, behind one ⋯ button.
+  const heroActions = $('#libHeroActions');
+  if (heroActions) heroActions.appendChild(makeKebabButton(_libPlaylistMenu, { className: 'kebab-hero' }));
 
   // Bulk: Select All / None (master toggle)
   const bulkToggle = $('#libBulkToggle');
@@ -1216,35 +1294,6 @@ export function init() {
       loadLibraryDetail(currentLibPlaylistId);
     } catch (e) {
       showToast('Failed to remove');
-    }
-  });
-
-  // Merge Playlists
-  const mergeBtn = $('#mergeLibPlaylist');
-  if (mergeBtn) mergeBtn.addEventListener('click', async () => {
-    if (!currentLibPlaylistId) return;
-    try {
-      const data = await apiJson('/api/library/playlists');
-      const others = (data.playlists || []).filter(p => p.id !== currentLibPlaylistId);
-      if (!others.length) { showToast('No other playlists'); return; }
-      const picked = await showPlaylistPicker(others);
-      if (!picked || !picked.length) return;
-      let added = 0;
-      for (const pl of picked) {
-        const plData = await apiJson(`/api/library/playlist/${pl.id}`);
-        const songIds = (plData.tracks || []).map(t => t.id).filter(Boolean);
-        if (songIds.length) {
-          await apiJson(`/api/library/playlist/${currentLibPlaylistId}/tracks`, {
-            method: 'PUT',
-            body: { song_ids: songIds },
-          });
-          added += songIds.length;
-        }
-      }
-      showToast(`Merged ${added} tracks from ${picked.length} playlist(s)`);
-      loadLibraryDetail(currentLibPlaylistId);
-    } catch (e) {
-      showToast('Failed to merge');
     }
   });
 

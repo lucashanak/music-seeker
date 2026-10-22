@@ -1,10 +1,10 @@
 // podcasts.js — Podcasts page, subscriptions, episodes, bulk actions, sync
 
 import { store } from './store.js';
-import { $, $$, esc, formatSize, historyBack, showToast } from './utils.js';
+import { $, $$, esc, formatSize, historyBack, showToast, showConfirmModal } from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { attachContextMenu, wasLongPress } from './contextmenu.js';
+import { attachContextMenu, wasLongPress, searchForType } from './contextmenu.js';
 
 // ── Load Podcast Subscriptions ──
 export async function loadPodcastSubs() {
@@ -37,9 +37,12 @@ export async function loadPodcastSubs() {
       btn.addEventListener('click', async () => {
         const card = btn.closest('.podcast-sub-card');
         const sid = card.dataset.sid;
-        if (!confirm('Unsubscribe from this podcast?')) return;
+        const ok = await showConfirmModal('Unsubscribe?',
+          `New episodes of "${card.querySelector('.podcast-sub-name').textContent}" will stop downloading. Episodes you already have stay.`,
+          { okLabel: 'Unsubscribe' });
+        if (!ok) return;
         try { await apiJson(`/api/podcasts/subs/${encodeURIComponent(sid)}`, { method: 'DELETE' }); }
-        catch (e) { alert('Failed: ' + e.message); return; }
+        catch (e) { showToast('Failed: ' + e.message, true); return; }
         card.remove();
       });
     });
@@ -49,7 +52,7 @@ export async function loadPodcastSubs() {
         const card = sel.closest('.podcast-sub-card');
         const sid = card.dataset.sid;
         try { await apiJson(`/api/podcasts/subs/${encodeURIComponent(sid)}`, { method: 'PUT', body: { max_episodes: parseInt(sel.value) } }); }
-        catch (e) { alert('Failed: ' + e.message); }
+        catch (e) { showToast('Failed: ' + e.message, true); }
       });
     });
   } catch (e) { container.innerHTML = ''; }
@@ -67,7 +70,13 @@ export async function loadPodcasts() {
     const data = await apiJson('/api/podcasts');
     $('#podcastsTotalSize').textContent = data.shows.length ? `Total: ${formatSize(data.total_size)}` : '';
     if (!data.shows.length) {
-      list.innerHTML = '<div class="empty-state"><p>No downloaded podcasts yet</p></div>';
+      list.innerHTML = `
+        <div class="empty-state">
+          <p>No downloaded podcasts yet. Search for a show, open it and download the episodes you want.</p>
+          <button class="btn-check-new empty-state-cta" id="podcastsEmptyFind">Find a podcast</button>
+        </div>`;
+      const findBtn = $('#podcastsEmptyFind');
+      if (findBtn) findBtn.addEventListener('click', () => searchForType('show', ''));
       return;
     }
     list.innerHTML = data.shows.map(show => `
@@ -141,7 +150,9 @@ export async function openPodcastShow(showName) {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const row = btn.closest('.podcast-ep-row');
-        if (!confirm(`Delete "${row.querySelector('.ep-name').textContent}"?`)) return;
+        const ok = await showConfirmModal(`Delete "${row.querySelector('.ep-name').textContent}"?`,
+          'The downloaded file is removed from this server.', { okLabel: 'Delete' });
+        if (!ok) return;
         try {
           await apiJson(`/api/podcasts/${encodeURIComponent(row.dataset.show)}/${encodeURIComponent(row.dataset.file)}`, { method: 'DELETE' });
           row.remove();
@@ -150,7 +161,7 @@ export async function openPodcastShow(showName) {
             closePodcastShow();
             loadPodcasts();
           }
-        } catch (err) { alert('Delete failed: ' + err.message); }
+        } catch (err) { showToast('Delete failed: ' + err.message, true); }
       });
     });
     // Episode context menu
@@ -199,19 +210,23 @@ export function updateBulkBar() {
 
 // ── Init ──
 async function _deleteEntireShow(showName) {
-  if (!confirm(`Delete entire show "${showName}" and ALL its episodes?`)) return;
+  const ok = await showConfirmModal('Delete this show?',
+    `"${showName}" and every episode you have downloaded will be removed.`, { okLabel: 'Delete' });
+  if (!ok) return;
   try {
     await apiJson(`/api/podcasts/${encodeURIComponent(showName)}`, { method: 'DELETE' });
     showToast(`Deleted "${showName}"`);
     closePodcastShow();
     loadPodcasts();
   } catch (e) {
-    alert('Delete failed: ' + e.message);
+    showToast('Delete failed: ' + e.message, true);
   }
 }
 
 async function _deleteEpisode(showN, fileN, epName, epList) {
-  if (!confirm(`Delete "${epName}"?`)) return;
+  const ok = await showConfirmModal(`Delete "${epName}"?`,
+    'The downloaded file is removed from this server.', { okLabel: 'Delete' });
+  if (!ok) return;
   try {
     await apiJson(`/api/podcasts/${encodeURIComponent(showN)}/${encodeURIComponent(fileN)}`, { method: 'DELETE' });
     const row = epList.querySelector(`.podcast-ep-row[data-file="${fileN.replace(/"/g, '\\"')}"]`);
@@ -222,7 +237,7 @@ async function _deleteEpisode(showN, fileN, epName, epList) {
       loadPodcasts();
     }
   } catch (e) {
-    alert('Delete failed: ' + e.message);
+    showToast('Delete failed: ' + e.message, true);
   }
 }
 
@@ -230,12 +245,14 @@ export function init() {
   $('#backToPodcasts').addEventListener('click', () => closePodcastShow());
   $('#deleteShowBtn').addEventListener('click', async () => {
     const showName = $('#podcastShowName').textContent;
-    if (!confirm(`Delete ALL episodes of "${showName}"?`)) return;
+    const ok = await showConfirmModal('Delete all episodes?',
+      `Every downloaded episode of "${showName}" will be removed.`, { okLabel: 'Delete all' });
+    if (!ok) return;
     try {
       await apiJson(`/api/podcasts/${encodeURIComponent(showName)}`, { method: 'DELETE' });
       closePodcastShow();
       loadPodcasts();
-    } catch (e) { alert('Delete failed: ' + e.message); }
+    } catch (e) { showToast('Delete failed: ' + e.message, true); }
   });
 
   // Filter episodes
@@ -262,7 +279,10 @@ export function init() {
   $('#podcastBulkDelete').addEventListener('click', async () => {
     const rows = $$('.podcast-ep-row', $('#podcastEpisodesList')).filter(row => row.querySelector('.ep-check').checked);
     if (!rows.length) return;
-    if (!confirm(`Delete ${rows.length} selected episode${rows.length !== 1 ? 's' : ''}?`)) return;
+    const ok = await showConfirmModal('Delete selected episodes?',
+      `${rows.length} downloaded episode${rows.length !== 1 ? 's' : ''} will be removed from this server.`,
+      { okLabel: 'Delete' });
+    if (!ok) return;
     let failed = 0;
     for (const row of rows) {
       try {
@@ -271,7 +291,7 @@ export function init() {
       } catch { failed++; }
     }
     updateBulkBar();
-    if (failed) alert(`${failed} episode(s) failed to delete`);
+    if (failed) showToast(`${failed} episode(s) failed to delete`, true);
     if (!$('#podcastEpisodesList').querySelectorAll('.podcast-ep-row').length) {
       closePodcastShow();
       loadPodcasts();
@@ -361,7 +381,7 @@ export function init() {
               subBtn.textContent = 'Subscribed';
               subBtn.disabled = true;
               subBtn.style.opacity = '0.5';
-            } catch (e) { alert('Failed: ' + e.message); }
+            } catch (e) { showToast('Failed: ' + e.message, true); }
           });
         }
       } catch {}

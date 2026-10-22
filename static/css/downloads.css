@@ -31,9 +31,9 @@
 .job-item:hover { border-color: var(--border-hover); }
 .job-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .job-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; display: flex; justify-content: space-between; align-items: center; }
-.job-progress-bar { height: 4px; background: var(--bg-input); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+.job-progress-bar { height: 6px; background: rgba(255,255,255,.12); border-radius: 3px; margin-top: 10px; overflow: hidden; }
 .job-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .5s; box-shadow: 0 0 8px var(--accent-glow); }
-.job-progress-text { font-size: 11px; color: var(--text-muted); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-progress-text { font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.45; overflow-wrap: anywhere; }
 .job-status { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 5px; }
 .job-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .job-status.done { color: var(--accent); }
@@ -59,3 +59,42 @@
   font-family: inherit; transition: all var(--transition);
 }
 .job-retry:hover { background: var(--accent); color: #000; }
+
+/* K4: a single-track download reports 0 % for its whole life (the backend's
+   (i-1)/total is 0 for total == 1), so an empty bar there is not "no progress"
+   — it is "no number". Say that with motion instead of a frozen bar. */
+.job-progress-bar.indeterminate .job-progress-fill {
+  width: 40%;
+  box-shadow: none;
+  animation: job-indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes job-indeterminate {
+  0%   { transform: translateX(-110%); }
+  100% { transform: translateX(260%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .job-progress-bar.indeterminate .job-progress-fill { animation: none; width: 100%; opacity: .45; }
+}
+
+/* K3: handed to Lidarr is finished for MusicSeeker and unfinished for the user,
+   so it must not borrow the green "downloaded" colour. */
+.job-status.handed-off { color: var(--text-muted); }
+.job-status.handed-off::before { background: var(--text-muted); box-shadow: none; }
+
+/* The panel was one flat list with no idea what was still happening. */
+.jobs-group-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--text-muted); margin: 4px 2px 8px;
+}
+.jobs-group + .jobs-group { margin-top: 18px; }
+.jobs-error {
+  font-size: 12px; color: var(--red); background: rgba(255,80,80,.08);
+  border: 1px solid var(--red); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
+}
+/* Every empty state in this batch ends on a way out instead of a full stop. */
+.empty-state-cta { margin-top: 12px; }
+
+/* K13: the panel is not a page, so router.js never paints its nav entry. The
+   rule lives here rather than in nav.css because that file belongs to another
+   batch; `.downloads-btn` has no active state of its own at all. */
+.downloads-btn.active { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
