@@ -636,7 +636,7 @@ function _openArtist(item) {
   if (item.id) {
     // Pass the item's provider: artist ids are provider-scoped, and the search
     // fallback can serve items from a provider other than the configured one.
-    import('./spotify.js').then(m => m.loadArtistDetail && m.loadArtistDetail(item.id, 'search', item.provider));
+    import('./spotify.js').then(m => m.loadArtistDetail && m.loadArtistDetail(item.id, 'search', { provider: item.provider, name: item.name, image: item.image }));
   } else if (item.name) {
     _searchFor('artist', item.name);
   }

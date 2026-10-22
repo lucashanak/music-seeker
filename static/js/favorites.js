@@ -71,7 +71,7 @@ export async function loadFavorites() {
         // detail renders into something nobody can see.
         import('./router.js')
           .then(r => { if (r.switchPage) r.switchPage('search'); return import('./spotify.js'); })
-          .then(m => m.loadArtistDetail && m.loadArtistDetail(artist.id, 'library', artist.provider || ''));
+          .then(m => m.loadArtistDetail && m.loadArtistDetail(artist.id, 'library', { provider: artist.provider || '', name: artist.name, image: artist.image }));
       });
       card.appendChild(makeKebabButton(() => _favoriteMenu(at())));
     });

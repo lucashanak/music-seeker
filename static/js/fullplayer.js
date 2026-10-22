@@ -253,7 +253,7 @@ async function _openArtistPage(name) {
         // be shown on a page nobody is looking at.
         const router = await import('./router.js');
         if (router.switchPage) router.switchPage('search');
-        m.loadArtistDetail(exact.id, 'search', exact.provider);
+        m.loadArtistDetail(exact.id, 'search', { provider: exact.provider, name: exact.name, image: exact.image });
         return;
       }
     }

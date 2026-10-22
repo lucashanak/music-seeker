@@ -103,7 +103,7 @@ function _routeCardClick(item, fromPage) {
     // Pass the item's own provider: with the fallback chain live, an artist can
     // come from a different provider than the configured one, and its id must be
     // resolved against the API that issued it.
-    loadArtistDetail(item.id, fromPage, item.provider);
+    loadArtistDetail(item.id, fromPage, { provider: item.provider, name: item.name, image: item.image });
   } else if (item.type === 'album' && item.id) {
     loadAlbumDetail(item, fromPage);
   } else {
