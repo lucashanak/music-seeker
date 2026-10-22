@@ -805,3 +805,113 @@ length of the request. Measured on a slow connection, phone, 1.5 s after the tap
 A stale hero reads as "still loading"; an empty one reads as broken, so the stale one wins
 until a caller supplies something better. The album count is cleared only together with a
 repaint — a new name must never sit above the previous artist's album total.
+## Deezer answers in the server's language unless told otherwise
+
+`/genre` is localised by the **caller's IP**, and the app runs on a Czech host. Half the
+browse wall therefore came back as "Taneční hudba", "Alternativní hudba" and "Pro děti"
+next to Pop, Rock and Jazz. `deezer_genres()` sends `Accept-Language: en`; measured
+against the live API, the bare request and the one with the header differ in nine of
+twenty-three names.
+
+`_genre_list_cache` is a plain module dict, so it lives only inside the process: a
+deploy starts a new container with an empty cache and the English wall appears on the
+first request. There is no 24-hour staleness window to wait out. The failure to watch
+for is the opposite one — a hand-over run against a container that was never recreated.
+
+## A genre chart's artists come from its tracks
+
+Deezer scopes `/chart/{genre_id}` for `tracks` and `albums`, but hands back its own
+**regional** top for `artists`. Measured on Pop, Rock, Rap/Hip Hop, Jazz and Metal: all
+ten artist rows were identical to `/chart/0` every time, so "Rock" led with Taylor
+Swift, Yzomandias and a German audiobook channel. Albums are genuinely scoped (Judas
+Priest and Pink Floyd under Rock, Weather Report under Jazz) and are kept as they are.
+
+`_chart_artists()` therefore derives the artist row from the chart's own track rows,
+de-duplicated by artist id in order of first appearance. It reads the **raw** Deezer
+rows rather than the mapped track dicts, because `_deezer_track` puts the album cover in
+`image` — a card built from the mapped dict would wear a record sleeve instead of a
+portrait.
+
+## An exact artist name is not on its own an answer
+
+Somebody on Deezer is named after almost every famous song, so `_pick_top_result` used
+to answer "one more time" with a four-thousand-fan act of that name instead of Daft
+Punk. The exact name match now wins only when the page is **already mostly that
+artist's own work** — `_artist_owns_enough()` over the head of the tracks and albums
+lists, the same `_ARTIST_DOMINANCE_MIN` / `_ARTIST_DOMINANCE_SAMPLE` rule the popularity
+ordering uses — and otherwise the picker falls through to the exact song title and then
+to `tracks[0]`.
+
+**How big the namesake is cannot decide this**, and a version that asked was measured and
+withdrawn. On Deezer, Portishead has 584 k fans, Khruangbin 99 k and every Czech act far
+below that (Chinaski 17 728, Ektor 36 487, Olympic 5 071, Kryptor 148) — all of them
+under the namesakes "Hurt" (8 076) and "Bohemian Rhapsody" (5 371), so any absolute
+threshold that keeps the songs right takes the artist card away from most of the library.
+`fans` is also Deezer-only: the iTunes and YouTube Music mappers never write the key, so
+a gate reading it was permanently shut for those two — `?provider=itunes&q=metallica`
+answered with the track "One" and no Metallica card at all.
+
+Ownership is read from `artist_id` where the provider stamps one and from the credit
+text otherwise. A credit that names several performers is read as a list as well as
+whole, split on a comma and on " & " — measured over 839 credits from the live pages of
+all three providers, those two are the only joiners that ever appear, while the guest is
+kept inside the **title** ("Dresscode (feat. Yzomandias)") and never in the credit. The
+whole credit is compared too, because both joiners are also part of real names ("Earth,
+Wind & Fire", "Crosby, Stills & Nash"). Reading the comma alone cost Yzomandias his
+iTunes card: his three rows there were "Żabson & Yzomandias" and "Fvck\_kvlt &
+Yzomandias", so the gate counted none of them. Measured through `search_all` on
+2026-10-22: fourteen artist queries scored 3-16 of 16 rows and nine song titles 0-1, and
+the top card came out right for 14/14 and 9/9.
+Only the head of each list counts, because `limit_per_type` goes to 20 and the deep rows
+are relevance sweepings — asking for 20 a type put five rows of the band "Hurt" on the
+page, enough for an uncapped count to take the card from Johnny Cash.
+
+A small namesake is still returned when nothing else matched at all, which is strictly
+better than the unrelated `artists[0]` that would otherwise be picked.
+
+## iTunes has to be told which storefront to answer for
+
+The iTunes search API answers for the **United States** whatever address it is called
+from, while Deezer and YouTube Music both answer for the region they are called from —
+Deezer so thoroughly that it names its genres in Czech unasked. Left alone, iTunes was
+the one provider searching a different market than the app's users live in, and a gate
+that asks "is this page already mostly this artist's work" was being handed the wrong
+page: on the US storefront "olympic" is the Games, John Williams and a French 79 single,
+none of the Czech band's fourteen-of-sixteen rows that the CZ storefront returns. The
+band was there all along — artist 1376449023, whose own albums are `Trilobit` and
+`Jako Zamlada` — just with nothing of theirs on the page to vouch for them.
+
+`itunes_search` therefore sends `country=ITUNES_COUNTRY`. The storefront moves the
+catalogue, not the gate: on the song-title side both storefronts put the queried name on
+**zero** of sixteen rows, so nothing is traded away for it. Podcasts, which default to
+iTunes, return the same top hit on both.
+
+## A Lidarr job is finished here and only here
+
+`_run_lidarr` asks Lidarr to go looking and returns; nothing has been downloaded yet.
+The job now carries `handed_off = True` while `status` stays `DONE`.
+
+The flag exists **instead of a fourth JobStatus**. Every filter in `jobs.py` keys on the
+three terminal statuses (`_save_history`, `save_if_finished`, `clear_history`), so a new
+value would have to be added to all of them or the job would never be persisted, never
+survive a restart and never be clearable — and `_load_history()` raises `ValueError` on
+a status it does not know, inside a blanket `except` that drops the **entire** history.
+
+For the same reason the flag is **not written to disk**: `to_history()` strips it, so an
+older image reading the file with `Job(**entry)` does not choke on a key it has never
+heard of. The flag describes a hand-off this process made, which is what the live
+downloads panel needs; an entry older than the process cannot claim it anyway.
+
+## Download progress counts finished tracks
+
+`_track_progress(done, total)` is `int(done / total * 100)`, applied **after** each
+track completes, instead of the old `int((i - 1) / total * 100)` applied before it
+started. `progress` now means "fraction of the job that is actually done".
+
+This does **not** by itself make a single-track download's bar move: the only track
+scores 0 while it runs either way, and the bar reaching 100 is still the unconditional
+`job.progress = 100` after the loop. Real percentages require reading yt-dlp's output
+line by line, which means rewriting the shared `_run` helper that also drives metaflac
+and ffmpeg — deliberately left for its own change. Until then the meaningful signal for
+the client is `progress === 0 && status === 'running'`, which the downloads panel draws
+as an indeterminate bar.

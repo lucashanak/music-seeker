@@ -81,6 +81,18 @@ def _check_quota(username: str) -> bool:
     return used_bytes < quota_bytes
 
 
+def _track_progress(done: int, total: int) -> int:
+    """Percent of a multi-track job once `done` tracks have finished.
+
+    Counting finished tracks is what makes the commonest job move at all: with
+    the old `(i - 1) / total` the only track of a single-track download scored 0
+    while it ran, so the bar sat empty the whole time and then jumped to full.
+    """
+    if total <= 0:
+        return 0
+    return int(done / total * 100)
+
+
 async def run_download(job: Job):
     sem = get_semaphore()
     async with sem:
@@ -413,7 +425,6 @@ async def _run_ytdlp(job: Job):
         artist = track.get("artist", "")
         album = track.get("album", "")
         job.progress_text = f"{i}/{total} — Downloading {artist} - {name}"
-        job.progress = int((i - 1) / total * 100)
 
         image = track.get("image", "")
         # Resolve cover art if missing (e.g. tracks added via add-and-download)
@@ -433,6 +444,7 @@ async def _run_ytdlp(job: Job):
         ok = await _download_track_ytdlp(artist, name, album, job.format, image, is_podcast=is_podcast, username=job.username)
         if not ok:
             failed.append(f"{artist} - {name}")
+        job.progress = _track_progress(i, total)
 
     job.progress = 100
     if failed:
@@ -660,11 +672,11 @@ async def _run_slskd(job: Job):
         artist = track.get("artist", "")
         album = track.get("album", "")
         job.progress_text = f"{i}/{total} — Searching Soulseek for {artist} - {name}"
-        job.progress = int((i - 1) / total * 100)
 
         ok = await _download_track_slskd(artist, name, album, job.format, username=job.username)
         if not ok:
             failed.append(f"{artist} - {name}")
+        job.progress = _track_progress(i, total)
 
     job.progress = 100
     if failed:
@@ -733,6 +745,8 @@ async def _run_lidarr(job: Job):
 
         job.progress = 90
         job.progress_text = "Search triggered in Lidarr, download will proceed in background"
+        # Nothing has been downloaded yet. The job is done, we are not.
+        job.handed_off = True
 
 
 async def _trigger_navidrome_scan():
