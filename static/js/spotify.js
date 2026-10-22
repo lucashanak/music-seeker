@@ -179,13 +179,25 @@ async function searchForArtistDetail(item) {
       switchPage('search', true);
       // match came from /api/search, which stamps the serving provider — pass it
       // on, since the fallback provider can differ from the configured one.
-      loadArtistDetail(match.id, 'playlists', match.provider);
+      // name/image come from the same response, so the hero is painted before
+      // the album request returns instead of sitting blank for ~0.5 s.
+      loadArtistDetail(match.id, 'playlists', { provider: match.provider, name: match.name, image: match.image });
     } else {
       showToast('Artist not found on Deezer');
     }
   } catch {
     showToast('Failed to find artist');
   }
+}
+
+// Fisher-Yates on a copy — the caller's list is the one still on screen.
+function _shuffled(tracks) {
+  const out = tracks.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
 }
 
 // ── Load Playlists ──
@@ -419,20 +431,102 @@ function _providerQs(provider) {
 // provider on each album the way search results do).
 let _artistDetailProvider = '';
 
-// `provider` is optional — 2-arg callers still work and fall back to the
-// backend's configured-provider default.
-export async function loadArtistDetail(id, fromPage, provider) {
+// record_type is the only thing separating a studio album from a remix EP or a
+// live single on this endpoint. It arrives as "album"/"single"/"ep" and, on part
+// of the catalogue, as an empty string — anything that is not plainly an album
+// belongs with the singles rather than beside the studio records.
+function _isFullAlbum(a) {
+  return String(a.record_type || '').toLowerCase() === 'album';
+}
+
+// …but only Deezer sends it. The iTunes, YouTube Music and Spotify mappers never
+// build the key (`record_type` appears once in app/services/search_providers.py,
+// in the Deezer album mapper), so for those providers EVERY release would fail
+// _isFullAlbum and the whole discography — "A Night At The Opera" included —
+// would land under "Singles and EPs" with an empty "Albums" above it. Measured
+// on the deployed backend: ?provider=itunes returns 96 albums, none with the
+// key. Splitting is therefore only done where the source actually publishes the
+// kind of release; otherwise the page renders one grid, the way it did before.
+function _splitsByKind(albums) {
+  return albums.some(a => String(a.record_type || '').trim() !== '');
+}
+
+// Named kind for a subtitle. Unknown stays unnamed: guessing "Single" for an
+// empty record_type would state something the response never said.
+function _albumKind(a) {
+  const t = String(a.record_type || '').toLowerCase();
+  if (t === 'album') return 'Album';
+  if (t === 'single') return 'Single';
+  if (t === 'ep') return 'EP';
+  return '';
+}
+
+// total_tracks is 0 for every album this endpoint returns, so the subtitle is
+// year and kind; printing "0 tracks" was the old line's only content for many.
+function _albumCard(a, i) {
+  const year = a.year || (a.release_date || '').slice(0, 4);
+  return `
+      <div class="card" data-album-idx="${i}">
+        <button class="card-dl-btn" title="Download"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
+        <img class="card-img" ${a.image ? `src="${a.image}"` : ''} alt="" loading="lazy">
+        <div class="card-body">
+          <div class="card-title">${esc(a.name)}</div>
+          <div class="card-sub">${[year, _albumKind(a)].filter(Boolean).join(' · ')}</div>
+        </div>
+      </div>
+    `;
+}
+
+// #radioArtist and #followArtist are injected into this hero by radio.js, which
+// this batch must not edit — so the emoji swap happens here, on the page that
+// owns the hero, next to the Follow label this file already maintains.
+function _dressRadioButton() {
+  const btn = $('#radioArtist');
+  if (!btn || btn.querySelector('svg')) return;
+  btn.innerHTML = '<svg class="hero-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M7.76 16.24a6 6 0 0 1 0-8.48"/><path d="M16.24 7.76a6 6 0 0 1 0 8.48"/></svg>Radio';
+}
+
+// Third argument is optional and accepts either a provider string or
+// { provider, name, image } — the same shape loadPlaylistDetail takes. Callers
+// that already hold the artist's name and picture get a hero painted before the
+// request returns; older 2- and 3-arg callers behave exactly as before.
+//
+// "Exactly as before" is the whole point of the `!== undefined` guards below.
+// Three of the four callers (search.js, contextmenu.js, fullplayer.js) still
+// pass a bare provider STRING, and search.js is the everyday path — a card in
+// the search results. Painting `o.name || ''` unconditionally would hand those
+// three an EMPTY hero for the length of the request, where today they keep the
+// previous artist's name and picture. Blank is the worse of the two: it reads
+// as broken, and on a slow connection it lasts seconds. So each field is
+// written only when the caller actually supplied it.
+export async function loadArtistDetail(id, fromPage, opts) {
+  const o = typeof opts === 'string' ? { provider: opts } : (opts || {});
+  const provider = o.provider || '';
   store.artistDetailSource = fromPage || null;
   store.currentArtistId = id;
-  _artistDetailProvider = provider || '';
+  _artistDetailProvider = provider;
   $('#searchResults').style.display = 'none';
   $('#searchLoadMore').style.display = 'none';
   $('#artistDetail').style.display = '';
   history.pushState({ layer: 'artistDetail' }, '');
+  // Whatever the caller knows, before the network — and nothing it did not say.
+  // The album count goes only with a repaint: a hero that already carries the
+  // new name must not carry the previous artist's album total under it.
+  if (o.image !== undefined) setArt($('#artistDetailImg'), o.image);
+  if (o.name !== undefined) $('#artistDetailName').textContent = o.name;
+  if (o.name !== undefined || o.image !== undefined) $('#artistDetailCount').textContent = '';
+  _dressRadioButton();
   const albumsEl = $('#artistAlbums');
+  const singlesEl = $('#artistSingles');
   albumsEl.innerHTML = Array(8).fill('<div class="skeleton skeleton-card"></div>').join('');
+  // The render below hides an empty grid, and that display sticks on the
+  // element — without this the next artist's skeletons would load invisibly.
+  albumsEl.style.display = '';
+  if (singlesEl) { singlesEl.innerHTML = ''; singlesEl.style.display = 'none'; }
   const header = $('#artistAlbumsHeader');
+  const singlesHeader = $('#artistSinglesHeader');
   if (header) header.style.display = 'none';
+  if (singlesHeader) singlesHeader.style.display = 'none';
   _renderArtistTop([]);   // clear the previous artist's Popular block
   // Popular runs alongside the albums instead of after them: it is the first
   // thing on screen, and the two requests share Deezer's cached top-tracks call.
@@ -440,54 +534,69 @@ export async function loadArtistDetail(id, fromPage, provider) {
   try {
     const data = await apiJson(`/api/artist/${id}/albums${_providerQs(provider)}`);
     store.currentArtistAlbums = data.albums || [];
-    setArt($('#artistDetailImg'), data.image);
-    $('#artistDetailName').textContent = data.name;
+    if (!o.image && data.image) setArt($('#artistDetailImg'), data.image);
+    $('#artistDetailName').textContent = o.name || data.name || '';
     $('#artistDetailCount').textContent = `${store.currentArtistAlbums.length} albums`;
-    if (header) header.style.display = store.currentArtistAlbums.length ? '' : 'none';
-    albumsEl.innerHTML = store.currentArtistAlbums.map((a, i) => `
-      <div class="card" data-album-idx="${i}">
-        <button class="card-dl-btn" title="Download"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
-        <img class="card-img" ${a.image ? `src="${a.image}"` : ''} alt="" loading="lazy">
-        <div class="card-body">
-          <div class="card-title">${esc(a.name)}</div>
-          <div class="card-sub">${[a.year || (a.release_date || '').slice(0, 4), a.total_tracks ? a.total_tracks + ' tracks' : ''].filter(Boolean).join(' · ')}</div>
-        </div>
-      </div>
-    `).join('');
-    $$('.card', albumsEl).forEach(card => {
-      card.addEventListener('click', (e) => {
-        if (wasLongPress()) return;
-        if (e.target.closest('.card-dl-btn')) return;
-        const album = store.currentArtistAlbums[card.dataset.albumIdx];
-        // Inherit the artist's provider — these albums came from its response.
-        if (album && album.id) loadAlbumDetail({ ...album, type: 'album', artist: $('#artistDetailName').textContent, provider: album.provider || _artistDetailProvider }, 'search');
-        else if (album) openModal(album);
+    // Two lists, one array: data-album-idx keeps indexing store.currentArtistAlbums,
+    // so the click, menu and download wiring below is unaffected by the split.
+    // A provider that never names the kind gets no split: everything stays in
+    // the first grid, under "Albums", and the second header stays hidden.
+    const byKind = _splitsByKind(store.currentArtistAlbums);
+    const full = [], rest = [];
+    store.currentArtistAlbums.forEach((a, i) => (!byKind || _isFullAlbum(a) ? full : rest).push(i));
+    const sections = [
+      { idx: full, el: albumsEl, head: header },
+      { idx: rest, el: singlesEl, head: singlesHeader },
+    ].filter(sec => sec.el);
+    sections.forEach(sec => {
+      sec.el.innerHTML = sec.idx.map(i => _albumCard(store.currentArtistAlbums[i], i)).join('');
+      sec.el.style.display = sec.idx.length ? '' : 'none';
+      if (sec.head) sec.head.style.display = sec.idx.length ? '' : 'none';
+    });
+    sections.forEach(sec => {
+      $$('.card', sec.el).forEach(card => {
+        card.addEventListener('click', (e) => {
+          if (wasLongPress()) return;
+          if (e.target.closest('.card-dl-btn')) return;
+          const album = store.currentArtistAlbums[card.dataset.albumIdx];
+          // Inherit the artist's provider — these albums came from its response.
+          if (album && album.id) loadAlbumDetail({ ...album, type: 'album', artist: $('#artistDetailName').textContent, provider: album.provider || _artistDetailProvider }, 'search');
+          else if (album) openModal(album);
+        });
+      });
+      attachContextMenu(sec.el, {
+        selector: '.card[data-album-idx]',
+        getItem: (targetEl) => {
+          const album = store.currentArtistAlbums[parseInt(targetEl.dataset.albumIdx)];
+          if (!album) return null;
+          // provider: the menu's "Play all"/"Add all to queue" fetch this album's
+          // tracks by id, so it needs the provider that issued the id.
+          return { item: { ...album, type: 'album', provider: album.provider || _artistDetailProvider }, type: 'album', context: { inLibrary: !!album.inLibrary } };
+        },
+      });
+      $$('.card-dl-btn', sec.el).forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (btn.disabled) return;
+          const card = btn.closest('.card');
+          const album = store.currentArtistAlbums[card.dataset.albumIdx];
+          if (album) { openModal(album); if (!album.inLibrary) setTimeout(() => $('#modalDownload').click(), 100); }
+        });
       });
     });
-    attachContextMenu(albumsEl, {
-      selector: '.card[data-album-idx]',
-      getItem: (targetEl) => {
-        const album = store.currentArtistAlbums[parseInt(targetEl.dataset.albumIdx)];
-        if (!album) return null;
-        // provider: the menu's "Play all"/"Add all to queue" fetch this album's
-        // tracks by id, so it needs the provider that issued the id.
-        return { item: { ...album, type: 'album', provider: album.provider || _artistDetailProvider }, type: 'album', context: { inLibrary: !!album.inLibrary } };
-      },
-    });
-    $$('.card-dl-btn', albumsEl).forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (btn.disabled) return;
-        const card = btn.closest('.card');
-        const album = store.currentArtistAlbums[card.dataset.albumIdx];
-        if (album) { openModal(album); if (!album.inLibrary) setTimeout(() => $('#modalDownload').click(), 100); }
-      });
-    });
-    // Check library status for albums
-    checkLibrary(store.currentArtistAlbums.map(a => ({ name: a.name, artist: data.name, type: 'album', id: a.id })), albumsEl);
+    // Check library status for albums. The cards are handed over explicitly:
+    // they now live in two grids, so the helper's own DOM order would not line
+    // up with the items it was asked about.
+    const order = sections.flatMap(sec => sec.idx);
+    const cards = sections.flatMap(sec => $$('.card', sec.el));
+    checkLibrary(order.map(i => {
+      const a = store.currentArtistAlbums[i];
+      return { name: a.name, artist: data.name, type: 'album', id: a.id };
+    }), null, cards);
     // Update follow button state
     updateFollowButton(id);
   } catch (e) {
+    albumsEl.style.display = '';
     albumsEl.innerHTML = `<div class="empty-state"><p>Failed to load albums: ${e.message}</p></div>`;
   }
 }
@@ -501,10 +610,13 @@ const _ARTIST_TOP_COLLAPSED = 5;
 function _renderArtistTop(tracks, expanded) {
   _artistTopTracks = tracks || [];
   const el = $('#artistTop');
-  const playBtn = $('#playArtistTop');
+  // Laid out from the first frame and merely disabled until there is something
+  // to play: appearing later reflowed the whole row of hero buttons.
+  [$('#playArtistTop'), $('#shuffleArtistTop')].forEach(b => {
+    if (b) b.disabled = !_artistTopTracks.length;
+  });
   if (!el) return;
   el.innerHTML = '';
-  if (playBtn) playBtn.style.display = _artistTopTracks.length ? '' : 'none';
   if (!_artistTopTracks.length) return;
   const head = document.createElement('div');
   head.className = 'search-section-header';
@@ -539,12 +651,21 @@ async function _loadArtistTop(id, provider) {
 
 function initArtistTopPlay() {
   const btn = $('#playArtistTop');
-  if (!btn) return;
-  btn.addEventListener('click', async () => {
-    if (!_artistTopTracks.length) return;
-    const u = await import('./upnext.js');
-    u.playTracks(_artistTopTracks, 0);
-  });
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      if (!_artistTopTracks.length) return;
+      const u = await import('./upnext.js');
+      u.playTracks(_artistTopTracks, 0);
+    });
+  }
+  const shuffle = $('#shuffleArtistTop');
+  if (shuffle) {
+    shuffle.addEventListener('click', async () => {
+      if (!_artistTopTracks.length) return;
+      const u = await import('./upnext.js');
+      u.playTracks(_shuffled(_artistTopTracks));
+    });
+  }
 }
 
 function updateFollowButton(id) {
@@ -570,6 +691,27 @@ export function closeArtistDetail(fromPopstate) {
 }
 
 // ── Album Detail ──
+// "1 hr 1 min" / "41 min", the way the running time reads under an album title.
+function _albumRuntime(ms) {
+  const min = Math.round(ms / 60000);
+  const h = Math.floor(min / 60), m = min % 60;
+  if (!h) return `${m} min`;
+  return m ? `${h} hr ${m} min` : `${h} hr`;
+}
+
+// "Album · 2001 · 14 songs, 1 hr 1 min". The runtime is left out unless every
+// track carries one: the iTunes and podcast paths return duration_ms 0, and a
+// sum over those would quietly understate the album by however much is missing.
+function _albumMetaLine(album, tracks) {
+  const year = album.year || (album.release_date || '').slice(0, 4);
+  const kind = _albumKind(album) || 'Album';
+  let line = [kind, year, `${tracks.length} song${tracks.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
+  if (tracks.length && tracks.every(t => t.duration_ms > 0)) {
+    line += `, ${_albumRuntime(tracks.reduce((sum, t) => sum + t.duration_ms, 0))}`;
+  }
+  return line;
+}
+
 export async function loadAlbumDetail(album, fromPage) {
   store.albumDetailSource = fromPage || null;
   store.currentAlbum = album;
@@ -595,7 +737,7 @@ export async function loadAlbumDetail(album, fromPage) {
       image: t.image || album.image || '',
     }));
     store.currentAlbumTracks = tracks;
-    $('#albumDetailCount').textContent = `${tracks.length} tracks`;
+    $('#albumDetailCount').textContent = _albumMetaLine(album, tracks);
     // Album detail: numbered track list (position + duration) instead of a card
     // grid that repeats the album cover on every row. Drop the per-track artist
     // line when every track shares the album's artist (the common case).
@@ -705,13 +847,8 @@ export function init() {
   $('#shuffleAlbum').addEventListener('click', async () => {
     const tracks = store.currentAlbumTracks || [];
     if (!tracks.length) return;
-    const shuffled = tracks.slice();
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
     const { playTracks } = await import('./upnext.js');
-    playTracks(shuffled);
+    playTracks(_shuffled(tracks));
   });
   $('#queueAlbum').addEventListener('click', async () => {
     const tracks = store.currentAlbumTracks || [];
@@ -769,12 +906,7 @@ export function init() {
   $('#shufflePlaylist').addEventListener('click', () => {
     const tracks = getPlaylistTracksForPlayer();
     if (!tracks.length) return;
-    const shuffled = tracks.slice();
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    import('./upnext.js').then(m => m.playTracks(shuffled));
+    import('./upnext.js').then(m => m.playTracks(_shuffled(tracks)));
   });
   $('#queuePlaylist').addEventListener('click', () => {
     const tracks = getPlaylistTracksForPlayer();

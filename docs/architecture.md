@@ -620,3 +620,75 @@ is CSS now (`.hero-act-0/1/2` anchored to `--hero-art`, which the breakpoint red
 JS only says which button is how many places from the right. An artist hero carries a
 play button that fetches `/api/artist/{id}/top` and hands it to `playTracks`; the artist
 cards in the grid do not, because each tap there would pay for its own request.
+
+### One hero, four pages
+
+`.playlist-hero` is not the artist page's hero. The same block serves **four** screens —
+artist, album, a playlist opened from search, and a library playlist — and the markup
+lives in two partials (`30-search.html`, `50-library.html`). Any change to
+`.playlist-hero*` in `pages.css` lands on all four, so all four have to be looked at.
+
+The actions take a **line of their own** (`.playlist-hero { flex-wrap: wrap }` plus
+`.playlist-hero-actions { flex-basis: 100%; flex-shrink: 1 }`) rather than sitting beside
+the title. Laying them out beside it is what the desktop rule used to do as a column:
+five buttons stacked at the right edge with ~300 px of empty space next to them. Turning
+that column into a row *in place* is not the fix — the library playlist carries seven
+buttons and overflows 1024 px, and `flex-shrink: 1` on its own takes the width out of the
+title instead (measured: the title collapses to 0 px before the buttons give any up).
+
+The 180 px cover is scoped to `@media (min-width: 641px)`. Below that, the phone layout
+in `responsive.css` is already correct and a bigger cover only eats the screen (measured:
+the album hero grows 329 → 409 px). Keeping the rule above the breakpoint also means the
+phone stylesheet never has to be opened for this.
+
+Numbers that have to hold on all four heroes, in all three viewports:
+`document.documentElement.scrollWidth <= clientWidth`, `hero.scrollWidth <=
+hero.clientWidth`, and `.playlist-hero-info` wider than 120 px.
+
+### The discography is two lists, and the album hero counts its own runtime
+
+`/api/artist/{id}/albums` returns everything an artist ever put out — 39 entries for Daft
+Punk — with `record_type` on each and `total_tracks` always **0**. So the card subtitle is
+year and kind, never a track count, and the grid is split in two: `record_type == "album"`
+goes under "Albums" (15), everything else under "Singles and EPs" (24). *Everything* else
+means singles, EPs and the empty string too — part of the catalogue carries no type at
+all, and `compilation` does not occur in practice. The subtitle names a kind only when
+the response did; an unnamed type prints just the year.
+
+**Only Deezer sends `record_type`.** `grep -n record_type app/services/search_providers.py`
+hits once, in the Deezer album mapper; the iTunes, YouTube Music and Spotify mappers never
+build the key. Splitting unconditionally would therefore give every one of those providers
+an empty "Albums" heading with the whole discography — "A Night At The Opera" included —
+filed under "Singles and EPs" (measured on the deployed backend: `?provider=itunes`
+returns 96 albums, none of them typed). That matters beyond a deliberate choice of source,
+because `_DEFAULT_FALLBACK["deezer"] == "ytmusic"`. So the page splits only when **at least
+one** release in the response names its kind; otherwise it renders one grid under "Albums",
+exactly as it did before the split existed.
+
+Both grids index the **same** `store.currentArtistAlbums` through `data-album-idx`, so the
+click, context-menu and download wiring is unchanged by the split. `checkLibrary` is the
+exception: it matches results to cards by position, so it is handed the card list
+explicitly — its own DOM lookup would see one grid, not two.
+
+The album hero reads `Album · 2001 · 14 songs, 1 hr 1 min`. The runtime is left out
+entirely unless **every** track carries a `duration_ms` above zero: the iTunes and podcast
+provider paths return 0, and summing over those would quietly understate the album by
+however many tracks are missing.
+
+### The artist hero paints only what the caller passed
+
+`loadArtistDetail(id, fromPage, opts)` takes its third argument either as a provider
+string or as `{ provider, name, image }`, the shape `loadPlaylistDetail` already uses. A
+caller that passes the object gets the hero painted **before** the albums request returns;
+a caller that passes a string gets nothing painted, and the hero keeps whatever the
+previous artist left in it until the response lands.
+
+That asymmetry is deliberate and the `!== undefined` guards are what hold it. Three of the
+four callers (`search.js`, `contextmenu.js`, `fullplayer.js` — and `search.js` is the
+everyday path, a card in the search results) still pass a bare string. Writing
+`o.name || ''` unconditionally blanks the hero for them: name gone, cover gone, for the
+length of the request. Measured on a slow connection, phone, 1.5 s after the tap:
+`{name:"", count:"", img:""}` against `{name:"Daft Punk", count:"39 albums"}` without it.
+A stale hero reads as "still loading"; an empty one reads as broken, so the stale one wins
+until a caller supplies something better. The album count is cleared only together with a
+repaint — a new name must never sit above the previous artist's album total.

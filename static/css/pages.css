@@ -87,9 +87,17 @@
   text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px;
 }
 
-/* ── Playlist Detail ── */
+/* ── Playlist Detail ──
+   One hero, four pages: artist, album, playlist from search, library playlist.
+   The widest of them carries seven buttons, so the actions get a line of their
+   own (flex-basis: 100%) instead of a column squeezed next to the title. Turning
+   that column into a row IN PLACE overflows 1024 px instead: measured 1027 px on
+   an album hero and 1167 px on a library playlist, which carries seven buttons.
+   flex-shrink: 1 alone does not help either — the title collapses to 0 px before
+   the buttons give up any width. */
 .playlist-hero {
-  display: flex; gap: 20px; align-items: center; margin-bottom: 24px;
+  display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap;
+  margin-bottom: 24px;
   padding: 24px; background: var(--bg-card); border-radius: 16px;
   border: 1px solid var(--border);
 }
@@ -97,11 +105,21 @@
   width: 100px; height: 100px; border-radius: 12px; object-fit: cover;
   box-shadow: 0 4px 20px rgba(0,0,0,.4); flex-shrink: 0;
 }
+/* The big cover is desktop-only on purpose: the phone layout is already right
+   and lives in responsive.css, which this batch must not open. */
+@media (min-width: 641px) {
+  .playlist-hero-img { width: 180px; height: 180px; }
+}
 .playlist-hero-info { flex: 1; min-width: 0; }
 .playlist-hero-info h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
 .playlist-hero-info p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
 .playlist-hero-desc { white-space: pre-line; line-height: 1.4; }
-.playlist-hero-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; flex-shrink: 0; }
+.playlist-hero-actions {
+  display: flex; flex-direction: row; align-items: center; flex-wrap: wrap;
+  gap: 10px; flex-basis: 100%; flex-shrink: 1;
+}
+/* Icons inside hero buttons sit on the text baseline row, not above it. */
+.hero-ico { vertical-align: -2px; margin-right: 6px; }
 
 /* Shared hero action button classes (replace per-button inline styles). */
 .btn-hero-primary { width: auto; padding: 12px 28px; background: var(--accent); color: #000; }
