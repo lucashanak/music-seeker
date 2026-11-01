@@ -11,6 +11,7 @@ import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTra
 import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration } from './djmix.js';
 import { getDjData } from './bpm.js';
 import * as cast from './cast.js';
+import { ab as _ab, abPlay, abPause, abStop } from './androidbridge.js';
 
 // ── Dual-deck Web Audio API crossfade engine with DJ mixing ──
 
@@ -647,7 +648,6 @@ async function _preAnalyzeUpcoming() {
 const audio = _deckA;
 export function getAudio() { return _activeDeckEl(); }
 
-function _ab() { return window.AndroidBridge || null; }
 
 /** Wait until audio element has buffered enough (30s ahead or full track).
  *  Resolves immediately for blob URLs (fully loaded). Polls every 500ms, max 15s wait. */
@@ -757,7 +757,7 @@ export function applyRemoteCommand(action, value) {
 window._androidBridgeReady = function() {
   if (!_activeDeckEl().paused && _ab()) {
     const item = store.playerQueue[store.playerIndex];
-    if (item) _ab().onPlay(item.name || '', item.artist || '');
+    if (item) abPlay(item.name, item.artist);
   }
 };
 
@@ -1174,7 +1174,7 @@ export function hidePlayerBar() {
   const npBtn = $('#bnavNowPlaying');
   if (npBtn) npBtn.style.display = 'none';
   // Stop Android foreground service when player is hidden
-  if (_ab()) _ab().onStop();
+  abStop();
 }
 
 
@@ -1766,10 +1766,8 @@ export function init() {
     deck.addEventListener('play', () => {
       if (deck !== _activeDeckEl() && !_crossfading) return;
       updatePlayPauseIcon(true);
-      if (_ab()) {
-        const item = store.playerQueue[store.playerIndex];
-        if (item) _ab().onPlay(item.name || '', item.artist || '');
-      }
+      const item = store.playerQueue[store.playerIndex];
+      if (item) abPlay(item.name, item.artist);
     });
     deck.addEventListener('playing', () => {
       if (deck !== _activeDeckEl()) return;
@@ -1845,7 +1843,7 @@ export function init() {
       if (deck !== _activeDeckEl()) return;
       updatePlayPauseIcon(false);
       pausePrefetch();
-      if (_ab()) _ab().onPause();
+      abPause();
     });
   });
   // Both decks need ended/error handlers

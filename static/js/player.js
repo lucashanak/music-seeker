@@ -8,9 +8,9 @@ import { renderQueue, shuffleNext, shufflePrev, resetShuffleOrder, autoplayStart
 import { syncFullPlayer, syncMuteUI } from './fullplayer.js';
 import { getCachedUrl, waitForCache, prefetchUpcoming, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch, streamQuality } from './prefetch.js';
 import * as cast from './cast.js';
+import { ab as _ab, abPlay, abPause, abStop } from './androidbridge.js';
 
 const audio = $('#audioElement');
-function _ab() { return window.AndroidBridge || null; }
 let _lastAbUpdate = 0;
 
 // Android native media action callback (notification buttons → WebView)
@@ -57,7 +57,7 @@ export function applyRemoteCommand(action, value) {
 window._androidBridgeReady = function() {
   if (!audio.paused && _ab()) {
     const item = store.playerQueue[store.playerIndex];
-    if (item) _ab().onPlay(item.name || '', item.artist || '');
+    if (item) abPlay(item.name, item.artist);
   }
 };
 
@@ -257,7 +257,7 @@ export function hidePlayerBar() {
   const npBtn = $('#bnavNowPlaying');
   if (npBtn) npBtn.style.display = 'none';
   // Stop Android foreground service when player is hidden
-  if (_ab()) _ab().onStop();
+  abStop();
 }
 
 // ── Stall recovery ──
@@ -726,10 +726,8 @@ export function init() {
   // Audio events
   audio.addEventListener('play', () => {
     updatePlayPauseIcon(true);
-    if (_ab()) {
-      const item = store.playerQueue[store.playerIndex];
-      if (item) _ab().onPlay(item.name || '', item.artist || '');
-    }
+    const item = store.playerQueue[store.playerIndex];
+    if (item) abPlay(item.name, item.artist);
   });
   // 'playing' fires after buffering — start prefetch if enabled
   audio.addEventListener('playing', () => {
@@ -738,7 +736,7 @@ export function init() {
   audio.addEventListener('pause', () => {
     updatePlayPauseIcon(false);
     pausePrefetch();
-    if (_ab()) _ab().onPause();
+    abPause();
   });
   audio.addEventListener('ended', () => {
     if (store.repeatMode === 'one') {
