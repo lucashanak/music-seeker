@@ -65,6 +65,27 @@ _sessions: dict[str, dict] = {}  # Each: {dmr, device, lock, generation, transit
 # Server URL for DLNA renderer to fetch audio from
 DLNA_SERVER_URL = os.environ.get("DLNA_SERVER_URL", "")
 
+# Onkyo needs a moment after SetAVTransportURI before it will accept Play, and answers
+# 701 until it is ready. Named so a test can shorten it instead of sleeping 10 s.
+PLAY_RETRY_DELAYS = (1.0, 1.5, 2.0, 2.5, 3.0)
+
+
+class CastError(Exception):
+    """A cast failure the caller can tell apart. "Cast failed" alone sent the user
+    looking for a bug in the app when the renderer was simply in standby."""
+    def __init__(self, device: str = ""):
+        super().__init__(device)
+        self.device = device
+
+
+class CastUnreachable(CastError):
+    """The renderer never answered: powered down, asleep, or off the network."""
+
+
+class CastRefused(CastError):
+    """The renderer answered and said no — Onkyo in standby returns HTTP 501 to every
+    AVTransport action, and 701 (Transition not available) when it cannot open media."""
+
 
 def _get_server_url() -> str:
     if DLNA_SERVER_URL:
@@ -325,10 +346,19 @@ async def cast_to_device(session_key: str, device_id: str, name: str, artist: st
             # cast → leaked an aiohttp ClientSession on every device change).
             if not session["dmr"] or session["device"] != device:
                 factory = await _get_factory()
-                upnp_device = await asyncio.wait_for(
-                    factory.async_create_device(device["location"]), timeout=10
-                )
+                try:
+                    upnp_device = await asyncio.wait_for(
+                        factory.async_create_device(device["location"]), timeout=10
+                    )
+                except (asyncio.TimeoutError, OSError) as e:
+                    raise CastUnreachable(device.get("name") or device["location"]) from e
                 session["dmr"] = DmrDevice(upnp_device, None)
+
+            # Our own handle on the renderer. stop() clears session["dmr"], and it can
+            # land while this cast sleeps between Play retries — reading the slot there
+            # crashed with AttributeError: 'NoneType' object has no attribute 'async_play'
+            # and the user saw "Cast failed" for a cast they had just cancelled.
+            dmr = session["dmr"]
 
             if my_gen != session["generation"]:
                 session["transitioning"] = False
@@ -337,12 +367,19 @@ async def cast_to_device(session_key: str, device_id: str, name: str, artist: st
             base = _get_server_url()
             mime = await _resolve_cast_mime(name, artist)
             stream_url = f"{base}/api/player/stream?name={quote(name)}&artist={quote(artist)}&token={quote(token)}&quality=lossless"
-            metadata = _build_didl_metadata(name, artist, album, image, duration_ms, stream_url, mime)
+            # The renderer fetches the cover itself and has no idea what our host is, so
+            # a library cover ("/api/library/cover/...") has to go out absolute.
+            art = f"{base}{image}" if image.startswith("/") else image
+            metadata = _build_didl_metadata(name, artist, album, art, duration_ms, stream_url, mime)
 
             # Per UPnP spec: SetAVTransportURI works in any state (including PLAYING)
-            # No need to Stop first — the renderer handles the transition internally
+            # No need to Stop first — the renderer handles the transition internally.
+            # The second argument is the TITLE, not the metadata: pass a DIDL document
+            # there and async-upnp-client builds a second DIDL around it, so the renderer
+            # displays a page of escaped XML as the track name and loses the duration and
+            # the cover we just assembled. meta_data takes a str verbatim.
             await asyncio.wait_for(
-                session["dmr"].async_set_transport_uri(stream_url, metadata), timeout=15
+                dmr.async_set_transport_uri(stream_url, name, metadata), timeout=15
             )
 
             if my_gen != session["generation"]:
@@ -351,17 +388,17 @@ async def cast_to_device(session_key: str, device_id: str, name: str, artist: st
 
             # Retry Play with increasing delays — Onkyo needs time after SetAVTransportURI
             played = False
-            for attempt in range(5):
+            for attempt, delay in enumerate(PLAY_RETRY_DELAYS):
                 if my_gen != session["generation"]:
                     session["transitioning"] = False
                     return False
-                await asyncio.sleep(1 + attempt * 0.5)  # 1s, 1.5s, 2s, 2.5s, 3s
+                await asyncio.sleep(delay)
                 try:
-                    await asyncio.wait_for(session["dmr"].async_play(), timeout=5)
+                    await asyncio.wait_for(dmr.async_play(), timeout=5)
                     played = True
                     break
                 except Exception as e:
-                    if "701" in str(e) and attempt < 4:
+                    if "701" in str(e) and attempt < len(PLAY_RETRY_DELAYS) - 1:
                         logger.debug(f"DLNA: Play attempt {attempt+1} failed (701), retrying...")
                         continue
                     raise
@@ -372,9 +409,19 @@ async def cast_to_device(session_key: str, device_id: str, name: str, artist: st
             session["transitioning"] = False
             logger.info(f"DLNA: [{session_key}] casting '{artist} - {name}' to {device['name']}")
             return True
+        except CastError:
+            raise
         except Exception as e:
             import traceback
             logger.error(f"DLNA cast error: {e}\n{traceback.format_exc()}")
+            txt = str(e)
+            dev_name = device.get("name") or device["location"]
+            # 501 to an AVTransport action and 701 "Transition not available" are what a
+            # receiver in standby answers; neither is a fault on our side.
+            if "status: 501" in txt or "upnp error: 701" in txt:
+                raise CastRefused(dev_name) from e
+            if isinstance(e, (asyncio.TimeoutError, OSError)) or "ClientConnectorError" in txt:
+                raise CastUnreachable(dev_name) from e
             return False
         finally:
             # Never leave the session wedged in TRANSITIONING (e.g. on task cancellation).
@@ -410,16 +457,22 @@ async def stop(session_key: str) -> bool:
     session = _sessions.get(session_key)
     if not session or not session["dmr"]:
         return False
+    dmr = session["dmr"]
+    # Abort a cast still in flight BEFORE tearing the session down. It checks the
+    # generation between its Play retries and bails out on its own; clearing the slot
+    # underneath it instead made it crash on None and report a failed cast.
+    session["generation"] += 1
+    session["transitioning"] = False
     try:
-        session["transitioning"] = False
-        await session["dmr"].async_stop()
-        session["device"] = None
-        session["dmr"] = None
-        _sessions.pop(session_key, None)  # evict — don't accumulate dead sessions
+        await dmr.async_stop()
         return True
     except Exception as e:
         logger.warning(f"DLNA stop error: {e}")
         return False
+    finally:
+        session["device"] = None
+        session["dmr"] = None
+        _sessions.pop(session_key, None)  # evict — don't accumulate dead sessions
 
 
 async def seek(session_key: str, position_seconds: float) -> bool:

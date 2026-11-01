@@ -61,8 +61,21 @@ async def cast_to_device(req: CastRequest, request: Request, user: dict = Depend
         ), timeout=40)
     except asyncio.TimeoutError:
         ok = False
+    # Why the cast failed decides what the user should do, and the client needs to tell
+    # a dead renderer from a bad track: on "device" it stops casting instead of walking
+    # the queue one failed track at a time.
+    except dlna.CastUnreachable as e:
+        raise HTTPException(503, {
+            "message": f"{e.device} did not answer — switch it on and check it is on the network",
+            "cause": "device",
+        })
+    except dlna.CastRefused as e:
+        raise HTTPException(409, {
+            "message": f"{e.device} refused the track — wake it from standby and select its network input",
+            "cause": "device",
+        })
     if not ok:
-        raise HTTPException(502, "Cast failed")
+        raise HTTPException(502, {"message": "Cast failed", "cause": "unknown"})
     return {"status": "casting"}
 
 

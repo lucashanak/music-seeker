@@ -103,6 +103,7 @@ let _castLastDur = 0;     // last non-zero duration seen while casting (renderer
 let _castLastPos = 0;     // last non-zero position seen while casting
 let _castWasPlaying = false; // latched true while playing; survives the TRANSITIONING blip before STOP
 let _castPollFails = 0;      // consecutive cast-status poll failures (teardown after a few)
+let _castDeadTracks = 0;     // consecutive tracks the renderer never started playing
 let _castVolTimer = null;    // debounce timer for the cast volume slider
 
 export function syncCastButtons(color) {
@@ -141,6 +142,7 @@ export async function autoCastAndPlay(item, cleanName, cleanArtist) {
     startCastPoll();
   } catch (e) {
     castState.transitioning = false;
+    if (e.reason === 'device') { abandonCast(e.message); return; }
     showToast('DLNA auto-cast failed: ' + (e.message || ''));
   }
 }
@@ -157,10 +159,29 @@ export async function castToDevice(device) {
     _ctx.getAudioEl()?.pause();
     syncCastButtons('var(--accent)');
     showToast(`Casting to ${device.name}`);
+    _castDeadTracks = 0;
     startCastPoll();
   } catch (e) {
+    if (e.reason === 'device') { abandonCast(e.message); return; }
     showToast('Cast failed: ' + (e.message || ''));
   }
+}
+
+// A renderer that is off, asleep, or refusing fails EVERY track, and the poll's
+// give-up path answers by advancing the queue — so one dead receiver silently chewed
+// through the whole queue, one 30s stall at a time, and the user was left with a
+// different song selected and still no sound. Say what happened and end the session.
+function abandonCast(message) {
+  _castDeadTracks = 0;
+  _castIssuedAt = 0;
+  _castWasPlaying = false; _castLastPos = 0; _castLastDur = 0;
+  castState.transitioning = false;
+  castState.skipAutoAdvance = false;
+  store.castDevice = null;
+  clearInterval(store.castPollTimer);
+  store.castPollTimer = null;
+  syncCastButtons('');
+  showToast(message);
 }
 
 export async function stopCast() {
@@ -253,6 +274,7 @@ export function startCastPoll() {
         castState.transitioning = false;
         _castSawPlaying = true;
         _castIssuedAt = 0;   // it started; the stall clock is done
+        _castDeadTracks = 0; // the renderer is alive; the give-up budget resets
         _castWasPlaying = true;
         if (dur > 0) _castLastDur = dur;
         if (pos > 0) _castLastPos = pos;
@@ -273,6 +295,11 @@ export function startCastPoll() {
             }}).catch(() => {});
           }
         } else if (waited > 30000) {
+          _castDeadTracks++;
+          if (_castDeadTracks >= 2) {
+            abandonCast('The renderer is not playing anything — cast stopped');
+            return;
+          }
           _castIssuedAt = 0;
           _castWasPlaying = false; _castLastPos = 0; _castLastDur = 0;
           castState.skipAutoAdvance = false;

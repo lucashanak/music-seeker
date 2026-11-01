@@ -44,9 +44,23 @@ export async function apiJson(url, opts = {}) {
     // FastAPI/Pydantic validation errors return `detail` as an ARRAY of
     // {msg, loc, ...} objects (truthy but not a string) — stringifying it
     // verbatim used to show the user a literal "[object Object]" toast.
+    // A handler that needs the caller to branch on WHY it failed sends an object
+    // ({message, cause}); without this branch that object stringified to
+    // "[object Object]" exactly like the array case above.
     const d = body.detail;
-    const msg = Array.isArray(d) ? (d[0]?.msg || res.statusText) : (d || res.statusText);
-    throw new Error(msg);
+    let msg, reason;
+    if (Array.isArray(d)) {
+      msg = d[0]?.msg || res.statusText;
+    } else if (d && typeof d === 'object') {
+      msg = d.message || res.statusText;
+      reason = d.cause;
+    } else {
+      msg = d || res.statusText;
+    }
+    const err = new Error(msg);
+    err.status = res.status;
+    if (reason) err.reason = reason;
+    throw err;
   }
   return res.json();
 }
