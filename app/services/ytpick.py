@@ -66,7 +66,7 @@ def rank(candidates: list[dict], query: str) -> list[dict]:
     return preferred + demoted
 
 
-async def search(query: str, limit: int = 5, timeout: float = 20) -> list[dict]:
+async def search(query: str, limit: int = 5, timeout: float = 20, on_stderr=None) -> list[dict]:
     """Top `limit` YouTube matches as `{"title", "id", "url"}`, in relevance order.
 
     `--flat-playlist` makes this a single search request with no per-video
@@ -74,22 +74,28 @@ async def search(query: str, limit: int = 5, timeout: float = 20) -> list[dict]:
     to always run before picking, and it's the only way to see the titles the
     ranking needs. Availability is *not* known at this point; a candidate can
     still turn out to be blocked when its audio URL is extracted.
+
+    `on_stderr` receives whatever yt-dlp complained about. The search is the first
+    thing YouTube refuses when it has decided we are asking too often, and discarding
+    that message left the caller unable to tell "no such track" from "we are blocked".
     """
     try:
         proc = await asyncio.create_subprocess_exec(
             "yt-dlp", "--flat-playlist", "--no-warnings",
             "--print", "%(id)s\t%(title)s", f"ytsearch{limit}:{query}",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
     except Exception:
         return []
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
         return []
+    if on_stderr:
+        on_stderr((stderr or b"").decode(errors="replace"))
     out = []
     for line in (stdout or b"").decode(errors="replace").splitlines():
         video_id, _, title = line.strip().partition("\t")

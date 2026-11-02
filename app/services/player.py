@@ -1,6 +1,7 @@
 """Audio streaming and queue persistence for the in-browser player."""
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -10,6 +11,8 @@ import httpx
 
 from app.services import library, ytpick
 
+logger = logging.getLogger("musicseeker.player")
+
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 PLAYER_DIR = DATA_DIR / "player"
 MUSIC_DIR = Path(os.environ.get("MUSIC_DIR", "/music"))
@@ -18,6 +21,73 @@ MUSIC_DIR = Path(os.environ.get("MUSIC_DIR", "/music"))
 _url_cache: dict[str, tuple[dict, float]] = {}
 _URL_TTL = 4 * 3600  # 4 hours
 _URL_CACHE_MAX = 500  # bound memory — keys derive from user-supplied track/artist names
+
+# ── Keeping YouTube willing to answer ────────────────────────────────────────
+# Resolving one track that is not in the library costs a YouTube search plus up to five
+# audio-URL extractions. Nothing used to remember a failure, so playing an album nobody
+# owns ran that dance for every track, and the player's own retry and auto-advance ran
+# it again. YouTube answers that volume with 429 and "Sign in to confirm you're not a
+# bot", and from then on EVERY track that is not downloaded fails until the address
+# cools down — measured on 2026-11-02, when a whole album resolved to 404 while the
+# same queries worked again twenty minutes later.
+#
+# So: a track that just failed is not retried for a while, and an answer that says we
+# are being rate-limited stops the YouTube arm outright until the cool-down passes.
+# Both only ever skip the YouTube fallback — a local file or a Navidrome song is found
+# before either is consulted, so a download landing mid-cool-down plays at once.
+YT_FAIL_TTL = 300.0        # how long one track's failure is remembered
+YT_FAIL_MAX = 500          # bound: keys come from user-supplied names
+YT_COOLDOWN = 300.0        # how long we stay off YouTube after a rate-limit answer
+_yt_failed: dict[str, float] = {}
+_yt_blocked_until = 0.0
+
+# What YouTube says when it has had enough of us.
+_RATE_LIMITED = ("http error 429", "too many requests", "sign in to confirm")
+
+
+def youtube_rate_limited() -> bool:
+    return time.monotonic() < _yt_blocked_until
+
+
+def note_youtube_rate_limit(detail: str = "") -> None:
+    global _yt_blocked_until
+    first = not youtube_rate_limited()
+    _yt_blocked_until = time.monotonic() + YT_COOLDOWN
+    if first:
+        logger.warning("YouTube is rate-limiting us; pausing the fallback for %ds. %s",
+                       int(YT_COOLDOWN), detail[:200])
+
+
+def _note_ytdlp_stderr(what: str, err: str) -> None:
+    """Surface what yt-dlp actually said. It used to go to /dev/null, so a dead
+    YouTube fallback showed up only as a bare 404 with no reason anywhere."""
+    if not err:
+        return
+    low = err.lower()
+    if any(m in low for m in _RATE_LIMITED):
+        note_youtube_rate_limit(err.strip().splitlines()[-1] if err.strip() else "")
+    else:
+        logger.info("yt-dlp %s: %s", what, err.strip().splitlines()[-1][:200] if err.strip() else "")
+
+
+def _yt_recently_failed(key: str) -> bool:
+    exp = _yt_failed.get(key)
+    if exp is None:
+        return False
+    if exp <= time.monotonic():
+        _yt_failed.pop(key, None)
+        return False
+    return True
+
+
+def _note_yt_failure(key: str) -> None:
+    now = time.monotonic()
+    if len(_yt_failed) >= YT_FAIL_MAX:
+        for k in [k for k, exp in _yt_failed.items() if exp <= now]:
+            del _yt_failed[k]
+        while _yt_failed and len(_yt_failed) >= YT_FAIL_MAX:
+            _yt_failed.pop(next(iter(_yt_failed)))
+    _yt_failed[key] = now + YT_FAIL_TTL
 
 # On-disk temp cache size caps (bytes). Files are evicted oldest-first by mtime
 # once a cache dir exceeds its cap, except files touched within EVICT_RECENCY_SEC.
@@ -251,12 +321,15 @@ async def resolve_stream(name: str, artist: str) -> dict | None:
         _cache_put(key, result)
         return result
 
-    # Fall back to YouTube
+    # Fall back to YouTube — unless asking again is known to be pointless right now.
+    if youtube_rate_limited() or _yt_recently_failed(key):
+        return None
     result = await _resolve_youtube(name, artist)
     if result:
         _cache_put(key, result)
         return result
 
+    _note_yt_failure(key)
     return None
 
 
@@ -294,7 +367,7 @@ async def _ytdlp_url(target: str, timeout: float) -> str | None:
         "yt-dlp", "-f", "bestaudio", "--print", "url", "-i",
         "--no-playlist", target,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -327,6 +400,7 @@ async def _resolve_youtube(name: str, artist: str) -> dict | None:
     try:
         candidates = await ytpick.search(
             query, limit=5, timeout=min(YT_SEARCH_TIMEOUT, YT_RESOLVE_DEADLINE),
+            on_stderr=lambda err: _note_ytdlp_stderr(f"search {query[:60]}", err),
         )
         for cand in ytpick.rank(candidates, query):
             left = deadline - time.monotonic()
