@@ -28,7 +28,14 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
     lossless = quality == "lossless"
     result = await player.resolve_stream(name, artist)
     if not result:
-        raise HTTPException(404, "Could not resolve stream for this track")
+        cached = player.youtube_cache_path(name, artist, "320k" if lossless else "192k")
+        if not cached:
+            raise HTTPException(404, "Could not resolve stream for this track")
+        from fastapi.responses import Response
+        return Response(content=b"", media_type="audio/mpeg", headers={
+            "X-Stream-Source": "youtube-cache", "Accept-Ranges": "bytes",
+            "Content-Length": str(os.path.getsize(cached)), "Content-Type": "audio/mpeg",
+        })
     mime = "audio/mpeg"
     headers = {"X-Stream-Source": result["source"], "Accept-Ranges": "bytes"}
     if result["source"] == "local":
@@ -67,6 +74,14 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
     lossless = quality == "lossless"
     result = await player.resolve_stream(name, artist)
     if not result:
+        # Resolution fails for reasons that have nothing to do with this track — a
+        # YouTube lookup refused because we asked too often is the measured one. If we
+        # already downloaded this track's audio, play that rather than report it gone.
+        cached = player.youtube_cache_path(name, artist, "320k" if lossless else "192k")
+        if cached:
+            return FileResponse(cached, media_type="audio/mpeg",
+                                headers={"X-Stream-Source": "youtube-cache",
+                                         "Cache-Control": "private, max-age=86400"})
         raise HTTPException(404, "Could not resolve stream for this track")
     source = result["source"]
     headers = {"X-Stream-Source": source}
@@ -224,6 +239,8 @@ async def resolve_source(name: str, artist: str = "", user: dict = Depends(bind_
     """Resolve stream source without streaming. Returns source type."""
     result = await player.resolve_stream(name, artist)
     if not result:
+        if player.youtube_cache_path(name, artist) or player.youtube_cache_path(name, artist, "320k"):
+            return {"source": "youtube", "cached": True}
         raise HTTPException(404, "Could not resolve")
     return {"source": result["source"]}
 

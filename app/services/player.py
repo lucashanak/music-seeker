@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
+import unicodedata
 from pathlib import Path
 
 import httpx
@@ -180,8 +182,22 @@ def _release_build_lock(key: str) -> None:
         _build_lock_refs[key] = count
 
 
+def nfc(text: str) -> str:
+    """One spelling for one title.
+
+    The same track reaches us in two different Unicode spellings depending on where
+    its metadata came from: "Divoká" arrives both precomposed and as "Divoka" plus a
+    combining acute — measured in one album's worth of requests on 2026-11-05, where
+    both forms appear side by side. Those are different bytes, so without folding them
+    together they are two cache keys, two YouTube lookups and two downloads of the same
+    song, and a file on disk (every one of the 3700 in the library is precomposed) does
+    not match the decomposed spelling at all.
+    """
+    return unicodedata.normalize("NFC", text or "")
+
+
 def _cache_key(name: str, artist: str) -> str:
-    return f"{artist.lower().strip()}:{name.lower().strip()}"
+    return f"{nfc(artist).lower().strip()}:{nfc(name).lower().strip()}"
 
 
 def _cache_put(key: str, result: dict) -> None:
@@ -302,6 +318,9 @@ def delete_album_files(artist: str, album: str) -> int:
 async def resolve_stream(name: str, artist: str) -> dict | None:
     """Resolve a track to a streamable source. Local file > Navidrome > YouTube."""
     import asyncio
+    # Fold the spelling once, here, so the cache key, the filename glob, the Navidrome
+    # search and the YouTube query all agree on what this track is called.
+    name, artist = nfc(name), nfc(artist)
     # Check cache first
     key = _cache_key(name, artist)
     cached = _url_cache.get(key)
@@ -670,18 +689,44 @@ async def stream_youtube(youtube_url: str, bitrate: str = "192k"):
         await proc.wait()
 
 
+def _yt_cache_path(name: str, artist: str, bitrate: str) -> str:
+    """Where this track's downloaded YouTube audio lives. Depends only on the track,
+    never on the video we resolved it to — which is what lets us find it again when
+    resolution is not available."""
+    import tempfile, hashlib
+    cache_dir = os.path.join(tempfile.gettempdir(), "ms-yt-cache")
+    key = hashlib.md5(f"{nfc(artist)}:{nfc(name)}".lower().encode()).hexdigest()[:12]
+    suffix = "hq" if bitrate != "192k" else ""
+    return os.path.join(cache_dir, f"{key}{suffix}.mp3")
+
+
+def youtube_cache_path(name: str, artist: str, bitrate: str = "192k") -> str | None:
+    """A playable file for this track that we already downloaded, or None.
+
+    Resolution fails for reasons that have nothing to do with the track — YouTube
+    throttling us is the measured one. Having told the user a track is unavailable
+    while its audio sits in our own cache is a worse answer than the slightly wrong
+    bitrate, so the other bitrate counts as a hit too.
+    """
+    for rate in (bitrate, "320k" if bitrate == "192k" else "192k"):
+        path = _yt_cache_path(name, artist, rate)
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                return path
+        except OSError:
+            continue
+    return None
+
+
 async def cache_youtube_stream(youtube_url: str, name: str, artist: str, bitrate: str = "192k") -> str | None:
     """Download YouTube audio to temp file via ffmpeg. Returns file path."""
-    import tempfile, hashlib
     cache_dir = os.path.join(tempfile.gettempdir(), "ms-yt-cache")
     os.makedirs(cache_dir, exist_ok=True)
     try:
         os.chmod(cache_dir, 0o700)  # keep cached audio private to the app user
     except OSError:
         pass
-    key = hashlib.md5(f"{artist}:{name}".lower().encode()).hexdigest()[:12]
-    suffix = "hq" if bitrate != "192k" else ""
-    cache_path = os.path.join(cache_dir, f"{key}{suffix}.mp3")
+    cache_path = _yt_cache_path(name, artist, bitrate)
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
         return cache_path
     # Serialize per-target so a concurrent pre-warm + stream GET don't both
