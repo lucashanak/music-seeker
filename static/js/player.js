@@ -4,7 +4,7 @@ import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { renderQueue, shuffleNext, shufflePrev, resetShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
+import { renderQueue, shuffleNext, shufflePrev, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
 import { syncFullPlayer, syncMuteUI } from './fullplayer.js';
 import { getCachedUrl, waitForCache, prefetchUpcoming, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch, streamQuality } from './prefetch.js';
 import * as cast from './cast.js';
@@ -644,6 +644,7 @@ async function saveQueueNow() {
         position_seconds: audio.currentTime || 0,
         volume: store.playerVolume,
         playlist_mode: store.playlistMode,
+        shuffle_order: serializeShuffleOrder(),
       },
     });
   } catch {}
@@ -663,6 +664,8 @@ export async function loadQueueState() {
     if (data.queue && data.queue.length) {
       store.playerQueue = data.queue;
       store.playerIndex = data.current_index >= 0 ? data.current_index : 0;
+      // After the queue, never before: the saved order is positions into it.
+      restoreShuffleOrder(data.shuffle_order);
       store.playerVolume = data.volume ?? 1.0;
       audio.volume = store.playerVolume;
       $('#playerVolume').value = Math.round(store.playerVolume * 100);

@@ -88,6 +88,9 @@ class QueueState(BaseModel):
     position_seconds: float = 0.0
     volume: float = 1.0
     playlist_mode: dict | None = None
+    # {"played": [queue positions], "tail": [...]} — the shuffle permutation, so a
+    # restart resumes the running order instead of dealing a new one.
+    shuffle_order: dict | None = None
 
 
 class AddToQueueRequest(BaseModel):

@@ -5,7 +5,7 @@ import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { renderQueue, shuffleNext, shufflePrev, resetShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
+import { renderQueue, shuffleNext, shufflePrev, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, abortStale, keyFor as prefetchKey, resumePrefetch, streamQuality } from './prefetch.js';
 import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration } from './djmix.js';
@@ -1675,6 +1675,7 @@ async function saveQueueNow() {
         position_seconds: _activeDeckEl().currentTime || 0,
         volume: store.playerVolume,
         playlist_mode: store.playlistMode,
+        shuffle_order: serializeShuffleOrder(),
       },
     });
   } catch {}
@@ -1694,6 +1695,8 @@ export async function loadQueueState() {
     if (data.queue && data.queue.length) {
       store.playerQueue = data.queue;
       store.playerIndex = data.current_index >= 0 ? data.current_index : 0;
+      // After the queue, never before: the saved order is positions into it.
+      restoreShuffleOrder(data.shuffle_order);
       store.playerVolume = data.volume ?? 1.0;
       _deckA.volume = store.playerVolume;
       _deckB.volume = store.playerVolume;

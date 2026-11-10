@@ -98,6 +98,41 @@ export function resetShuffleOrder() {
   _shufTail = [];
 }
 
+// The order has to outlive the page, or every restart deals a brand-new
+// permutation: the panel shows a different running order than the one the user
+// was listening to, and tracks already played come round again. It travels with
+// the queue in the SAME save, as positions into that queue — two separate
+// stores (the queue on the server, the order in localStorage) would drift apart
+// the moment one write lands and the other does not.
+export function serializeShuffleOrder() {
+  if (!store.shuffleEnabled || !store.playerQueue.length) return null;
+  // Deal anything still unplaced before writing, so what is saved is the order in
+  // full — not a half of one that a restart would have to complete at random.
+  _syncShuffleOrder();
+  const pos = (list) => list.map(_idx).filter((i) => i != null);
+  return { played: pos(_shufPlayed), tail: pos(_shufTail) };
+}
+
+// Positions are only meaningful against the queue they were saved with, so the
+// caller restores the queue FIRST. Anything out of range, repeated or missing is
+// dropped here; _syncShuffleOrder then deals whatever is left over.
+export function restoreShuffleOrder(data) {
+  _shufPlayed = [];
+  _shufTail = [];
+  if (!data) return;
+  const q = store.playerQueue;
+  const seen = new Set();
+  const pick = (list) => (Array.isArray(list) ? list : []).reduce((out, i) => {
+    if (Number.isInteger(i) && i >= 0 && i < q.length && !seen.has(i)) {
+      seen.add(i);
+      out.push(q[i]);
+    }
+    return out;
+  }, []);
+  _shufPlayed = pick(data.played);
+  _shufTail = pick(data.tail);
+}
+
 /** Queue indices in the order they will actually be played. */
 export function playOrder() {
   const n = store.playerQueue.length;
@@ -219,7 +254,7 @@ export function renderQueueInto(el) {
     const item = store.playerQueue[i];
     const sep = i === autoAt ? '<div class="qi-autoplay-sep">Autoplay</div>' : '';
     return sep + `
-    <div class="queue-item${i === store.playerIndex ? ' now-playing' : ''}" data-qi="${i}" draggable="true">
+    <div class="queue-item${i === store.playerIndex ? ' now-playing' : ''}" data-qi="${i}" data-qp="${pos}" draggable="true">
       <span class="qi-drag" title="Drag to reorder">&#x2630;</span>
       <span class="qi-num">${i === store.playerIndex ? '&#9654;' : pos + 1}</span>
       <img class="qi-img" ${item.image ? `src="${esc(item.image)}"` : ''} alt="" onerror="this.style.background='var(--bg-elevated)'">
@@ -377,8 +412,41 @@ export function closeQueuePanel(fromPopstate) {
 // A track dropped above the one that is playing is never reached: playback only
 // ever moves forward from store.playerIndex, so the move silently drops it from
 // the set. Moving the now-playing track itself is fine — the index follows it.
-function _dropAllowed(from, to) {
-  return from === store.playerIndex || to > store.playerIndex;
+// Where the playing track sits in the drawn order. With shuffle off this is
+// store.playerIndex itself, so the rule below is unchanged for it.
+function _currentPos() {
+  return playOrder().indexOf(store.playerIndex);
+}
+
+// Positions in the DRAWN order. Nothing may be dropped into the part already
+// played, and the playing track stays put.
+function _dropAllowed(fromPos, toPos) {
+  const cur = _currentPos();
+  return fromPos === cur || toPos > cur;
+}
+
+// A drag expresses "play this one there", and with shuffle on "there" is a place
+// in the permutation — not in store.playerQueue. Rewriting the queue for it
+// would move a different track than the one under the finger (the rows are drawn
+// permuted) and, in a named playlist, mirror that to Navidrome. So shuffle moves
+// the tail and leaves the queue alone; without shuffle the two are the same list
+// and the old by-index move still runs.
+export function moveInPlayOrder(fromPos, toPos) {
+  if (!store.shuffleEnabled || store.playerQueue.length < 2) {
+    _moveQueueItem(fromPos, toPos);
+    return;
+  }
+  _syncShuffleOrder();
+  const order = playOrder();
+  const moved = store.playerQueue[order[fromPos]];
+  const target = store.playerQueue[order[toPos]];
+  const from = _shufTail.indexOf(moved);
+  const to = _shufTail.indexOf(target);
+  if (from < 0 || to < 0) return;
+  _shufTail.splice(from, 1);
+  _shufTail.splice(to, 0, moved);
+  renderQueue();
+  saveQueueDebounced();
 }
 
 let _dragIdx = -1;
@@ -386,7 +454,7 @@ let _dragContainer = null; // the queue list a drag started in (queue renders in
 function _attachDragHandlers(el) {
   $$('.queue-item', el).forEach(qi => {
     qi.addEventListener('dragstart', (e) => {
-      _dragIdx = parseInt(qi.dataset.qi);
+      _dragIdx = parseInt(qi.dataset.qp);
       _dragContainer = el;
       qi.classList.add('qi-dragging');
       e.dataTransfer.effectAllowed = 'move';
@@ -400,7 +468,7 @@ function _attachDragHandlers(el) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       const target = qi;
-      const targetIdx = parseInt(target.dataset.qi);
+      const targetIdx = parseInt(target.dataset.qp);
       if (targetIdx !== _dragIdx && _dropAllowed(_dragIdx, targetIdx)) {
         target.classList.add('qi-drag-over');
       }
@@ -411,14 +479,14 @@ function _attachDragHandlers(el) {
     qi.addEventListener('drop', (e) => {
       e.preventDefault();
       qi.classList.remove('qi-drag-over');
-      const toIdx = parseInt(qi.dataset.qi);
+      const toIdx = parseInt(qi.dataset.qp);
       // Only honor a drop in the SAME container the drag started in, and only if
       // both indices are still valid (the queue may have re-rendered mid-drag).
       const n = store.playerQueue.length;
       if (_dragContainer === el && _dragIdx >= 0 && _dragIdx < n
           && toIdx >= 0 && toIdx < n && _dragIdx !== toIdx
           && _dropAllowed(_dragIdx, toIdx)) {
-        _moveQueueItem(_dragIdx, toIdx);
+        moveInPlayOrder(_dragIdx, toIdx);
       }
       _dragIdx = -1;
       _dragContainer = null;
@@ -438,7 +506,7 @@ function _attachTouchReorder(el) {
       const row = handle.closest('.queue-item');
       if (!row) return;
       e.preventDefault(); // touch-action:none on the handle also blocks scroll
-      const fromIdx = parseInt(row.dataset.qi);
+      const fromIdx = parseInt(row.dataset.qp);
       let toIdx = fromIdx;
       row.classList.add('qi-dragging');
       try { handle.setPointerCapture(e.pointerId); } catch (_) {}
@@ -449,16 +517,17 @@ function _attachTouchReorder(el) {
         let target = 0;
         for (const r of rows) {
           const rect = r.getBoundingClientRect();
-          if (ev.clientY > rect.top + rect.height / 2) target = parseInt(r.dataset.qi);
+          if (ev.clientY > rect.top + rect.height / 2) target = parseInt(r.dataset.qp);
         }
         const n = store.playerQueue.length;
-        const floor = fromIdx === store.playerIndex ? 0 : Math.min(store.playerIndex + 1, n - 1);
+        const cur = _currentPos();
+        const floor = fromIdx === cur ? 0 : Math.min(cur + 1, n - 1);
         target = Math.max(floor, Math.min(n - 1, target));
         if (target !== toIdx) {
           rows.forEach(r => r.classList.remove('qi-drag-over'));
           toIdx = target;
           if (toIdx !== fromIdx) {
-            const tr = el.querySelector(`.queue-item[data-qi="${toIdx}"]`);
+            const tr = el.querySelector(`.queue-item[data-qp="${toIdx}"]`);
             if (tr) tr.classList.add('qi-drag-over');
           }
         }
@@ -473,7 +542,7 @@ function _attachTouchReorder(el) {
         const n = store.playerQueue.length;
         if (commit && fromIdx >= 0 && fromIdx < n && toIdx >= 0 && toIdx < n && fromIdx !== toIdx
             && _dropAllowed(fromIdx, toIdx)) {
-          _moveQueueItem(fromIdx, toIdx);
+          moveInPlayOrder(fromIdx, toIdx);
         }
       };
       const onUp = () => finish(true);

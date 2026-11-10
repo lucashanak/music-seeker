@@ -36,6 +36,9 @@ export function toggleShuffle() {
   // index already on the playing track, so there is nothing to restore.
   resetShuffleOrder();
   _persistModes();
+  // The fresh permutation is part of the saved queue now; without this it would
+  // only reach the server on the next queue change or the 30s tick.
+  if (saveQueueDebounced) saveQueueDebounced();
   syncShuffleRepeatUI();
 }
 
