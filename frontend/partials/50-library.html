@@ -5,6 +5,7 @@
     <button class="sp-tab" data-lib-tab="spotify">Spotify</button>
     <button class="sp-tab" data-lib-tab="podcasts">Podcasts</button>
     <button class="sp-tab" data-lib-tab="mixes">Mixes</button>
+    <button class="sp-tab" data-lib-tab="manager">Manager</button>
     <button class="sp-tab" data-lib-tab="favorites">Favorites</button>
   </div>
 
@@ -243,6 +244,10 @@
       <div id="mixLibrary"></div>
     </section>
   </div><!-- /pageMixes sub-view -->
+
+  <!-- ── Sub-view: Playlist manager (two playlists side by side, drag between
+       them and within one). Built by static/js/plmanager.js on first open. -->
+  <div id="pagePlManager" style="display:none"></div>
 
   <!-- ── Sub-view: Favorites (moved from former "Favorites" page) ── -->
   <div id="pageFavorites" style="display:none">

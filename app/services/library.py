@@ -3,6 +3,9 @@ import os
 import re
 import secrets
 import unicodedata
+import asyncio
+import functools
+from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 import httpx
 
@@ -337,6 +340,7 @@ async def get_playlists() -> list[dict]:
                 "description": p.get("comment", ""),
                 "songCount": p.get("songCount", 0),
                 "duration": p.get("duration", 0),
+                "owner": p.get("owner", ""),
                 "changed": p.get("changed", ""),  # ISO mtime — used by gc_temp_playlists recency sort
                 "coverArt": p.get("coverArt", ""),
                 "image": f"/api/library/cover/{p['coverArt']}" if p.get("coverArt") else "",
@@ -467,40 +471,256 @@ async def rename_playlist(playlist_id: str, name: str) -> bool:
 
 
 async def reorder_playlist(playlist_id: str, song_ids: list[str]) -> bool:
-    """Reorder a playlist using add-before-remove to avoid data loss.
+    """Make the playlist hold exactly `song_ids`, in that order.
 
-    Appends the new ordered ids FIRST, then removes the original leading
-    entries only after all adds succeed. If any add fails, the original
-    tracks are still intact (Subsonic appends, removes by current index)."""
+    Subsonic can only append and remove by position, so the rows from the first
+    difference onwards are appended in the new order and only THEN the old ones
+    are removed: a failure half-way leaves the original rows intact. A move near
+    the end of a long playlist therefore costs two writes, not a rewrite of all
+    of it. Every write's Subsonic status is checked (Navidrome answers a refused
+    write with HTTP 200); after a refused or failed append the rows appended so
+    far are stripped again, so the playlist is left as it was."""
     if not NAVIDROME_PASSWORD or not song_ids:
         return False
+    pl = await get_playlist(playlist_id)
+    if not pl:
+        return False
+    old = [t.get("id") for t in pl["tracks"]]
+    count = len(old)
+    k = 0
+    while k < count and k < len(song_ids) and old[k] == song_ids[k]:
+        k += 1
+    if k == count == len(song_ids):
+        return True
+    tail = song_ids[k:]
+    appended = False
     async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=30) as client:
+        async def _write(param_list) -> bool:
+            resp = await client.get("/rest/updatePlaylist", params=param_list)
+            resp.raise_for_status()
+            try:
+                return resp.json().get("subsonic-response", {}).get("status") == "ok"
+            except ValueError:          # not JSON (a proxy error page): refused
+                return False
+
+        try:
+            batch_size = 20
+            for i in range(0, len(tail), batch_size):
+                param_list = list(_params(playlistId=playlist_id).items())
+                for sid in tail[i:i + batch_size]:
+                    param_list.append(("songIdToAdd", sid))
+                appended = True
+                if not await _write(param_list):
+                    raise TransferError("append refused")
+            # All appended: remove the old rows k..count-1 (indices are those of
+            # the list before this request).
+            if count > k:
+                param_list = list(_params(playlistId=playlist_id).items())
+                for i in range(count - 1, k - 1, -1):
+                    param_list.append(("songIndexToRemove", str(i)))
+                if not await _write(param_list):
+                    raise TransferError("strip refused")
+            return True
+        except BaseException as e:      # also a cancelled request (container restart)
+            if appended:
+                # Inline, not asyncio.shield: a shielded task is another task,
+                # and the playlist lock this one holds would make it wait forever.
+                landed = await _undo_append(playlist_id, old, tail, song_ids)
+                if landed:
+                    return True
+            if isinstance(e, (TransferError, httpx.HTTPError)):
+                return False
+            raise
+
+
+async def _undo_append(playlist_id: str, old: list[str], tail: list[str], wanted: list[str]) -> bool:
+    """After a failed reorder: remove what it appended, and ONLY that — the rows
+    are stripped only when the playlist is exactly the old list plus a prefix of
+    the appended tail. Returns True when the reorder in fact landed (the answer
+    to its last write was lost, not the write)."""
+    try:
         pl = await get_playlist(playlist_id)
         if not pl:
             return False
-        count = len(pl["tracks"])
+        cur = [t.get("id") for t in pl["tracks"]]
+        if cur == wanted:
+            return True
+        n = len(old)
+        if cur[:n] == old and len(cur) > n and cur[n:] == tail[:len(cur) - n]:
+            await update_playlist(playlist_id, song_indices_to_remove=list(range(len(cur) - 1, n - 1, -1)))
+    except Exception:
+        pass
+    return False
 
-        # Add new ordered ids FIRST (batches of 20). These append after the
-        # existing `count` entries. Any failure here leaves originals intact.
-        batch_size = 20
-        for i in range(0, len(song_ids), batch_size):
-            batch = song_ids[i:i + batch_size]
-            param_list = list(_params(playlistId=playlist_id).items())
-            for sid in batch:
-                param_list.append(("songIdToAdd", sid))
-            resp = await client.get("/rest/updatePlaylist", params=param_list)
-            resp.raise_for_status()
 
-        # Only after all adds succeeded: remove the ORIGINAL leading indices
-        # (0..count-1), descending to avoid index shift.
-        if count > 0:
-            param_list = list(_params(playlistId=playlist_id).items())
-            for i in range(count - 1, -1, -1):
-                param_list.append(("songIndexToRemove", str(i)))
-            resp = await client.get("/rest/updatePlaylist", params=param_list)
-            resp.raise_for_status()
+# ── Playlist manager: move / copy / reorder one track ──
+# Subsonic can only append (songIdToAdd) and remove by position
+# (songIndexToRemove), so every operation here is a short sequence of those.
+# Two rules keep it from losing a track:
+#   * the client names the row by (index, song id) and the index must still hold
+#     that song — a playlist changed elsewhere since it was drawn answers
+#     TransferStale instead of removing whatever now sits there;
+#   * a move ADDS to the target before it removes from the source, so a failure
+#     half-way leaves a copy, never a loss.
+# Writes on one playlist are serialised in-process: reorder_playlist appends the
+# whole list and then strips the leading `count` rows, and two of those
+# interleaved would strip the wrong rows.
 
-        return True
+class TransferError(Exception):
+    """A playlist write Navidrome refused (e.g. a playlist the user does not own)."""
+
+
+class TransferStale(Exception):
+    """The source row no longer holds the song the client saw there."""
+
+
+class TransferMissing(Exception):
+    """A playlist that does not exist (or this user cannot see)."""
+
+
+_pl_locks: dict[str, "asyncio.Lock"] = {}
+# Which task holds each playlist's lock: a locked write may call another locked
+# write on the same playlist (asyncio.Lock is not re-entrant). Keyed by the
+# owning TASK, not by context — a task spawned inside a locked region inherits
+# the context but not the lock.
+_pl_owner: dict[str, "asyncio.Task"] = {}
+
+
+def _pl_lock(playlist_id: str):
+    import asyncio as _aio
+    lock = _pl_locks.get(str(playlist_id))
+    if lock is None:
+        lock = _pl_locks[str(playlist_id)] = _aio.Lock()
+    return lock
+
+
+@asynccontextmanager
+async def playlist_lock(*playlist_ids: str):
+    """Serialise writes to these playlists within this process. Acquired in
+    sorted order (no deadlock between two cross-playlist transfers); re-entrant
+    within one task."""
+    import asyncio as _aio
+    me = _aio.current_task()
+    need = sorted({str(i) for i in playlist_ids if i is not None and _pl_owner.get(str(i)) is not me})
+    async with AsyncExitStack() as stack:
+        for pid in need:
+            await stack.enter_async_context(_pl_lock(pid))
+            _pl_owner[pid] = me
+        try:
+            yield
+        finally:
+            for pid in need:
+                if _pl_owner.get(pid) is me:
+                    del _pl_owner[pid]
+
+
+def _serialised(fn):
+    @functools.wraps(fn)
+    async def wrapper(playlist_id, *args, **kwargs):
+        async with playlist_lock(playlist_id):
+            return await fn(playlist_id, *args, **kwargs)
+    return wrapper
+
+
+def _insert_at(ids: list[str], song_id: str, index: int | None) -> list[str]:
+    out = list(ids)
+    if index is None or index >= len(out):
+        out.append(song_id)
+    else:
+        out.insert(max(0, index), song_id)
+    return out
+
+
+async def transfer_track(from_id: str, from_index: int, song_id: str, to_id: str,
+                         to_index: int | None = None, copy: bool = False) -> dict:
+    """Move (or copy) the track at `from_index` of `from_id` to position `to_index`
+    of `to_id` (None = the end). Same playlist on both sides = a reorder.
+
+    Returns {"status": "reordered"|"unchanged"|"moved"|"copied"|"already",
+             "placed": bool, "removed": bool, "from": [tracks], "to": [tracks]}.
+    `placed` is False when the track landed at the end because the reorder that
+    puts it at `to_index` failed; `removed` is False when a move added the track
+    but could not take it out of the source (it is then in both)."""
+    if from_index < 0:
+        raise TransferStale("bad index")
+    async with playlist_lock(from_id, to_id):
+        return await _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy)
+
+
+async def remove_at(playlist_id: str, index: int, song_id: str) -> list[dict]:
+    """Remove the row at `index` if it still holds `song_id` (TransferStale
+    otherwise — never a name match, which can pick another track). Returns the
+    playlist's tracks afterwards."""
+    async with playlist_lock(playlist_id):
+        pl = await get_playlist(playlist_id)
+        if not pl:
+            raise TransferMissing(playlist_id)
+        if not _row_holds(pl["tracks"], index, song_id):
+            raise TransferStale("row changed")
+        if not await update_playlist(playlist_id, song_indices_to_remove=[index]):
+            raise TransferError("remove refused")
+        after = await get_playlist(playlist_id)
+        return after["tracks"] if after else []
+
+
+def _row_holds(tracks: list[dict], index: int, song_id: str) -> bool:
+    return 0 <= index < len(tracks) and tracks[index].get("id") == song_id
+
+
+async def _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy) -> dict:
+    src = await get_playlist(from_id)
+    if not src:
+        raise TransferMissing(from_id)
+    if not _row_holds(src["tracks"], from_index, song_id):
+        raise TransferStale("source changed")
+
+    if from_id == to_id:
+        ids = [t.get("id") for t in src["tracks"]]
+        rest = ids[:from_index] + ids[from_index + 1:]
+        new = _insert_at(rest, song_id, to_index)
+        if new == ids:
+            return {"status": "unchanged", "placed": True, "removed": False,
+                    "from": src["tracks"], "to": src["tracks"]}
+        if not await reorder_playlist(from_id, new):
+            raise TransferError("reorder failed")
+        after = await get_playlist(from_id)
+        tracks = after["tracks"] if after else []
+        return {"status": "reordered", "placed": True, "removed": False, "from": tracks, "to": tracks}
+
+    dst = await get_playlist(to_id)
+    if not dst:
+        raise TransferMissing(to_id)
+    dst_ids = [t.get("id") for t in dst["tracks"]]
+    already = song_id in dst_ids
+    placed = True
+    if not already:
+        if not await update_playlist(to_id, song_ids_to_add=[song_id]):
+            raise TransferError("add failed")
+        if to_index is not None and to_index < len(dst_ids):
+            # On failure reorder_playlist leaves the playlist as it was: the
+            # track stays appended at the end, which `placed` reports.
+            placed = await reorder_playlist(to_id, _insert_at(dst_ids, song_id, to_index))
+
+    removed = False
+    if not copy:
+        # Read the source again: the add above took a round trip, and the row is
+        # removed by position.
+        now = await get_playlist(from_id)
+        if now:
+            idx = from_index if _row_holds(now["tracks"], from_index, song_id) else next(
+                (i for i, t in enumerate(now["tracks"]) if t.get("id") == song_id), -1)
+            if idx >= 0:
+                try:
+                    removed = await update_playlist(from_id, song_indices_to_remove=[idx])
+                except httpx.HTTPError:
+                    removed = False
+
+    src_after = await get_playlist(from_id)
+    dst_after = await get_playlist(to_id)
+    status = "already" if already else ("copied" if copy else "moved")
+    return {"status": status, "placed": placed, "removed": removed,
+            "from": src_after["tracks"] if src_after else [],
+            "to": dst_after["tracks"] if dst_after else []}
 
 
 async def delete_playlist(playlist_id: str) -> bool:
@@ -644,6 +864,12 @@ async def replace_playlist_by_names(playlist_id: str, tracks: list[dict]) -> dic
 
     # Add-before-remove: add the new ids FIRST so a failed add leaves the
     # original tracks intact. Only remove the originals after adds succeed.
+    # Locked from here only: resolving the names above can take seconds.
+    async with playlist_lock(playlist_id):
+        return await _replace_ids(playlist_id, song_ids, missing)
+
+
+async def _replace_ids(playlist_id: str, song_ids: list[str], missing: list[dict]) -> dict:
     pl = await get_playlist(playlist_id)
     orig_count = len(pl["tracks"]) if pl and pl.get("tracks") else 0
 
@@ -697,3 +923,12 @@ async def create_playlist(name: str, song_ids: list[str]) -> bool:
             resp.raise_for_status()
 
         return True
+
+
+# Every write to a playlist's track list goes through the per-playlist lock, so a
+# reorder (append, then strip the old rows) cannot interleave with another write
+# to the same playlist from this process — the queue mirror, the ✕ in the queue
+# panel, a download finishing into a playlist, the manager.
+update_playlist = _serialised(update_playlist)
+remove_track_by_name = _serialised(remove_track_by_name)
+reorder_playlist = _serialised(reorder_playlist)

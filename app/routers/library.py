@@ -1,10 +1,13 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
 
 import asyncio
+import httpx
 import json
 import os
 import threading
 import time
+
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -26,6 +29,15 @@ class BatchAddRequest(BaseModel):
     # the queue/Up Next mirror so that merely queueing a track doesn't pull it
     # into the library — missing tracks just stream on demand (like Play All).
     download: bool = True
+
+
+class TransferRequest(BaseModel):
+    from_id: str
+    from_index: int
+    song_id: str
+    to_id: str
+    to_index: int | None = None   # None = append at the end
+    mode: Literal["move", "copy"] = "move"
 
 
 router = APIRouter(prefix="/api/library", tags=["library"])
@@ -166,7 +178,10 @@ async def replace_playlist_by_name(playlist_id: str, req: ReplaceByNameRequest, 
 
 @router.get("/playlist/{playlist_id}")
 async def get_playlist(playlist_id: str, user: dict = Depends(bind_navidrome_creds)):
-    pl = await library.get_playlist(playlist_id)
+    # Under the write lock: a read in the middle of a reorder would see the
+    # appended rows next to the old ones (every track twice).
+    async with library.playlist_lock(playlist_id):
+        pl = await library.get_playlist(playlist_id)
     if not pl:
         raise HTTPException(404, "Playlist not found")
     # Apply app-side cover override (override wins over track-derived art)
@@ -272,6 +287,40 @@ async def reorder_playlist(playlist_id: str, req: AddTracksByIdRequest, user: di
     if not ok:
         raise HTTPException(500, "Failed to reorder playlist")
     return {"status": "ok"}
+
+
+@router.post("/playlist-transfer")
+async def transfer_track(req: TransferRequest, user: dict = Depends(bind_navidrome_creds)):
+    """Playlist manager: move/copy one track between playlists, or reorder it within
+    one. The row is named by (from_index, song_id); 409 when it no longer matches."""
+    try:
+        return await library.transfer_track(req.from_id, req.from_index, req.song_id,
+                                            req.to_id, req.to_index, req.mode == "copy")
+    except library.TransferMissing:
+        raise HTTPException(404, "Playlist not found")
+    except library.TransferStale:
+        raise HTTPException(409, "The playlist changed — reload it")
+    except (library.TransferError, httpx.HTTPError) as e:
+        raise HTTPException(502, f"Navidrome refused the change ({e})")
+
+
+class RemoveAtRequest(BaseModel):
+    playlist_id: str
+    index: int
+    song_id: str
+
+
+@router.post("/playlist-remove")
+async def remove_at(req: RemoveAtRequest, user: dict = Depends(bind_navidrome_creds)):
+    """Playlist manager: remove the row at `index`, only if it still holds `song_id`."""
+    try:
+        return {"tracks": await library.remove_at(req.playlist_id, req.index, req.song_id)}
+    except library.TransferMissing:
+        raise HTTPException(404, "Playlist not found")
+    except library.TransferStale:
+        raise HTTPException(409, "The playlist changed — reload it")
+    except (library.TransferError, httpx.HTTPError) as e:
+        raise HTTPException(502, f"Navidrome refused the change ({e})")
 
 
 @router.post("/playlist/{playlist_id}/remove-by-name")

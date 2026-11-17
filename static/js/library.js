@@ -27,6 +27,7 @@ const _LIB_TABS = {
   spotify:    '#pagePlaylists',
   podcasts:   '#pagePodcasts',
   mixes:      '#pageMixes',
+  manager:    '#pagePlManager',
   favorites:  '#pageFavorites',
 };
 let _activeLibTab = null;
@@ -91,6 +92,8 @@ export function switchLibraryTab(name, force) {
   if (!force && _loadedLibTabs.has(name)) {
     // A mix downloaded since the last visit belongs in the Downloaded list.
     if (name === 'mixes') import('./mixes.js').then(m => m.refreshMixLibrary());
+    // Playlists may have changed in another view since the last visit.
+    if (name === 'manager') import('./plmanager.js').then(m => m.loadPlManager());
     return;
   }
   _loadedLibTabs.add(name);
@@ -98,7 +101,14 @@ export function switchLibraryTab(name, force) {
   else if (name === 'spotify') import('./spotify.js').then(m => m.loadPlaylists());
   else if (name === 'podcasts') import('./podcasts.js').then(m => m.loadPodcasts());
   else if (name === 'mixes') import('./mixes.js').then(m => m.loadMixesPage());
+  else if (name === 'manager') import('./plmanager.js').then(m => m.loadPlManager());
   else if (name === 'favorites') import('./favorites.js').then(m => m.loadFavorites());
+}
+
+// The playlist manager changed a playlist: the Downloaded list (track counts,
+// covers) reloads the next time its tab is opened.
+export function markLibraryStale() {
+  _loadedLibTabs.delete('downloaded');
 }
 
 // Restore the borrowed sub-tab after a detail overlay closes via Back.
