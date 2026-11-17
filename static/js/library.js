@@ -16,7 +16,7 @@ let libraryCache = null;
 // rename/delete can never act on a stale copy.
 let savedImportsCache = null;
 
-// ── Library sub-tabs (Downloaded / Spotify / Podcasts / Favorites) ──
+// ── Library sub-tabs (Downloaded / Spotify / Podcasts / Mixes / Favorites) ──
 // The former "My Spotify", "My Podcasts" and "Favorites" pages now live as
 // sub-views inside #pageLibrary. Each sub-view is lazy-loaded the first time its
 // tab is opened; the matching loader is imported dynamically to avoid load-order
@@ -26,6 +26,7 @@ const _LIB_TABS = {
   downloaded: '#libTabDownloaded',
   spotify:    '#pagePlaylists',
   podcasts:   '#pagePodcasts',
+  mixes:      '#pageMixes',
   favorites:  '#pageFavorites',
 };
 let _activeLibTab = null;
@@ -87,11 +88,16 @@ export function showLibrarySubView(name) {
 export function switchLibraryTab(name, force) {
   _setActiveLibTab(name);
   name = _activeLibTab; // normalized (may have fallen back to 'downloaded')
-  if (!force && _loadedLibTabs.has(name)) return;
+  if (!force && _loadedLibTabs.has(name)) {
+    // A mix downloaded since the last visit belongs in the Downloaded list.
+    if (name === 'mixes') import('./mixes.js').then(m => m.refreshMixLibrary());
+    return;
+  }
   _loadedLibTabs.add(name);
   if (name === 'downloaded') loadLibrary();
   else if (name === 'spotify') import('./spotify.js').then(m => m.loadPlaylists());
   else if (name === 'podcasts') import('./podcasts.js').then(m => m.loadPodcasts());
+  else if (name === 'mixes') import('./mixes.js').then(m => m.loadMixesPage());
   else if (name === 'favorites') import('./favorites.js').then(m => m.loadFavorites());
 }
 
@@ -1139,7 +1145,7 @@ export function getCurrentLibPlaylist() {
 
 // ── Init ──
 export function init() {
-  // Library sub-tab strip (Downloaded / Spotify / Podcasts / Favorites)
+  // Library sub-tab strip (Downloaded / Spotify / Podcasts / Mixes / Favorites)
   $$('#libraryTabs .sp-tab').forEach(tab => {
     tab.addEventListener('click', () => switchLibraryTab(tab.dataset.libTab));
   });

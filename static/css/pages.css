@@ -268,3 +268,102 @@
   position: static; flex-shrink: 0; margin-left: 4px;
 }
 .skeleton-coll { height: 64px; border-radius: 8px; margin-bottom: 2px; }
+
+/* ── Library → Mixes ──
+   Every control is visible without hover: a tablet at 1024 px gets the desktop
+   rules and has no hover. Rows wrap their actions under the text on a phone. */
+.mix-section { margin-bottom: 32px; }
+.mix-section-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; margin: 0 0 12px;
+}
+.mix-section-title { font-size: 15px; font-weight: 600; margin: 0; color: var(--text-muted); }
+.mix-section-tools { display: flex; align-items: center; gap: 10px; }
+.mix-total { font-size: 13px; color: var(--text-muted); }
+.mix-search-form { display: flex; gap: 8px; margin: 14px 0 12px; }
+.mix-search-form input {
+  flex: 1; min-width: 0; padding: 10px 14px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text);
+  font-family: inherit; font-size: 15px; outline: none;
+}
+.mix-search-form input:focus { border-color: var(--accent); }
+.mix-filters { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 10px; }
+.mix-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mix-chip {
+  background: var(--bg-card); border: 1px solid var(--border); color: var(--text-muted);
+  padding: 6px 12px; border-radius: 16px; font-family: inherit; font-size: 12px; cursor: pointer;
+}
+.mix-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.mix-selects { display: flex; flex-wrap: wrap; gap: 8px 12px; }
+.mix-selects label { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+.mix-selects select, .mix-follow-opts select {
+  background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 5px 6px; font-size: 12px; font-family: inherit;
+}
+.mix-status { margin-bottom: 10px; }
+.mix-count { font-size: 12px; color: var(--text-muted); }
+.mix-err { font-size: 12px; color: var(--red); margin-top: 4px; }
+.mix-hint { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin: 4px 0; }
+.mix-empty { padding: 30px 10px; }
+.mix-linkbtn {
+  background: none; border: none; padding: 0; margin-left: 6px; color: var(--accent);
+  font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: underline;
+}
+.mix-list { display: flex; flex-direction: column; gap: 6px; }
+.mix-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  min-width: 0;
+}
+.mix-thumb, .mix-avatar {
+  width: 56px; height: 56px; flex-shrink: 0; border-radius: 8px; object-fit: cover;
+  background: var(--bg-elevated); display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); font-size: 22px;
+}
+.mix-avatar { width: 44px; height: 44px; border-radius: 50%; }
+.mix-thumb--empty, .mix-avatar--empty { border: 1px solid var(--border); }
+.mix-info { flex: 1; min-width: 0; }
+.mix-title {
+  font-size: 14px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mix-title a { color: inherit; text-decoration: none; }
+.mix-title a:hover { text-decoration: underline; }
+.mix-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mix-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.mix-q, .mix-src, .mix-owned {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; white-space: nowrap;
+  border: 1px solid var(--border); color: var(--text-muted);
+}
+.mix-q--hi { color: #000; background: var(--accent); border-color: var(--accent); }
+.mix-q--good { color: var(--accent); border-color: var(--accent); }
+.mix-q--ok { color: var(--text); border-color: var(--border-hover); }
+.mix-q--low { color: var(--red); border-color: var(--red); }
+.mix-q-typ { font-weight: 400; margin-left: 4px; opacity: .8; }
+.mix-owned { color: var(--accent); }
+.mix-also { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.mix-actions { display: flex; flex-wrap: wrap; gap: 6px; flex-shrink: 0; justify-content: flex-end; }
+.mix-actions .import-btn { padding: 7px 12px; font-size: 12px; }
+.mix-actions .import-btn:disabled { opacity: .55; cursor: default; }
+.mix-follow {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; margin-bottom: 8px;
+}
+.mix-follow-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.mix-follow-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; }
+.mix-toggle { font-size: 12px; color: var(--text); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.mix-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+.mix-uploads { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.mix-uploads .mix-row { background: var(--bg-elevated); }
+.mix-dj { margin-bottom: 16px; }
+.mix-dj-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 2px 6px; }
+.mix-dj-name { font-weight: 700; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mix-dj-meta { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.mix-lib-row + .mix-lib-row { margin-top: 6px; }
+
+@media (max-width: 640px) {
+  .mix-row, .mix-follow-main { flex-wrap: wrap; }
+  .mix-row .mix-info, .mix-follow-main .mix-info { flex: 1 1 calc(100% - 80px); }
+  .mix-row .mix-actions, .mix-follow-main .mix-actions { width: 100%; justify-content: flex-start; }
+  .mix-thumb { width: 48px; height: 48px; }
+}

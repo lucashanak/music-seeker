@@ -51,6 +51,22 @@ async def _podcast_auto_sync():
                 pass
 
 
+MIX_FOLLOW_INTERVAL = 6 * 3600
+
+
+async def _mix_follow_auto_check():
+    """Background task: every 6 h, download NEW mixes of followed DJs that have
+    auto-download on. The first run waits a full interval, like the podcast sync:
+    a deploy must not set off a burst of downloads."""
+    from app.services import mix_follows
+    while True:
+        await asyncio.sleep(MIX_FOLLOW_INTERVAL)
+        try:
+            await mix_follows.check_all()
+        except Exception:
+            pass
+
+
 async def _favorites_release_check():
     """Background task: check for new releases from favorite artists weekly."""
     await asyncio.sleep(60)  # initial delay
@@ -88,6 +104,7 @@ async def startup():
         auth.init_admin(ADMIN_USER, ADMIN_PASS)
     asyncio.create_task(_podcast_auto_sync())
     asyncio.create_task(_favorites_release_check())
+    asyncio.create_task(_mix_follow_auto_check())
     asyncio.create_task(_spotify_health_probe())
     # Start DLNA renderer discovery
     from app.services import dlna

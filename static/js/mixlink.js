@@ -1,4 +1,5 @@
-// mixlink.js — a Mixcloud / SoundCloud mix link pasted into Search.
+// mixlink.js — a Mixcloud / SoundCloud / hearthis.at mix link pasted into Search.
+// (A YouTube link is left to the ordinary search: every pasted video is not a mix.)
 //
 // Why Search and not the Import modal: the Import modal turns a pasted LIST into
 // a playlist to play; a mix is ONE recording the user wants to own, and Search is
@@ -12,10 +13,12 @@
 import { $, esc, escAttr, showToast } from './utils.js';
 import { apiJson } from './api.js';
 import { openPanel } from './downloads.js';
+import { qualityClass } from './mixfilter.js';
 
 const MIXCLOUD_RE = /^https?:\/\/(?:www\.|m\.)?mixcloud\.com\/([^/?#\s]+)\/([^/?#\s]+)\/?(?:[?#]\S*)?$/i;
 const SOUNDCLOUD_RE = /^https?:\/\/(?:www\.|m\.)?soundcloud\.com\/([^/?#\s]+)\/([^/?#\s]+)(?:\/s-[A-Za-z0-9]+)?\/?(?:[?#]\S*)?$/i;
 const SC_SHORT_RE = /^https?:\/\/on\.soundcloud\.com\/[A-Za-z0-9]+\/?(?:[?#]\S*)?$/i;
+const HEARTHIS_RE = /^https?:\/\/(?:www\.)?hearthis\.at\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/?(?:[?#]\S*)?$/i;
 
 const MIXCLOUD_NOT_USERS = new Set(['discover', 'live', 'upload', 'uploads', 'dashboard', 'settings',
   'select', 'pro', 'categories', 'tag', 'tags', 'search', 'player', 'widget', 'about', 'jobs', 'help']);
@@ -26,7 +29,16 @@ const SOUNDCLOUD_NOT_USERS = new Set(['discover', 'search', 'you', 'stream', 'ch
 const SOUNDCLOUD_USER_PAGES = new Set(['sets', 'tracks', 'albums', 'likes', 'reposts', 'followers',
   'following', 'popular-tracks', 'comments', 'spotlight', 'toptracks', 'playlists']);
 
-const LABEL = { mixcloud: 'Mixcloud', soundcloud: 'SoundCloud' };
+const HEARTHIS_NOT_USERS = new Set(['search', 'categories', 'category', 'charts', 'live', 'upload',
+  'settings', 'messages', 'notifications', 'feed', 'stream', 'explore', 'labels', 'podcasts',
+  'playlists', 'set', 'sets', 'login', 'register', 'signup', 'about', 'faq', 'help', 'imprint',
+  'terms', 'privacy', 'pro', 'shop', 'api', 'app', 'embed', 'events', 'radio', 'genres', 'tags',
+  'maps', 'discover']);
+const HEARTHIS_USER_PAGES = new Set(['likes', 'playlists', 'set', 'sets', 'followers', 'following',
+  'reshares', 'tracks', 'albums', 'events', 'about', 'comments', 'listen', 'download', 'embed',
+  'fans', 'podcast']);
+
+const LABEL = { mixcloud: 'Mixcloud', soundcloud: 'SoundCloud', hearthis: 'hearthis.at' };
 
 /** { source, url } for a single-mix link (the first URL in `text`), else null. */
 export function parseMixLink(text) {
@@ -44,6 +56,11 @@ export function parseMixLink(text) {
     return { source: 'soundcloud', url };
   }
   if (SC_SHORT_RE.test(url)) return { source: 'soundcloud', url };
+  r = url.match(HEARTHIS_RE);
+  if (r) {
+    if (HEARTHIS_NOT_USERS.has(r[1].toLowerCase()) || HEARTHIS_USER_PAGES.has(r[2].toLowerCase())) return null;
+    return { source: 'hearthis', url };
+  }
   return null;
 }
 
@@ -64,19 +81,27 @@ export function renderMixLoading(el, link) {
     </div>`;
 }
 
-/** Banner for a resolved mix, with the one action it offers. */
+/** Banner for a resolved mix, with the one action it offers. The quality is
+ * what the download will get, known before anything is downloaded. */
 export function renderMixBanner(el, info) {
   const meta = [info.uploader, fmtDuration(info.duration), info.source_label].filter(Boolean).join(' · ');
+  const kbps = Number(info.kbps) || 0;
+  const badge = info.quality_label
+    ? `<span class="mix-q ${qualityClass(kbps)}" data-mix-quality>${esc(info.quality_label)}${info.quality_known === false ? '<span class="mix-q-typ">typ.</span>' : ''}</span>`
+    : '';
+  const low = kbps && kbps < 128
+    ? ` ${esc(info.source_label)} offers this mix only at ${esc(info.quality_label)} — there is no better copy there.`
+    : '';
   el.innerHTML = `
     ${info.thumbnail
       ? `<img class="import-banner-thumb" src="${escAttr(info.thumbnail)}" alt="" loading="lazy" onerror="this.removeAttribute('src');this.classList.add('import-banner-thumb--empty')">`
       : `<div class="import-banner-thumb import-banner-thumb--empty"></div>`}
     <div class="import-banner-info">
       <div class="import-banner-title">${esc(info.title || 'Mix')}</div>
-      <div class="import-banner-meta">${esc(meta)}</div>
+      <div class="import-banner-meta">${esc(meta)}${badge ? ` ${badge}` : ''}</div>
       <div class="import-banner-note"><span>${info.in_library
         ? 'Already in your library.'
-        : `Saved as the ${esc(info.source_label)} file, in the quality ${esc(info.source_label)} serves — no conversion.`}</span></div>
+        : `Saved as the ${esc(info.source_label)} file, in the quality ${esc(info.source_label)} serves — no conversion.${low}`}</span></div>
     </div>
     <div class="import-banner-actions">
       <button type="button" class="import-btn import-btn-primary" data-mix-act="download"${info.in_library ? ' disabled' : ''}>&#8681; Download mix</button>

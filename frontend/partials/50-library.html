@@ -1,9 +1,10 @@
-<!-- ── Library Page (consolidated: Downloaded / Spotify / Podcasts / Favorites) ── -->
+<!-- ── Library Page (consolidated: Downloaded / Spotify / Podcasts / Mixes / Favorites) ── -->
 <main id="pageLibrary" style="display:none">
   <div class="sp-tabs" id="libraryTabs">
     <button class="sp-tab active" data-lib-tab="downloaded">Downloaded</button>
     <button class="sp-tab" data-lib-tab="spotify">Spotify</button>
     <button class="sp-tab" data-lib-tab="podcasts">Podcasts</button>
+    <button class="sp-tab" data-lib-tab="mixes">Mixes</button>
     <button class="sp-tab" data-lib-tab="favorites">Favorites</button>
   </div>
 
@@ -176,6 +177,72 @@
     </div>
   </div>
   </div><!-- /pagePodcasts sub-view -->
+
+  <!-- ── Sub-view: Mixes (DJ sets: search across sites, followed DJs, downloaded) ──
+       Filled by static/js/mixes.js. Filters run in the browser over the full
+       answer, so switching one is instant and the page can say how many it hid. -->
+  <div id="pageMixes" style="display:none">
+    <section class="mix-section" id="mixSearchSection">
+      <h2 class="page-title">Mixes</h2>
+      <p class="page-subtitle">DJ sets from SoundCloud, YouTube, Mixcloud and hearthis.at, saved in the quality the site serves.</p>
+      <form id="mixSearchForm" class="mix-search-form" autocomplete="off">
+        <input type="search" id="mixSearchInput" placeholder="Search DJ sets, e.g. zouk mix" enterkeyhint="search" aria-label="Search DJ sets">
+        <button type="submit" class="import-btn import-btn-primary" id="mixSearchBtn">Search</button>
+      </form>
+      <div class="mix-filters" id="mixFilters">
+        <div class="mix-chips" role="group" aria-label="Sources">
+          <button type="button" class="mix-chip" data-mix-source="soundcloud" aria-pressed="true">SoundCloud</button>
+          <button type="button" class="mix-chip" data-mix-source="youtube" aria-pressed="true">YouTube</button>
+          <button type="button" class="mix-chip" data-mix-source="mixcloud" aria-pressed="true">Mixcloud</button>
+          <button type="button" class="mix-chip" data-mix-source="hearthis" aria-pressed="true">hearthis.at</button>
+        </div>
+        <div class="mix-selects">
+          <label>Quality
+            <select id="mixMinKbps">
+              <option value="0">Any</option>
+              <option value="128">&ge; 128 kbps</option>
+              <option value="160">&ge; 160 kbps</option>
+              <option value="192">&ge; 192 kbps</option>
+            </select>
+          </label>
+          <label>Length
+            <select id="mixMinMinutes">
+              <option value="0">Any</option>
+              <option value="20">&ge; 20 min</option>
+              <option value="45">&ge; 45 min</option>
+            </select>
+          </label>
+          <label>Sort
+            <select id="mixSort">
+              <option value="quality">Quality</option>
+              <option value="relevance">Relevance</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div id="mixSearchStatus" class="mix-status"></div>
+      <div id="mixResults" class="mix-list"></div>
+    </section>
+
+    <section class="mix-section" id="mixFollowSection">
+      <div class="mix-section-head">
+        <h3 class="mix-section-title">Followed DJs</h3>
+        <button type="button" id="mixCheckNow" class="btn-check-new" title="Download new mixes of DJs with auto-download on">Check now</button>
+      </div>
+      <div id="mixFollows"></div>
+    </section>
+
+    <section class="mix-section" id="mixLibrarySection">
+      <div class="mix-section-head">
+        <h3 class="mix-section-title">Downloaded mixes</h3>
+        <div class="mix-section-tools">
+          <span id="mixLibTotal" class="mix-total"></span>
+          <button type="button" id="mixLibRefresh" class="btn-check-new" title="Reload the list">Refresh</button>
+        </div>
+      </div>
+      <div id="mixLibrary"></div>
+    </section>
+  </div><!-- /pageMixes sub-view -->
 
   <!-- ── Sub-view: Favorites (moved from former "Favorites" page) ── -->
   <div id="pageFavorites" style="display:none">

@@ -20,8 +20,9 @@ def _require_mix_perms(user: dict) -> None:
 
 @router.post("/mix/info")
 async def mix_info(req: MixInfoRequest, user: dict = Depends(auth.get_current_user)):
-    """Details of a pasted Mixcloud/SoundCloud mix link, for the search banner.
-    400 = not a single-mix link (or the site refused it), with the reason."""
+    """Details of a pasted mix link, with the quality the download will get, for
+    the search banner. 400 = not a single-mix link (or the site refused it),
+    with the reason."""
     _require_mix_perms(user)  # only an account that could download it may ask
     try:
         info = await mixes.fetch_info(req.url)
@@ -37,13 +38,18 @@ async def mix_info(req: MixInfoRequest, user: dict = Depends(auth.get_current_us
 
 @router.post("/download")
 async def start_download(req: DownloadRequest, user: dict = Depends(auth.get_current_user)):
-    # A mix link is a mix whatever the client called it: it must never reach the
-    # YouTube search path, and its format is whatever the source serves.
-    if req.url and mixes.parse_mix_url(req.url):
-        req.type, req.method, req.format = "mix", "yt-dlp", "original"
+    # A Mixcloud / SoundCloud / hearthis.at link is a mix whatever the client
+    # called it: it must never reach the YouTube search path, and its format is
+    # whatever the source serves. A YouTube link is NOT switched: the YouTube
+    # Music provider uses watch URLs as the `url` of ordinary tracks, so a YouTube
+    # video is a mix only when the client asks for `type: "mix"`.
+    parsed = mixes.parse_mix_url(req.url) if req.url else None
+    if parsed and parsed[0] in mixes.AUTO_MIX_SOURCES:
+        req.type = "mix"
     if req.type == "mix":
-        if not mixes.parse_mix_url(req.url):
-            raise HTTPException(400, "Not a Mixcloud or SoundCloud mix link")
+        if not parsed:
+            raise HTTPException(400, mixes.NOT_A_MIX)
+        req.method, req.format = "yt-dlp", "original"
         _require_mix_perms(user)
     else:
         auth.require_download_perms(user, req.method, req.format)

@@ -156,5 +156,5 @@ if (keep) {
 }
 const failed = results.filter((r) => !r.ok).length;
 console.log(`\n${results.length - failed} passed, ${failed} failed`);
-if (keep) console.log(`Úklid: soubor leží v /mnt/nas/Media/_Music/claude_test/Mixes/${UPLOADER}/`);
+if (keep) console.log(`Úklid: soubor leží v /mnt/nas/Media/_Music/claude_test/${UPLOADER}/DJ Sets/`);
 process.exit(failed ? 1 : 0);

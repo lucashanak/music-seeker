@@ -20,6 +20,25 @@ class MixInfoRequest(BaseModel):
     url: str
 
 
+class MixFollowRequest(BaseModel):
+    source: str
+    user_id: str
+    name: str = ""
+    image: str = ""
+    url: str = ""
+
+
+class MixFollowUpdate(BaseModel):
+    auto_download: bool | None = None
+    min_kbps: int | None = None
+    min_minutes: int | None = None
+
+
+class MixDeleteRequest(BaseModel):
+    dj: str
+    file: str
+
+
 class ResolveRequest(BaseModel):
     name: str
     artist: str = ""

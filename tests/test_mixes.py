@@ -102,7 +102,7 @@ def test_decomposed_names_fold_to_one_spelling():
     decomposed = {"title": "Divoká noc", "uploader": "Šmoldas"}
     info = mixes.normalize_info(decomposed, "mixcloud", SAMPLE_CANON)
     assert info["title"] == "Divoká noc" and info["uploader"] == "Šmoldas"
-    assert mixes.mix_dir("/music", "u", "Šmoldas") == "/music/u/Mixes/Šmoldas"
+    assert mixes.mix_dir("/music", "u", "Šmoldas") == "/music/u/Šmoldas/DJ Sets"
 
 
 def test_soundcloud_cover_uses_the_500px_rendition():
@@ -113,10 +113,14 @@ def test_soundcloud_cover_uses_the_500px_rendition():
     assert mixes._pick_thumbnail(d) == "https://i1.sndcdn.com/a-t500x500.jpg"
 
 
-def test_mix_paths_stay_out_of_artist_album_and_are_safe():
-    assert mixes.mix_dir("/music", "claude_test", "DJ / Name") == "/music/claude_test/Mixes/DJ _ Name"
+def test_mix_paths_are_artist_album_like_the_tags_and_are_safe():
+    # <user>/<DJ>/DJ Sets/ — the player's artist-folder pass finds it there.
+    assert mixes.mix_dir("/music", "claude_test", "DJ / Name") == "/music/claude_test/DJ _ Name/DJ Sets"
     assert mixes.mix_basename('A: "B"?') == "A_ _B__"
-    assert len(mixes.mix_basename("ž" * 300).encode()) <= 200
+    cut = mixes.mix_basename("ž" * 300)
+    assert len(cut.encode()) <= 250 and len((cut + ".aiff").encode()) <= 255
+    # Nothing is cut short of the limit.
+    assert mixes.mix_basename("a" * 250) == "a" * 250
 
 
 # ── quality ──
@@ -195,11 +199,11 @@ def test_a_mix_lands_under_mixes_with_its_quality_in_the_job(mix_env):
     job = _Job(SAMPLE)
     ok = asyncio.run(mixes.run_mix(job, str(tmp / "music"), 2400, quota_ok, not_owned))
     assert ok is True
-    path = str(tmp / "music" / "claude_test" / "Mixes" / "Martin Šmoldas" / "Zouktime Marathon Brno Sunday set.m4a")
+    path = str(tmp / "music" / "claude_test" / "Martin Šmoldas" / "DJ Sets" / "Zouktime Marathon Brno Sunday set.m4a")
     assert os.path.isfile(path)
     # Tagged in scratch, BEFORE it enters the library — Navidrome never sees it bare.
     tagged_path, *names = seen["tagged"]
-    assert "/.mix-dl-" in tagged_path and names == ["Zouktime Marathon Brno Sunday set", "Martin Šmoldas"]
+    assert "/music/.mix-dl/" in tagged_path and names == ["Zouktime Marathon Brno Sunday set", "Martin Šmoldas"]
     assert seen["timeout"] == 2400 and seen["quota"] == 1
     assert job.progress_text.startswith("Mixcloud · AAC 64 kbps")
     assert job.title == "Martin Šmoldas - Zouktime Marathon Brno Sunday set"
@@ -218,14 +222,23 @@ def _not_owned_fn():
 
 
 def _library_files(tmp):
+    """What a user can see: everything under music/ except the scratch root."""
     root = tmp / "music"
-    return sorted(str(p.relative_to(root)) for p in root.rglob("*")) if root.exists() else []
+    if not root.exists():
+        return []
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*")
+                  if not str(p.relative_to(root)).startswith(mixes.SCRATCH_ROOT))
+
+
+def _scratch_left(tmp):
+    s = tmp / "music" / mixes.SCRATCH_ROOT
+    return list(s.iterdir()) if s.exists() else []
 
 
 def test_the_scratch_directory_is_gone_after_a_good_download(mix_env):
     seen, tmp = mix_env
     asyncio.run(mixes.run_mix(_Job(SAMPLE), str(tmp / "music"), 2400, lambda u: True, _not_owned_fn()))
-    assert not [f for f in _library_files(tmp) if ".mix-dl-" in f]
+    assert _scratch_left(tmp) == []
     # The title never enters yt-dlp's output template: a "%" in it cannot be
     # read as a template field.
     tmpl = seen["cmd"][seen["cmd"].index("-o") + 1]
@@ -245,8 +258,8 @@ def test_a_failed_exit_with_a_file_left_behind_is_not_a_mix(mix_env, monkeypatch
     with pytest.raises(RuntimeError, match="Conversion failed"):
         asyncio.run(mixes.run_mix(_Job(SAMPLE), str(tmp / "music"), 2400, lambda u: True, _not_owned_fn()))
     assert seen["tagged"] is None
-    assert not [f for f in _library_files(tmp) if f.endswith(".m4a")]
-    assert not [f for f in _library_files(tmp) if ".mix-dl-" in f]
+    assert _library_files(tmp) == []          # not even an empty "<DJ>/DJ Sets"
+    assert _scratch_left(tmp) == []
     assert not mixes.is_mix("Zouktime Marathon Brno Sunday set", "Martin Šmoldas")
 
 
@@ -262,7 +275,7 @@ def test_a_cancelled_download_leaves_nothing_in_the_library(mix_env, monkeypatch
     monkeypatch.setattr(mixes, "_run_ytdlp_progress", cancelled)
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(mixes.run_mix(_Job(SAMPLE), str(tmp / "music"), 2400, lambda u: True, _not_owned_fn()))
-    assert [f for f in _library_files(tmp) if "." in os.path.basename(f)] == []
+    assert _library_files(tmp) == [] and _scratch_left(tmp) == []
 
 
 def test_stale_scratch_from_a_crash_is_cleared_but_a_live_one_is_not(tmp_path):
@@ -297,13 +310,13 @@ def test_the_file_name_is_what_the_player_looks_up():
 
 
 def test_an_uploader_never_becomes_a_hidden_folder():
-    assert mixes.mix_dir("/music", "u", ".mix-dl-x") == "/music/u/Mixes/mix-dl-x"
-    assert mixes.mix_dir("/music", "u", "...") == "/music/u/Mixes/Unknown DJ"
+    assert mixes.mix_dir("/music", "u", ".mix-dl") == "/music/u/mix-dl/DJ Sets"
+    assert mixes.mix_dir("/music", "u", "...") == "/music/u/Unknown DJ/DJ Sets"
 
 
 def test_a_different_mix_with_the_same_file_name_is_not_overwritten(mix_env):
     seen, tmp = mix_env
-    d = tmp / "music" / "claude_test" / "Mixes" / "Martin Šmoldas"
+    d = tmp / "music" / "claude_test" / "Martin Šmoldas" / "DJ Sets"
     d.mkdir(parents=True)
     (d / "Zouktime Marathon Brno Sunday set.m4a").write_bytes(b"other mix")
     asyncio.run(mixes.run_mix(_Job(SAMPLE), str(tmp / "music"), 2400, lambda u: True, _not_owned_fn()))
@@ -495,3 +508,27 @@ def test_tags_and_cover_survive_on_real_files(tmp_path, ext, codec):
         assert raw.tags["metadata_block_picture"]
     q = asyncio.run(mixes.probe_quality(path))
     assert q["codec"] == ("AAC" if ext == "m4a" else "Opus") and q["kbps"] > 0
+
+
+def test_two_djs_with_the_same_mix_title_each_play_their_own(mix_env, monkeypatch):
+    """Under <user>/Mixes/<DJ>/ every mix fell through the player's artist-folder
+    pass to a title-only glob, which returned whichever "Sunday set" it met first —
+    another DJ's mix played under this one's name."""
+    from pathlib import Path
+    from app.services import player
+    seen, tmp = mix_env
+    music = tmp / "music"
+    paths = {}
+    for dj in ("DJ Alpha", "DJ Beta"):
+        async def info_for(url, dj=dj):
+            return mixes.normalize_info({"title": "Sunday set", "uploader": dj}, "mixcloud", SAMPLE_CANON)
+        monkeypatch.setattr(mixes, "fetch_info", info_for)
+        asyncio.run(mixes.run_mix(_Job(SAMPLE), str(music), 2400, lambda u: True, _not_owned_fn()))
+        found = [p for p in (music / "claude_test").rglob("Sunday set.m4a") if dj in p.parts]
+        assert len(found) == 1
+        paths[dj] = str(found[0])
+    assert paths["DJ Alpha"] != paths["DJ Beta"]
+    assert paths["DJ Alpha"].endswith("/claude_test/DJ Alpha/DJ Sets/Sunday set.m4a")
+    monkeypatch.setattr(player, "MUSIC_DIR", Path(music))
+    for dj, path in paths.items():
+        assert player._resolve_local_file("Sunday set", dj)["path"] == path
