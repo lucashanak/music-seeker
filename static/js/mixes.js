@@ -361,6 +361,7 @@ export async function refreshMixLibrary() {
   }
   if (gen !== _libGen) return;   // a newer refresh is on its way
   _lib = data;
+  mountClips(box);   // inside the refresh path, after the generation guard
   $('#mixLibTotal').textContent = _lib.count ? `${_lib.count} mix${_lib.count === 1 ? '' : 'es'} · Total: ${formatSize(_lib.total_size)}` : '';
   if (!_lib.djs.length) {
     box.innerHTML = '<p class="mix-hint">No downloaded mixes yet.</p>';
@@ -379,6 +380,7 @@ export async function refreshMixLibrary() {
           </div>
           <div class="mix-actions">
             <button type="button" class="import-btn import-btn-primary" data-act="play" aria-label="Play ${escAttr(m.title)}">&#9654; Play</button>
+            <button type="button" class="import-btn" data-act="cut" data-cut-key="${escAttr(m.dj + '/' + m.file)}" aria-label="Cut a clip from ${escAttr(m.title)}">&#9986; Cut</button>
             <button type="button" class="btn-delete-ep" data-act="delete" aria-label="Delete ${escAttr(m.title)}">&#128465; Delete</button>
           </div>
         </div>`).join('')}
@@ -387,7 +389,17 @@ export async function refreshMixLibrary() {
     const m = _lib.djs[Number(row.dataset.di)].mixes[Number(row.dataset.mi)];
     row.querySelector('[data-act="play"]').addEventListener('click', () => playMix(m));
     row.querySelector('[data-act="delete"]').addEventListener('click', () => deleteMix(m));
+    row.querySelector('[data-act="cut"]').addEventListener('click', (e) => {
+      const btn = e.currentTarget;   // currentTarget is null once the await-ing import resolves
+      import('./mixcut.js').then((c) => c.openCutter(m, btn));
+    });
   });
+}
+
+function mountClips(box) {
+  let c = document.getElementById('mixClips');
+  if (!c) { c = document.createElement('div'); c.id = 'mixClips'; box.insertAdjacentElement('afterend', c); }
+  import('./mixcut.js').then((m) => m.renderClipsSection(c)).catch(() => {}); // the Downloaded list must render even if the clip editor cannot load
 }
 
 function playMix(m) {

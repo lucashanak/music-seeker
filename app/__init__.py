@@ -22,7 +22,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 
     # Include routers
-    from app.routers import auth, search, spotify as spotify_router, downloads, player, discover, favorites, podcasts, settings, admin, library as library_router, dlna as dlna_router, bpm as bpm_router, recognize as recognize_router, remote as remote_router, feedback as feedback_router, importer as importer_router, mixes as mixes_router
+    from app.routers import auth, search, spotify as spotify_router, downloads, player, discover, favorites, podcasts, settings, admin, library as library_router, dlna as dlna_router, bpm as bpm_router, recognize as recognize_router, remote as remote_router, feedback as feedback_router, importer as importer_router, mixes as mixes_router, clips as clips_router
     app.include_router(auth.router)
     app.include_router(search.router)
     app.include_router(spotify_router.router)
@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(feedback_router.router)
     app.include_router(importer_router.router)
     app.include_router(mixes_router.router)
+    app.include_router(clips_router.router)
 
     # A lapsed Premium subscription on the app owner's account 403s every Spotify
     # endpoint, which spotify.py latches into SpotifyUnavailable. Nothing caught it,

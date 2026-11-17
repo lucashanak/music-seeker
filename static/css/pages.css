@@ -367,3 +367,54 @@
   .mix-row .mix-actions, .mix-follow-main .mix-actions { width: 100%; justify-content: flex-start; }
   .mix-thumb { width: 48px; height: 48px; }
 }
+
+/* ── mixcut: cut a clip out of a downloaded set (static/js/mixcut.js) ── */
+.mixcut-overlay { position: fixed; inset: 0; z-index: 300; display: flex; flex-direction: column; background: #07070b; color: var(--text, #eee); }
+.mixcut-head { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border, #2a2a3a); }
+.mixcut-headtext { flex: 1; min-width: 0; }
+.mixcut-h-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mixcut-h-sub { font-size: 12px; color: var(--text-muted, #999); }
+.mixcut-close { width: 44px; height: 44px; font-size: 28px; line-height: 1; background: none; border: 0; color: inherit; cursor: pointer; }
+.mixcut-body { flex: 1; overflow-y: auto; padding: 12px 16px 32px; max-width: 1100px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+.mixcut-status { font-size: 13px; color: var(--text-muted, #999); padding: 6px 0; }
+.mixcut-wrap { position: relative; width: 100%; background: #101018; border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+.mixcut-canvas { display: block; width: 100%; touch-action: none; cursor: crosshair; }
+.mixcut-detailbar { display: flex; align-items: center; justify-content: space-between; margin: 6px 0; }
+.mixcut-label { font-size: 12px; color: var(--text-muted, #999); text-transform: uppercase; letter-spacing: .04em; }
+.mixcut-bpm { text-transform: none; }
+.mixcut-transport, .mixcut-nudge { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; align-items: center; }
+.mixcut-btn { min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border, #2a2a3a); background: var(--bg-elevated, #1c1c2e); color: inherit; font: inherit; font-size: 14px; cursor: pointer; }
+.mixcut-btn:hover { border-color: var(--accent, #1db954); }
+.mixcut-btn:disabled { opacity: .45; cursor: default; }
+.mixcut-btn--sm { min-height: 36px; padding: 0 10px; font-size: 13px; }
+.mixcut-btn--primary { background: var(--accent, #1db954); color: #000; border-color: transparent; font-weight: 600; }
+.mixcut-btn--danger { color: #ff6b6b; }
+.mixcut-toggle.on { background: var(--accent-dim, rgba(29,185,84,.18)); border-color: var(--accent, #1db954); color: var(--accent, #1db954); }
+.mixcut-readout { display: flex; flex-wrap: wrap; gap: 18px; font-size: 14px; margin: 10px 0 4px; font-variant-numeric: tabular-nums; }
+.mixcut-hint { min-height: 18px; font-size: 13px; color: var(--text-muted, #999); margin-bottom: 8px; }
+.mixcut-hint--bad { color: #ff9f43; }
+.mixcut-form { display: grid; gap: 8px; margin: 8px 0 16px; }
+.mixcut-form label { display: grid; gap: 4px; font-size: 12px; color: var(--text-muted, #999); }
+.mixcut-form input { min-height: 42px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border, #2a2a3a); background: var(--bg-input, #1a1a2a); color: var(--text, #eee); font: inherit; font-size: 16px; }
+.mixcut-err { color: #ff6b6b; font-size: 13px; min-height: 0; }
+.mixcut-save { justify-self: start; }
+.mixcut-clips { border-top: 1px solid var(--border, #2a2a3a); padding-top: 12px; }
+.mixcut-empty { font-size: 13px; color: var(--text-muted, #999); }
+.mixcut-clip { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--border, #2a2a3a); cursor: pointer; flex-wrap: wrap; }
+.mixcut-section .mixcut-clip { cursor: default; }
+.mixcut-clip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.mixcut-clip-main { flex: 1 1 160px; min-width: 0; display: grid; }
+.mixcut-clip-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mixcut-clip-meta, .mixcut-group-sub, .mixcut-count { font-size: 12px; color: var(--text-muted, #999); }
+.mixcut-clip-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.mixcut-section { margin-top: 24px; }
+.mixcut-sec-h { margin: 0 0 8px; font-size: 18px; }
+.mixcut-group { margin-bottom: 14px; }
+.mixcut-group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.mixcut-group-title { font-weight: 600; display: grid; }
+@media (max-width: 640px) { .mixcut-btn { padding: 0 10px; } .mixcut-body { padding: 10px 12px 28px; } }
+
+.mixcut-readout label { display: inline-flex; align-items: center; gap: 6px; }
+.mixcut-time { width: 6.2em; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border, #2a2a3a);
+  background: var(--bg-input, #14141f); color: inherit; font: inherit; font-weight: 700; font-variant-numeric: tabular-nums; }
+.mixcut-time:focus { outline: 2px solid var(--accent, #a3e635); outline-offset: 1px; }

@@ -1,5 +1,6 @@
 """Audio streaming and queue persistence for the in-browser player."""
 import asyncio
+import glob
 import json
 import logging
 import os
@@ -268,8 +269,11 @@ def _resolve_local_file(name: str, artist: str) -> dict | None:
                 search_dirs = [user_dir]
             for search_dir in search_dirs:
                 for title in title_variants:
+                    # A title like "Live [2024]" is a character class to rglob and
+                    # would never match its own file; only the literal part is escaped.
+                    pattern_title = glob.escape(title)
                     for ext in ("flac", "mp3", "opus", "m4a"):
-                        for p in search_dir.rglob(f"{title}.{ext}"):
+                        for p in search_dir.rglob(f"{pattern_title}.{ext}"):
                             # Containment guard: never return a path outside MUSIC_DIR.
                             try:
                                 p.resolve().relative_to(MUSIC_DIR.resolve())
