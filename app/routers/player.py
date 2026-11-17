@@ -21,17 +21,31 @@ def _mime_for_path(path: str) -> str:
     return {"flac": "audio/flac", "opus": "audio/ogg", "m4a": "audio/mp4"}.get(ext, "audio/mpeg")
 
 
+async def _resolve_alive(name: str, artist: str) -> dict | None:
+    """resolve_stream, but a resolution that points at a local file that is gone is
+    forgotten and resolved afresh — once. Otherwise the 4 h URL cache keeps handing
+    out the dead path and FileResponse turns it into a 500."""
+    result = await player.resolve_stream(name, artist)
+    if result and result["source"] == "local" and not os.path.exists(result["path"]):
+        player.invalidate_cache(name, artist)
+        result = await player.resolve_stream(name, artist)
+        if result and result["source"] == "local" and not os.path.exists(result["path"]):
+            return None
+    return result
+
+
 @router.head("/stream")
 async def player_stream_head(name: str, artist: str = "", quality: str = "standard",
                               user: dict = Depends(_stream_auth)):
     """HEAD request for DLNA renderers to check MIME type before fetching."""
     lossless = quality == "lossless"
-    result = await player.resolve_stream(name, artist)
+    result = await _resolve_alive(name, artist)
     if not result:
         cached = player.youtube_cache_path(name, artist, "320k" if lossless else "192k")
         if not cached:
             raise HTTPException(404, "Could not resolve stream for this track")
         from fastapi.responses import Response
+        player.touch_cache_file(cached)
         return Response(content=b"", media_type="audio/mpeg", headers={
             "X-Stream-Source": "youtube-cache", "Accept-Ranges": "bytes",
             "Content-Length": str(os.path.getsize(cached)), "Content-Type": "audio/mpeg",
@@ -50,6 +64,7 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
             # representation (and therefore which Content-Length) it is getting.
             cached = player.local_transcode_cached_path(path)
             if cached and not player.raw_pinned(path):
+                player.touch_cache_file(cached)
                 mime = "audio/mpeg"
                 headers["Content-Length"] = str(os.path.getsize(cached))
             else:
@@ -61,8 +76,11 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
     elif result["source"] == "navidrome":
         cached = await player.cache_navidrome_stream(result["song_id"], lossless=lossless)
         if cached:
+            player.touch_cache_file(cached)
             mime = _mime_for_path(cached) if lossless else "audio/mpeg"
             headers["Content-Length"] = str(os.path.getsize(cached))
+        else:
+            player.invalidate_cache(name, artist)
     headers["Content-Type"] = mime
     from fastapi.responses import Response
     return Response(content=b"", headers=headers, media_type=mime)
@@ -72,13 +90,14 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
 async def player_stream(name: str, artist: str = "", quality: str = "standard",
                          user: dict = Depends(_stream_auth)):
     lossless = quality == "lossless"
-    result = await player.resolve_stream(name, artist)
+    result = await _resolve_alive(name, artist)
     if not result:
         # Resolution fails for reasons that have nothing to do with this track — a
         # YouTube lookup refused because we asked too often is the measured one. If we
         # already downloaded this track's audio, play that rather than report it gone.
         cached = player.youtube_cache_path(name, artist, "320k" if lossless else "192k")
         if cached:
+            player.touch_cache_file(cached)
             return FileResponse(cached, media_type="audio/mpeg",
                                 headers={"X-Stream-Source": "youtube-cache",
                                          "Cache-Control": "private, max-age=86400"})
@@ -103,6 +122,7 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
             # last stretch (see pin_raw_local in services/player.py).
             cached = player.local_transcode_cached_path(path)
             if cached and not player.raw_pinned(path):
+                player.touch_cache_file(cached)
                 return FileResponse(cached, media_type="audio/mpeg", headers=file_headers)
             # Cold path: build the compact MP3 cache in the background (so a LATER
             # play gets the smaller cached MP3) but serve the RAW file NOW via
@@ -130,8 +150,12 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
         # Try cached file first (supports Range requests, seeking, correct duration)
         cached = await player.cache_navidrome_stream(result["song_id"], lossless=lossless)
         if cached:
+            player.touch_cache_file(cached)
             mime = _mime_for_path(cached) if lossless else "audio/mpeg"
             return FileResponse(cached, media_type=mime, headers=file_headers)
+        # Resolved, but the song cannot be fetched: forget it so the next play
+        # resolves afresh instead of failing for the rest of the 4 h TTL.
+        player.invalidate_cache(name, artist)
         mime = "audio/flac" if lossless else "audio/mpeg"
         return StreamingResponse(player.stream_navidrome(result["song_id"], lossless=lossless),
                                   media_type=mime, headers=headers)
@@ -140,6 +164,7 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
         # Try cached file first for proper duration/seeking
         cached = await player.cache_youtube_stream(result["url"], name, artist, bitrate=bitrate)
         if cached:
+            player.touch_cache_file(cached)
             return FileResponse(cached, media_type="audio/mpeg", headers=file_headers)
         return StreamingResponse(player.stream_youtube(result["url"], bitrate=bitrate),
                                   media_type="audio/mpeg", headers=headers)
@@ -162,7 +187,8 @@ async def _prewarm_track(track: dict, lossless: bool) -> None:
         source = result["source"]
         if source == "navidrome":
             # Idempotent + locked: builds the transcoded/cached file if missing.
-            await player.cache_navidrome_stream(result["song_id"], lossless=lossless)
+            if not await player.cache_navidrome_stream(result["song_id"], lossless=lossless):
+                player.invalidate_cache(name, artist)
         elif source == "youtube":
             bitrate = "320k" if lossless else "192k"
             await player.cache_youtube_stream(result["url"], name, artist, bitrate=bitrate)

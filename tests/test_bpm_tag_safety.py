@@ -165,3 +165,34 @@ def test_gridless_track_not_retagged_every_run(track, monkeypatch):
     bpm._analyze_or_read_tag(track)
     bpm._analyze_or_read_tag(track)
     assert _stat(track) == st
+
+
+def test_tag_write_carries_the_local_transcode_cache_over(tmp_path, monkeypatch):
+    # The cached MP3 is keyed sha1(abspath + mtime); the replace in write_tags gives
+    # the file a new mtime. Without the carry-over a Range request on the same stream
+    # URL would find no MP3 and get raw FLAC bytes mid-decode.
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    p = _flac(str(tmp_path / "t.flac"))
+    # Kernel timestamps are coarse; make sure the write cannot land in the same tick.
+    os.utime(p, (time.time() - 3600, time.time() - 3600))
+    cache = player.local_transcode_cache_path(p)
+    os.makedirs(os.path.dirname(cache))
+    with open(cache, "wb") as f:
+        f.write(b"ID3-fake-mp3-bytes")
+    assert player.local_transcode_cached_path(p) == cache
+    old_mtime = os.path.getmtime(p)
+
+    bpm.write_tags(p, bpm=120)
+
+    assert os.path.getmtime(p) != old_mtime  # the key really did change
+    found = player.local_transcode_cached_path(p)
+    assert found is not None
+    assert open(found, "rb").read() == b"ID3-fake-mp3-bytes"
+
+
+def test_tag_write_without_a_cache_entry_is_fine(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    p = _flac(str(tmp_path / "t.flac"))
+    bpm.write_tags(p, bpm=120)
+    assert FLAC(p)["BPM"] == ["120"]
+    assert player.local_transcode_cached_path(p) is None

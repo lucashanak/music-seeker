@@ -2,11 +2,12 @@
 // 2 concurrent downloads, priority queue, progress tracking.
 
 import { store } from './store.js';
-import { apiFetch } from './api.js';
+import { refreshStreamToken, streamToken } from './api.js';
 
 const _cache = new Map();       // "artist:name" → { blobUrl, size }
 const _fetching = new Map();    // key → { priority, controller, progress }
 const MAX_CONCURRENT = 3;
+const IDLE_ABORT_MS = 30000;
 const _queue = [];              // priority-sorted FIFO
 // Preload-set state: keys pinned against eviction + the (key,item) targets to
 // keep re-enqueued across resume. Empty when no preload is active → cleanup and
@@ -208,12 +209,35 @@ function _fillQueue() {
   }
 }
 
+// The order tracks will really be played in is not always index + 1: under shuffle
+// it is a permutation only the queue module knows. The engine registers a provider
+// returning the upcoming queue indices (or null for "sequential"); without it the
+// window below downloaded three tracks nobody was about to play on every advance,
+// and cleanup() evicted the one that was.
+let _upcomingProvider = null;
+export function setUpcomingProvider(fn) { _upcomingProvider = fn; }
+
+function _upcomingIndices(queue, currentIndex, count) {
+  if (_upcomingProvider && queue === store.playerQueue) {
+    let custom = null;
+    try { custom = _upcomingProvider(count); } catch (e) { custom = null; }
+    if (Array.isArray(custom)) {
+      return custom.filter(i => Number.isInteger(i) && i >= 0 && i < queue.length).slice(0, count);
+    }
+  }
+  const out = [];
+  for (let i = currentIndex + 1; i < queue.length && i <= currentIndex + count; i++) out.push(i);
+  return out;
+}
+
 function _fillQueueFrom(queue, currentIndex, count) {
-  for (let i = currentIndex + 1; i < queue.length && i <= currentIndex + count; i++) {
+  const upcoming = _upcomingIndices(queue, currentIndex, count);
+  for (let n = 0; n < upcoming.length; n++) {
+    const i = upcoming[n];
     const item = queue[i];
     const key = _key(item.name, item.artist, item.id);
     if (_cache.has(key) || _fetching.has(key) || _queue.some(q => q.key === key)) continue;
-    _queue.push({ item, key, priority: i - currentIndex });
+    _queue.push({ item, key, priority: n + 1 });
   }
 }
 
@@ -234,8 +258,17 @@ async function _startFetch(entry) {
   try {
     const cleanName = _decodeEntities(entry.item.name || '');
     const cleanArtist = _decodeEntities(entry.item.artist || '');
-    const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: (store.streamToken || store.authToken) });
-    const res = await apiFetch(`/api/player/stream?${params}&quality=${streamQuality()}`, { signal: controller.signal });
+    const url = () => `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}`;
+    // Plain fetch, not apiFetch. The stream endpoint authenticates by the token in the
+    // URL, and a 401 here means THAT token expired — apiFetch reads every 401 as "the
+    // session is over", logs the user out and reloads the page: the music stopped
+    // mid-set because a background download was refused. Mint a new token, try once.
+    let res = await fetch(url(), { signal: controller.signal });
+    if (res.status === 401) {
+      await refreshStreamToken();
+      if (controller.signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      res = await fetch(url(), { signal: controller.signal });
+    }
     if (!res.ok) { _fetching.delete(entry.key); _processNext(); return; }
     // Validate content-type — reject HTML/JSON error pages served with 200 status.
     // Accept audio/* and application/octet-stream (some flac/mp3 streams use it).
@@ -251,13 +284,23 @@ async function _startFetch(entry) {
       const reader = res.body.getReader();
       const chunks = [];
       let received = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        received += value.length;
-        state.progress = Math.round((received / total) * 100);
-      }
+      // A connection that went half-open (a network switch, a dozing radio) delivers
+      // nothing and never fails. The download then sat in _fetching for good — where
+      // it is protected from cleanup and blocks a retry — so that track was never
+      // cached. Bytes have started; 30 s without another one is a dead link.
+      let idle = null;
+      const arm = () => { clearTimeout(idle); idle = setTimeout(() => { try { controller.abort(); } catch (e) {} }, IDLE_ABORT_MS); };
+      try {
+        arm();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          arm();
+          chunks.push(value);
+          received += value.length;
+          state.progress = Math.round((received / total) * 100);
+        }
+      } finally { clearTimeout(idle); }
       // A body that ends early WITHOUT throwing (proxy cut, server-side stream
       // giving up) would otherwise be cached as a complete track. The container
       // header still declares the full duration, so playback would run out of
@@ -283,11 +326,18 @@ async function _startFetch(entry) {
   if (!_paused) _processNext();
 }
 
-/** Revoke blob URLs for tracks outside the keep window. */
-export function cleanup(queue, currentIndex) {
+/** Revoke blob URLs for tracks outside the keep window.
+ *  `alsoKeep` — cache keys (keyFor) that must survive whatever their queue position:
+ *  the track the engine has bound as next. Smart Queue and shuffle pick it from
+ *  anywhere in the queue, so the index window alone threw that blob away the moment
+ *  the crossfade finished and the transition into it then ran off the live stream. */
+export function cleanup(queue, currentIndex, alsoKeep) {
   if (!queue || !queue.length) return;
   const count = _prefetchCount();
-  const keepKeys = new Set();
+  const keepKeys = new Set(alsoKeep || []);
+  for (const i of _upcomingIndices(queue, currentIndex, count + 2)) {
+    keepKeys.add(_key(queue[i].name, queue[i].artist, queue[i].id));
+  }
   const lo = Math.max(0, currentIndex - 2);
   const hi = Math.min(queue.length - 1, currentIndex + count + 2);
   for (let i = lo; i <= hi; i++) {

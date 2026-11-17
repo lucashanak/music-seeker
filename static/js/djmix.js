@@ -101,8 +101,24 @@ function parseCamelot(code) {
  * @param {number} [numBeats=16] - beats to fade over
  * @returns {number}
  */
-export function webkitCrossfadeDuration(outBpm, numBeats = 16) {
-  return Math.max(3, Math.min(10, numBeats * (60 / (outBpm || 85))));
+export function webkitCrossfadeDuration(outBpm, numBeats = 16, fallbackSec = 5) {
+  // No BPM → the fixed fallback length, for the TRIGGER and the FADE alike. The trigger
+  // used to assume 85 BPM here (16 beats → clamped 10 s) while the fade it started ran
+  // the 5 s fallback: every un-analysed track on Safari/macOS was faded out and stopped
+  // 5 s before its end.
+  if (!(Number.isFinite(outBpm) && outBpm > 0)) return Math.max(3, Math.min(10, fallbackSec));
+  return Math.max(3, Math.min(10, numBeats * (60 / outBpm)));
+}
+
+/** Drop a phase/intro seek that is still waiting for a deck's metadata. A load that
+ *  was abandoned before its metadata arrived (rapid skip) left the one-shot listener
+ *  on the element, and it then seeked whatever track was loaded on that deck NEXT —
+ *  a few bars, or a whole intro, missing from the start of an unrelated song. */
+export function clearPendingSeek(el) {
+  if (el && el._msSeekOnMeta) {
+    el.removeEventListener('loadedmetadata', el._msSeekOnMeta);
+    el._msSeekOnMeta = null;
+  }
 }
 
 export function getTransitionStyle(outCamelot, inCamelot) {
@@ -124,6 +140,36 @@ export function getTransitionStyle(outCamelot, inCamelot) {
   }
 
   return 'cut';
+}
+
+/**
+ * The style a transition between these two tracks will use. One function for the
+ * scheduler AND for the engine's auto-trigger, which has to know the style BEFORE
+ * the transition starts: a drop cut needs a lead of a few beats, a blend needs the
+ * whole fade. When the trigger assumed a blend for every style, a drop cut started
+ * ~16 beats before the end and silenced the outgoing track after 4 of them — the
+ * last ~8 s of the song were never heard, on every key-clashing pair (59 % of random
+ * pairs in the analysed library, measured 2026-11-17).
+ *
+ * @param {string} forceStyle - ms_dj_transition_style ('auto' or a concrete style)
+ * @returns {string} 'blend' | 'eq_swap' | 'filter_sweep' | 'drop_cut'
+ */
+export function resolveTransitionStyle(forceStyle, outData, inData) {
+  if (forceStyle && forceStyle !== 'auto') return forceStyle;
+  if (!outData?.camelot || !inData?.camelot) return 'blend';
+  // Compatible keys → full equal-power, beat-matched BLEND (both decks play full,
+  // beats locked together). The old eq_swap/filter_sweep spectrally SUPPRESS each
+  // deck (kill the incoming bass/mids until a mid-point swap), which sounds thin/
+  // "both muted until the switch" rather than a real blend. Only clashing keys fall
+  // back to a quick cut. Force a specific technique via ms_dj_transition_style
+  // (auto | blend | eq_swap | filter_sweep | drop_cut).
+  return getTransitionStyle(outData.camelot, inData.camelot) === 'cut' ? 'drop_cut' : 'blend';
+}
+
+/** Length of a drop cut's pre-roll (seconds): 4 beats of the outgoing track, 2–4 s. */
+export function dropCutLead(outBpm) {
+  const bpm = Number.isFinite(outBpm) && outBpm > 0 ? outBpm : 85;
+  return Math.max(2, Math.min(4 * (60 / bpm), 4));
 }
 
 /* ------------------------------------------------------------------ */
@@ -830,8 +876,11 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   // caller): the fade must not OVERRUN the outgoing file — the deck would die via
   // `ended` mid-fade at ~20% gain (audible clip). Floor 3s keeps a minimal blend;
   // 0/absent = uncapped (ended-blend path, or caller had no duration).
+  // Floor 1 s, not more: with 1.5 s of the track left, a fade stretched to 3 s has the
+  // file run out at 71 % gain — an audible chop of exactly the fade it meant to protect.
   const fadeCap = (Number.isFinite(opts.fadeCapSec) && opts.fadeCapSec > 0)
-    ? Math.max(3, opts.fadeCapSec) : Infinity;
+    ? Math.max(1, opts.fadeCapSec) : Infinity;
+  clearPendingSeek(inDeck.element);
 
   const now = ctx.currentTime;
   // Raw BPMs, no made-up fallback — matching against a fabricated 85 BPM (the old
@@ -846,7 +895,12 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
    * changes, so the rich transition below produces a hard cut + stutter. On
    * WebKit we run a minimal, reliable gain crossfade (no tempo stretch, no EQ
    * automation, no filter sweep, no PLL) and return early with the same shape. */
-  if (IS_WEBKIT) {
+  // `quickIn` (any engine): the outgoing deck has nothing left to play — it ended, or
+  // will within half a second. There is no track to blend WITH, so the full beat-length
+  // fade used to bring the new song up from silence over 11–21 s, tempo-shifted toward
+  // a track that was no longer playing and seeked past its intro. Bring it in at once,
+  // at its own speed, from its first sample.
+  if (IS_WEBKIT || opts.quickIn) {
     // No tempo stretch — force rate 1 on both decks (no rAF ramp, no PLL).
     outDeck.element.playbackRate = 1;
     inDeck.element.playbackRate = 1;
@@ -857,9 +911,8 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     // Uses the shared webkitCrossfadeDuration helper so player_v3's trigger lead
     // time matches this fade length exactly.
     const wkFallbackSec = opts.fallbackSec || 5;
-    const wkDuration = Math.min(fadeCap, outData?.bpm
-      ? webkitCrossfadeDuration(outBpmRaw, numBeats)
-      : Math.max(3, Math.min(10, wkFallbackSec)));
+    const wkDuration = opts.quickIn ? 0.25
+      : Math.min(fadeCap, webkitCrossfadeDuration(outBpmRaw, numBeats, wkFallbackSec));
 
     // Neutralize EQ + sweep on both decks so leftover kills don't color the sound.
     for (const d of [outDeck, inDeck]) {
@@ -889,7 +942,7 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
       duration: wkDuration,
       outRate: 1,
       inRate: 1,
-      style: 'webkit-simple',
+      style: opts.quickIn ? 'quick-in' : 'webkit-simple',
       _tempoRamp: { id: null, cancelled: true },
     };
   }
@@ -949,7 +1002,15 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   // huge fadeCap (full remaining playtime, no trigger clamp) and must NOT blend for that
   // whole time. fadeCapWall is only the SHRINK bound so the fade never outlives the deck.
   const fadeCapWall = Number.isFinite(fadeCap) ? fadeCap / (outRate || 1) : Infinity;
-  const duration = Number.isFinite(fadeCapWall) ? Math.max(3, Math.min(beatFade, fadeCapWall)) : beatFade;
+  let duration = Number.isFinite(fadeCapWall) ? Math.max(1, Math.min(beatFade, fadeCapWall)) : beatFade;
+  // The outgoing deck's level NOW (read before anything below cancels its automation).
+  // It is 1 in a normal transition; a skip in the middle of a fade catches the deck
+  // part-way up its own fade-in. Its fade-out then starts from where it is — and when
+  // it is barely audible there is nothing to blend with, so a long fade would only be
+  // seconds of near-silence while the new track creeps up: keep it short.
+  const _lvl = outDeck.gain.gain.value;
+  const outLevel = Number.isFinite(_lvl) ? Math.max(0, Math.min(1, _lvl)) : 1;
+  if (outLevel < 0.3) duration = Math.min(duration, 2);
 
   /* ---- 3. Locked dual-deck tempo glide ----
    * The OUTGOING deck is audible at fade start — snapping it straight to outRate
@@ -1035,12 +1096,19 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
    * FILE time (not wall-clock), so periods must NOT be rate-scaled — that was
    * the dimensional bug (periods computed as 60/(bpm*rate), a wall-clock-scaled
    * quantity, then combined with raw file-time currentTime). */
-  let inStartTime = 0;
-  if (introSkip === 'auto' && inData?.intro_end != null) {
-    inStartTime = inData.intro_end;
+  // `skipTo` is what the intro-skip setting asks for; phase alignment may add to it.
+  // 'auto' skips to the first detected beat, capped at AUTO_INTRO_MAX in EVERY branch:
+  // the cap used to exist only where downbeats were present AND the outgoing track had
+  // a BPM, so after an un-analysed (YouTube) track the next song started wherever its
+  // first beat was — up to 25 s in. A number the user typed is honoured as given.
+  const AUTO_INTRO_MAX = 6;
+  let skipTo = 0;
+  if (introSkip === 'auto' && Number.isFinite(inData?.intro_end)) {
+    skipTo = Math.max(0, Math.min(inData.intro_end, AUTO_INTRO_MAX));
   } else if (introSkip !== '0' && introSkip !== 'auto') {
-    inStartTime = parseInt(introSkip) || 0;
+    skipTo = parseInt(introSkip) || 0;
   }
+  let inStartTime = skipTo;
   if (Number.isFinite(outBpm) && outBpm > 0 && inData?.beat_grid && inData.beat_grid.length > 0) {
     const P_out = 60 / outBpm;
     const inBpmFoldedValid = Number.isFinite(inBpmFolded) && inBpmFolded > 0;
@@ -1082,8 +1150,9 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
       if (inStartTime < 0) inStartTime += P_in;
       inStartTime = Math.max(inStartTime, 0);
       // SAFETY CLAMP: never seek past the first two bars (inStartTime < barPeriod
-      // already after the mod reduction, so this only guards against edge cases).
-      inStartTime = Math.min(inStartTime, barPeriod * 2);
+      // already after the mod reduction, so this only guards against edge cases) —
+      // unless the intro-skip setting itself asked for more.
+      inStartTime = Math.min(inStartTime, Math.max(skipTo, barPeriod * 2));
     } else {
       // Downbeats missing or folded BPM invalid: preserve any intro-skip already
       // set, but never allow a garbage negative seek.
@@ -1094,29 +1163,41 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     if (inDeck.element.readyState >= 1) {
       try { inDeck.element.currentTime = inStartTime; } catch {}
     } else {
-      inDeck.element.addEventListener('loadedmetadata', () => {
-        try { inDeck.element.currentTime = inStartTime; } catch {}
-      }, { once: true });
+      // Held on the element so the next load on this deck can drop it (clearPendingSeek).
+      const el = inDeck.element;
+      const onMeta = () => {
+        el.removeEventListener('loadedmetadata', onMeta);
+        if (el._msSeekOnMeta === onMeta) el._msSeekOnMeta = null;
+        try { el.currentTime = inStartTime; } catch {}
+      };
+      el._msSeekOnMeta = onMeta;
+      el.addEventListener('loadedmetadata', onMeta);
     }
   }
 
   /* ---- 5. Style auto-selection ---- */
-  let style = forceStyle;
-  if (forceStyle === 'auto') {
-    if (!outData?.camelot || !inData?.camelot) style = 'blend';
-    else {
-      // Compatible keys → full equal-power, beat-matched BLEND (both decks play full,
-      // beats locked together). The old eq_swap/filter_sweep spectrally SUPPRESS each
-      // deck (kill the incoming bass/mids until a mid-point swap), which sounds thin/
-      // "both muted until the switch" rather than a real blend. Only clashing keys fall
-      // back to a quick cut. Force a specific technique via ms_dj_transition_style
-      // (auto | blend | eq_swap | filter_sweep | drop_cut).
-      const compat = getTransitionStyle(outData.camelot, inData.camelot);
-      style = (compat === 'cut') ? 'drop_cut' : 'blend';
-    }
+  let style = resolveTransitionStyle(forceStyle, outData, inData);
+  // `endBound`: the outgoing track's end is what limits this fade (an auto transition
+  // near the end), as opposed to a manual skip mid-track where the cap is the whole
+  // remaining playtime and never binds.
+  // The slack covers a slow-down tempo match, which stretches the wall-clock time the
+  // deck needs past the nominal fade length.
+  const endBound = Number.isFinite(fadeCapWall) && fadeCapWall <= beatFade * 1.25 + 1;
+  // A drop cut silences the outgoing deck at its cut point. That is only right when
+  // the cut point IS the track's end. The engine triggers a planned drop cut with a
+  // short lead (dropCutLead), but when it could not plan one — the incoming track's
+  // key arrived after the trigger, or its audio was not cached so the long lead was
+  // kept to cover the load — the fade here is still ~16 beats long. Cutting 4 beats
+  // into that drops the song's ending; holding the incoming deck silent until the
+  // end drops ITS opening instead. A blend loses neither, so an automatic style
+  // falls back to it. A style the user forced is honoured (see drop_cut below).
+  if (style === 'drop_cut' && forceStyle === 'auto' && endBound
+      && duration > dropCutLead(outBpm) + 2) {
+    style = 'blend';
   }
 
   /* ---- 6. Schedule automation per style ---- */
+
 
   // Cancel ALL scheduled values on ALL filters for BOTH decks (fixes interrupted transitions)
   for (const d of [outDeck, inDeck]) {
@@ -1198,7 +1279,11 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   } else if (style === 'drop_cut') {
     // Also clamped to the capped duration: player_v3's completion timer fires at
     // ~duration+0.2s, so a cutTime beyond that would get truncated mid-ramp (click).
-    const introDur = Math.max(2, Math.min(4 * beatPeriod, 4, duration));
+    // When the outgoing track's end bounds the fade, the cut lands ON that end
+    // (`duration` is the wall-clock time the deck still has): the track is heard
+    // out and the incoming deck pre-rolls underneath for the whole of it. Otherwise
+    // (manual skip, ended-blend) it is the classic short pre-roll.
+    const introDur = endBound ? duration : Math.max(2, Math.min(4 * beatPeriod, 4, duration));
     const cutTime = startCtxTime + introDur;
 
     inDeck.sweepFilter.type = 'highpass';
@@ -1209,8 +1294,8 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     inDeck.gain.gain.setValueAtTime(0.4, cutTime - 0.01);
     inDeck.gain.gain.linearRampToValueAtTime(1, cutTime);
 
-    outDeck.gain.gain.setValueAtTime(1, startCtxTime);
-    outDeck.gain.gain.setValueAtTime(1, cutTime - 0.01);
+    outDeck.gain.gain.setValueAtTime(outLevel, startCtxTime);
+    outDeck.gain.gain.setValueAtTime(outLevel, cutTime - 0.01);
     outDeck.gain.gain.linearRampToValueAtTime(0, cutTime);
 
   } else {
@@ -1218,12 +1303,17 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     const curves = makeEqualPowerCurves(256);
     outDeck.gain.gain.cancelScheduledValues(startCtxTime);
     inDeck.gain.gain.cancelScheduledValues(startCtxTime);
+    if (outLevel < 0.999) for (let k = 0; k < curves.fadeOut.length; k++) curves.fadeOut[k] *= outLevel;
     outDeck.gain.gain.setValueCurveAtTime(curves.fadeOut, startCtxTime, duration);
     inDeck.gain.gain.setValueCurveAtTime(curves.fadeIn, startCtxTime, duration);
   }
 
   return {
     crossfadeStartTime: startCtxTime, duration, outRate, inRate, style, _tempoRamp,
+    // For the engine's "outro fade off" kill: is this fade tied to the outgoing track's
+    // end, and when does the style itself take the outgoing deck out (a drop cut does
+    // so at its cut point, well before `duration` on a manual skip).
+    endBound, outEnd: style === 'drop_cut' ? Math.min(duration, endBound ? duration : Math.max(2, Math.min(4 * beatPeriod, 4, duration))) : duration,
     // Additive fields for the PLL (started later, post-glide, by player_v3):
     inBpmFolded, glideDur, tempoMatched,
   };

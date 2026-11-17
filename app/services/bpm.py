@@ -17,7 +17,8 @@ import httpx
 import numpy as np
 
 from app.services import library
-from app.services.player import (find_track_file, evict_cache_dir, BPM_CACHE_MAX_BYTES,
+from app.services.player import (find_track_file, is_audio_response,
+                                 local_transcode_cache_path, carry_local_transcode, evict_cache_dir, BPM_CACHE_MAX_BYTES,
                                  cache_navidrome_stream, raw_pinned)
 
 logger = logging.getLogger(__name__)
@@ -1081,10 +1082,15 @@ def write_tags(file_path: str, bpm: int = None, key: str = None,
                 return
             tmp = os.path.join(os.path.dirname(file_path),
                                ".%s.tagtmp%s" % (os.path.basename(file_path), os.getpid()))
+            # The cached MP3 is keyed by this file's mtime, which the replace changes.
+            old_cache = local_transcode_cache_path(file_path)
             shutil.copy2(file_path, tmp)
             tags.save(tmp)
             os.replace(tmp, file_path)
             tmp = None
+            # The audio is unchanged, so re-key the cached MP3 instead of orphaning it
+            # (a stream URL in flight would otherwise flip MP3 -> raw FLAC mid-track).
+            carry_local_transcode(old_cache, file_path)
         except Exception as e:
             logger.error("Failed to write tags to %s: %s", file_path, e)
         finally:
@@ -1205,7 +1211,9 @@ def _analyze_or_read_tag(file_path: str) -> dict:
 # ── Audio file access ──
 
 async def _get_audio_file(song_id: str, name: str, artist: str) -> str | None:
-    local = find_track_file(name, artist)
+    # find_track_file falls back to several rglobs over the NAS mount on a filename
+    # miss; on the loop that freezes every in-flight response, audio streams included.
+    local = await asyncio.to_thread(find_track_file, name, artist)
     if local:
         return local
 
@@ -1234,6 +1242,11 @@ async def _get_audio_file(song_id: str, name: str, artist: str) -> str | None:
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             async with client.stream("GET", url, params=params) as resp:
                 resp.raise_for_status()
+                if not is_audio_response(resp):
+                    # A Subsonic error is HTTP 200 + JSON/XML; never keep it as audio.
+                    logger.error("Navidrome answered song %s with %r, not audio",
+                                 song_id, resp.headers.get("content-type"))
+                    return None
                 with open(cache_path + ".tmp", "wb") as f:
                     async for chunk in resp.aiter_bytes(8192):
                         f.write(chunk)

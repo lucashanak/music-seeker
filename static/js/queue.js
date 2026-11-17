@@ -82,6 +82,15 @@ export function shuffleNext() {
   return next === undefined ? null : _idx(next);
 }
 
+/** The index shuffleNext() would return, WITHOUT consuming it — null when the order is
+ *  exhausted. The DJ engine prefetches and pre-analyzes this track; before it existed
+ *  the engine warmed queue[index + 1], which under shuffle is never the track played. */
+export function peekShuffleNext() {
+  _syncShuffleOrder();
+  const next = _shufTail[0];
+  return next === undefined ? null : _idx(next);
+}
+
 /** Previous index from the play history, or null when there is none. */
 export function shufflePrev() {
   _syncShuffleOrder();

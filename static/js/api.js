@@ -69,10 +69,38 @@ export async function apiJson(url, opts = {}) {
 // Mint a short-lived, stream-scoped token so the full session JWT never appears in
 // stream URLs (logs, history, Referer, DLNA metadata). Stored in store.streamToken
 // and used by the player/prefetch when building /api/player/stream URLs.
-export async function refreshStreamToken() {
+let _streamTokenAt = 0;       // wall clock of the last successful mint
+let _streamTokenBusy = null;  // in-flight refresh, shared by concurrent callers
+const STREAM_TOKEN_STALE_MS = 4 * 3600 * 1000; // the token lives 6 h
+
+/** The token to put in a stream URL. Also the place its age is checked: the 5-hourly
+ *  timer runs on a clock that stops while the device sleeps and it does not retry, so
+ *  one missed refresh left an expired token in every stream URL for hours — and a 401
+ *  on a prefetch then logged the user out mid-set. Whoever builds a stream URL passes
+ *  through here, so an ageing token is renewed by use, on wall-clock time. */
+export function streamToken() {
+  if (store.streamToken && Date.now() - _streamTokenAt > STREAM_TOKEN_STALE_MS) refreshStreamToken();
+  return store.streamToken || store.authToken;
+}
+
+/** Resolves to a stream token that is not past its staleness age (renewing first). */
+export async function freshStreamToken() {
+  if (!store.streamToken || Date.now() - _streamTokenAt > STREAM_TOKEN_STALE_MS) await refreshStreamToken();
+  return store.streamToken || store.authToken;
+}
+
+export function refreshStreamToken() {
+  if (!_streamTokenBusy) {
+    _streamTokenBusy = _refreshStreamToken().finally(() => { _streamTokenBusy = null; });
+  }
+  return _streamTokenBusy;
+}
+
+async function _refreshStreamToken() {
   try {
     const d = await apiJson('/api/player/stream-token');
     store.streamToken = d.token || null;
+    if (store.streamToken) _streamTokenAt = Date.now();
     return store.streamToken;
   } catch (e) {
     // Playback still works via the session-token fallback, but the C2/C3 hardening

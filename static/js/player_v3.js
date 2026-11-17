@@ -3,12 +3,12 @@
 
 import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
-import { apiJson } from './api.js';
+import { apiJson, refreshStreamToken, streamToken, freshStreamToken } from './api.js';
 import { openModal } from './downloads.js';
-import { renderQueue, shuffleNext, shufflePrev, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
+import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, playOrder, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
-import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, abortStale, keyFor as prefetchKey, resumePrefetch, streamQuality } from './prefetch.js';
-import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration } from './djmix.js';
+import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, abortStale, keyFor as prefetchKey, resumePrefetch, streamQuality, setUpcomingProvider } from './prefetch.js';
+import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration, resolveTransitionStyle, dropCutLead, clearPendingSeek } from './djmix.js';
 import { getDjData } from './bpm.js';
 import * as cast from './cast.js';
 import { ab as _ab, abPlay, abPause, abStop } from './androidbridge.js';
@@ -87,6 +87,59 @@ let _predictedNextKey = null;
 // run (rapid skip) can detect it was superseded after each await and bail before it
 // clobbers _inDjData / _predictedNextIdx / prefetch.
 let _analyzeGen = 0;
+
+// ── What plays next — ONE answer for prefetch, pre-analysis, the Next dot, the keep
+// set and the auto-trigger. Each of those used to work it out for itself as
+// queue[index + 1], which is only true with shuffle and Smart Queue both off: under
+// shuffle the engine downloaded a track it was never going to play, found nothing
+// cached for the one it did, and ran every single transition off the live stream
+// (no seek, no beat alignment, a load in the middle of the fade).
+// A prediction, never a commit: no side effects beyond dealing unplaced tracks into
+// the shuffle order, which drawing the queue panel does as well.
+function _smartOn() { return _djSetting('smart_queue', 'off') !== 'off' && !store.shuffleEnabled; }
+function _upcomingIdx() {
+  const q = store.playerQueue, i = store.playerIndex;
+  if (!q.length || i < 0) return null;
+  if (store.shuffleEnabled && q.length > 1) {
+    // Exhausted + repeat-all deals a fresh permutation at commit — not predictable.
+    return peekShuffleNext();
+  }
+  // Same validity test the commit applies (_nextTrackInQueue): after a queue edit the
+  // index may name another track, and the commit would then pick afresh.
+  if (_smartOn() && _predictedNextIdx != null && _predictedNextIdx >= 0
+      && _predictedNextIdx < q.length && _predictedNextIdx !== i
+      && _smartKey(q[_predictedNextIdx]) === _predictedNextKey) {
+    return _predictedNextIdx;
+  }
+  if (i + 1 < q.length) return i + 1;
+  if (store.repeatMode === 'all' && q.length > 1) return 0;
+  return null;
+}
+function _upcomingItem() {
+  const idx = _upcomingIdx();
+  return idx == null ? null : (store.playerQueue[idx] || null);
+}
+function _itemKey(it) { return prefetchKey(_decodeEntities(it.name || ''), _decodeEntities(it.artist || ''), it.id); }
+/** Cache keys cleanup() must spare regardless of queue position. */
+function _upcomingKeep() {
+  const up = _upcomingItem();
+  return up ? [_itemKey(up)] : [];
+}
+/** Can an auto/ended advance produce a track from the queue itself? */
+function _canAdvance() {
+  if (store.repeatMode === 'all') return true;
+  if (store.shuffleEnabled && store.playerQueue.length > 1) return peekShuffleNext() != null;
+  if (_djSetting('smart_queue', 'off') !== 'off') return true; // may pick an unplayed earlier track
+  return store.playerIndex < store.playerQueue.length - 1;
+}
+// Shuffle: tell prefetch the real running order, so its look-ahead window and its
+// eviction follow the permutation instead of the queue's storage order.
+setUpcomingProvider((count) => {
+  if (!(store.shuffleEnabled && store.playerQueue.length > 1)) return null;
+  const order = playOrder();
+  const pos = order.indexOf(store.playerIndex);
+  return pos < 0 ? null : order.slice(pos + 1, pos + 1 + count);
+});
 
 // DJ settings from localStorage (read fresh each call)
 function _djSetting(key, def) { return localStorage.getItem(`ms_dj_${key}`) || def; }
@@ -193,15 +246,36 @@ function _ensureAudioContext() {
   _nodesA.gain.gain.value = 1;
   _nodesB.gain.gain.value = 0;
 
+  // The OS can take the context away on its own — an interruption, an output-device
+  // change (WebKit reports 'interrupted', not 'suspended'). A deck playing into it is
+  // silent with the clock running, and only a tap used to bring it back.
+  _ctx.addEventListener?.('statechange', () => {
+    if (localStorage.getItem('ms_dj_debug')) console.log(`[DJ ctx] → ${_ctx.state}`);
+    if (_ctx.state !== 'running' && _ctx.state !== 'closed' && !_activeDeckEl().paused) {
+      _ctx.resume().catch(() => {});
+    }
+  });
   if (localStorage.getItem('ms_dj_debug')) {
     console.log(`[DJ ctx] rate=${_ctx.sampleRate} state=${_ctx.state} webkit=${IS_WEBKIT}`);
-    _ctx.addEventListener?.('statechange', () => console.log(`[DJ ctx] → ${_ctx.state}`));
   }
 }
 
+// deck.src always reads back ABSOLUTE, so the expected value has to be stored that way.
+// Stream URLs are built relative ("/api/player/stream?…"); compared as written they
+// never matched, _isExpectedSrc was false for every live stream and the error handler
+// returned on its first line. A 404, a 401, a rate-limited or dropped stream produced
+// no skip and no toast — only blob: sources ever reached the recovery code — and the
+// player sat silent until the stall watchdog noticed some 15 s later.
+function _absUrl(src) {
+  try { return new URL(src, location.href).href; } catch { return src; }
+}
+let _restorePos = 0;     // position_seconds of the queue state loaded last
+let _restoreSeek = null; // loadQueueState's pending "seek to the saved position"
 function _setDeckSrc(deck, src) {
-  if (deck === _deckA) _expectedSrcA = src;
-  else _expectedSrcB = src;
+  if (_restoreSeek) { _deckA.removeEventListener('loadedmetadata', _restoreSeek); _deckB.removeEventListener('loadedmetadata', _restoreSeek); _restoreSeek = null; }
+  const abs = _absUrl(src);
+  if (deck === _deckA) _expectedSrcA = abs;
+  else _expectedSrcB = abs;
   deck.src = src;
   deck.load();
 }
@@ -296,24 +370,127 @@ function _guardAudible(deck) {
 // This has to run on its own timer, not on timeupdate — a frozen deck emits no timeupdate,
 // so that handler is blind to exactly the failure we need to catch. Nudge first; only a
 // deck still frozen after 15s is written off and skipped.
-let _lastProgressT = -1, _lastProgressAt = 0;
+let _lastProgressT = -1, _lastProgressAt = 0, _rearmedAt = 0, _refusedTicks = 0;
+
+// Re-issue a stream request at the position the deck stopped at. One attempt per
+// source (_rearmedSrc): a second failure of the same URL is the track's problem, not
+// the connection's, and is left to the skip logic.
+let _rearmedSrc = '';
+let _rearmPending = false;
+function _canRearm(deck) {
+  const src = String(deck.src || '');
+  return !!src && !src.startsWith('blob:') && _rearmedSrc !== src && !_crossfading;
+}
+function _rearmDeck(deck) {
+  const old = deck.src, pos = deck.currentTime || 0, rate = deck.playbackRate || 1;
+  const gen = _loadGen;
+  _rearmedSrc = old;
+  _rearmPending = true; // the watchdog's error net must not skip what is being rescued
+  if (localStorage.getItem('ms_dj_debug')) console.warn(`[DJ guard] re-arming stream at ${pos.toFixed(1)}s`);
+  // The request may have failed BECAUSE its token expired (a device asleep past the
+  // token's lifetime): asking again with the same URL would fail the same way and the
+  // track would be skipped for nothing. Re-issue it with a token known to be fresh.
+  freshStreamToken().catch(() => null).then((tok) => {
+    _rearmPending = false;
+    if (gen !== _loadGen || deck !== _activeDeckEl() || deck.src !== old) return; // superseded meanwhile
+    // Paused while we waited: bring the stream back, but leave it paused.
+    const go = () => { if (store.playerPlaying) deck.play().catch(() => {}); };
+    let src = old;
+    try {
+      const u = new URL(old);
+      if (tok && u.searchParams.has('token')) { u.searchParams.set('token', tok); src = u.href; }
+    } catch {}
+    _rearmedSrc = src;
+    const onMeta = () => {
+      deck.removeEventListener('loadedmetadata', onMeta);
+      if (deck !== _activeDeckEl() || deck.src !== src) return;
+      if (pos > 0.05) { try { deck.currentTime = pos; } catch {} }
+      deck.playbackRate = rate; // load() reset it
+      go();
+    };
+    deck.addEventListener('loadedmetadata', onMeta);
+    _setDeckSrc(deck, src);
+    go();
+  });
+}
 function _stallWatchdog() {
-  if (store.castDevice || store.remoteTarget) { _lastProgressAt = 0; return; }
+  if (store.castDevice || store.remoteTarget) { _lastProgressAt = 0; _refusedTicks = 0; return; }
   const deck = _activeDeckEl();
-  if (!deck || deck.paused || !deck.src || deck.seeking) { _lastProgressAt = 0; return; }
+  if (!deck || !deck.src) { _lastProgressAt = 0; _refusedTicks = 0; return; }
+  const dbg = localStorage.getItem('ms_dj_debug');
+  // (1) A deck that plays into a context that is not running is silent, and no
+  // timeupdate-side guard sees it: the gain reads 1, the clock advances. The OS
+  // suspends or interrupts the context on its own (a call, an output device change
+  // — WebKit especially) and only a user gesture used to bring it back.
+  if (_ctx && !deck.paused && _ctx.state !== 'running') {
+    if (dbg) console.warn(`[DJ guard] deck playing into a ${_ctx.state} context — resuming`);
+    _ctx.resume().catch(() => {});
+  }
+  // (2) The engine believes it is playing, yet the deck is paused with no `pause`
+  // event having said so — a play() the browser refused. The rejection was swallowed
+  // and nothing else looked: the icon showed "playing" over a deck that never
+  // started. Ask again a few times, then let the icon tell the truth. A real pause
+  // (user, audio-focus loss) fires `pause`, clears playerPlaying and never gets here.
+  if (deck.paused) {
+    _lastProgressAt = 0;
+    if (store.playerPlaying && !deck.ended && !_advanceInFlight && !_crossfading) {
+      _refusedTicks++;
+      if (_refusedTicks >= 2 && _refusedTicks <= 6) {
+        if (dbg) console.warn(`[DJ guard] deck paused while engine expects playback — play() retry ${_refusedTicks - 1}`);
+        deck.play().catch(() => {});
+      } else if (_refusedTicks > 6) {
+        _refusedTicks = 0;
+        updatePlayPauseIcon(false);
+      }
+    } else _refusedTicks = 0;
+    return;
+  }
+  _refusedTicks = 0;
+  // A deck holding a load error will never play, whatever its clock says. The error
+  // event normally handles it; this is the net under an event that was missed.
+  if (deck.error && _isExpectedSrc(deck) && !_advanceInFlight && !_crossfading
+      && store.playerPlaying && !store.radioLoading && !_autofillPending && !_rearmPending) {
+    _lastProgressAt = 0;
+    _skipAfterError();
+    return;
+  }
+  // (3) Reports "playing" while the clock stands still. Deliberately NOT exempting
+  // deck.seeking: a seek whose request never answers leaves the element seeking
+  // forever with the clock parked on the target — exactly a stall. A seek that IS
+  // progressing moves currentTime and resets the timer below on its own.
   const now = Date.now();
   const t = deck.currentTime;
   if (!_lastProgressAt || Math.abs(t - _lastProgressT) > 0.05) {
-    _lastProgressT = t; _lastProgressAt = now; return;
+    _lastProgressT = t; _lastProgressAt = now; _rearmedAt = 0; return;
   }
   const stalledMs = now - _lastProgressAt;
   if (stalledMs < 6000) return;
-  if (stalledMs < 15000) { deck.play().catch(() => {}); return; }
-  _lastProgressAt = 0;
-  if (localStorage.getItem('ms_dj_debug')) {
+  // A deck that has not produced a single frame yet is most likely still WAITING for
+  // the server: an un-downloaded track is fetched and transcoded in full before the
+  // first byte is sent, which routinely takes longer than a mid-track stall is given.
+  // Skipping at 15 s dropped songs that were seconds from starting, and set the next
+  // one off on the same road. It gets a longer rope; a stall mid-track does not.
+  const neverStarted = t < 0.05 && deck.readyState < 2;
+  const rearmAt = neverStarted ? 20000 : 12000;
+  const giveUpAt = neverStarted ? 45000 : 20000;
+  if (stalledMs < rearmAt) { deck.play().catch(() => {}); return; }
+  if (stalledMs < giveUpAt) {
+    // Re-issue the request once, at the same position, before writing the track off —
+    // a hung connection (a dozing radio, a proxy that dropped the stream) is far more
+    // common than a track that cannot play, and skipping it loses the rest of the song.
+    // Never for blob: (nothing to re-request) nor mid-crossfade (the fade owns the deck).
+    if (_rearmedAt || !_canRearm(deck)) { deck.play().catch(() => {}); return; }
+    _rearmedAt = now;
+    _rearmDeck(deck);
+    return;
+  }
+  _lastProgressAt = 0; _rearmedAt = 0;
+  if (dbg) {
     console.warn(`[DJ guard] active deck frozen at ${t.toFixed(1)}s (readyState=${deck.readyState}) — advancing`);
   }
-  nextTrack();
+  // Not a user skip: 'error' is neither throttled nor recorded as a dislike.
+  if (navigator.onLine === false) return; // no network at all — skipping would only burn the queue
+  nextTrack({ reason: 'error' });
 }
 
 function _startCrossfade(seekable = true) {
@@ -341,6 +518,15 @@ function _startCrossfade(seekable = true) {
   // Swap active deck NOW
   _activeDeck = _activeDeck === 'A' ? 'B' : 'A';
   _crossfading = true;
+  // On the uncached path the incoming deck was started BEFORE this swap, so its `play`
+  // event arrived while it was still the inactive deck and was ignored. If the outgoing
+  // track then ends, its `pause` is the last thing the Android shell hears: after the
+  // grace period it shows "paused", drops the wake lock and stops the foreground
+  // service five minutes later — with music still playing. Say "playing" here.
+  if (!_activeDeckEl().paused) {
+    const _it = store.playerQueue[store.playerIndex] || _currentRecItem;
+    if (_it) abPlay(_it.name, _it.artist);
+  }
 
   // Save DJ data refs for transition BEFORE swapping
   const transOutData = _outDjData;
@@ -372,6 +558,9 @@ function _startCrossfade(seekable = true) {
   // Cap the fade so the outgoing gain reaches 0 AT its effective end. Mirrors the
   // timeupdate trigger's outro logic (outro_skip default '0' — see migration above).
   let fadeCapSec = 0;
+  // Nothing left of the outgoing track to blend with (it ended, or is about to) →
+  // bring the next one straight in (see quickIn in djmix).
+  let outDead = _fadingOutDeck.ended || _fadingOutDeck.paused || !!_fadingOutDeck.error;
   {
     const oDur = _fadingOutDeck.duration;
     if (oDur && isFinite(oDur) && oDur > 0) {
@@ -387,6 +576,7 @@ function _startCrossfade(seekable = true) {
       // ≤0.5s remaining = the ended-blend/edge path — leave uncapped so the existing
       // "ease the next track in over a full fade" behavior is preserved.
       if (remaining > 0.5) fadeCapSec = remaining;
+      else outDead = true;
     }
   }
 
@@ -397,6 +587,7 @@ function _startCrossfade(seekable = true) {
     seekable: inSeekable,
     fallbackSec: _crossfadeDur(),
     fadeCapSec,
+    quickIn: outDead,
     bassSwapPoint: parseInt(_djSetting('bass_swap_point', '50')) / 100,
     eqKillDepth: parseInt(_djSetting('eq_kill_depth', '36')),
     filterResonance: parseFloat(_djSetting('filter_resonance', '2')),
@@ -450,20 +641,47 @@ function _startCrossfade(seekable = true) {
     // down our 20ms kill ramp — AudioParam events stack, so without this the two curves
     // fight/yank the gain. cancelScheduledValues lets the 20ms ramp REPLACE the transition
     // outgoing curve cleanly.
-    desc.gain.gain.cancelScheduledValues(_ctx.currentTime);
-    desc.gain.gain.setValueAtTime(desc.gain.gain.value, _ctx.currentTime);
-    desc.gain.gain.linearRampToValueAtTime(0, _ctx.currentTime + 0.02);
-    setTimeout(() => { deckToStop.pause(); deckToStop.src = ''; }, 25);
+    // "No outro fade" = the outgoing track keeps its level and stops; it does not mean
+    // "stop it now". The kill used to land 20 ms after the transition STARTED, a whole
+    // fade before the track's end — 8–16 s of every song gone. It lands at the end of
+    // the fade, which fadeCap has already tied to the outgoing track's end; the deck
+    // itself is stopped by the completion timer below, the one timer teardown clears.
+    // A manual skip mid-track is not tied to the track's end (endBound false): there
+    // the deck goes at once, as it always did — holding a skipped song at full level
+    // under the new one for a whole fade is nobody's idea of "no outro fade". And never
+    // later than the style's own exit (a drop cut swaps at its cut point).
+    const t0 = _ctx.currentTime;
+    const hold = (result.endBound || result.style === 'quick-in' || IS_WEBKIT)
+      ? Math.min(dur, Number.isFinite(result.outEnd) ? result.outEnd : dur) : 0;
+    const killAt = t0 + Math.max(0, hold - 0.02);
+    desc.gain.gain.cancelScheduledValues(t0);
+    desc.gain.gain.setValueAtTime(desc.gain.gain.value, t0);
+    desc.gain.gain.setValueAtTime(desc.gain.gain.value, killAt);
+    desc.gain.gain.linearRampToValueAtTime(0, killAt + 0.02);
   }
   _crossfadeTimer = setTimeout(() => {
-    if (outroFade) { deckToStop.pause(); deckToStop.src = ''; }
+    deckToStop.pause(); deckToStop.src = '';
     resetDeckAfterTransitionV3(_deckDesc(deckToStop));
     if (_beatSync) { _beatSync.stop(); _beatSync = null; }
+    // The glide's rAF loop does not run while the page is hidden (screen off, phone
+    // in a pocket) — its tick stays PENDING. Left alive, it fired the moment the
+    // screen came back on, computed t=1 and snapped the deck that is now playing
+    // alone to the old fade's target rate, where nothing ever returned it to 1.0:
+    // the rest of the track ran up to 8 % off speed. The fade is over; so is the glide.
+    _cancelTempoRamp();
     // Now safe to cleanup old blob URLs
-    prefetchCleanup(store.playerQueue, store.playerIndex);
+    prefetchCleanup(store.playerQueue, store.playerIndex, _upcomingKeep());
     _fadingOutDeck = null;
     _crossfading = false;
     resumePrefetch();
+    // A track shorter than the fade (a skit, an interlude, a stream that closed early)
+    // reaches its end while it is still "the incoming deck". Its `ended` was ignored —
+    // a crossfade was running — and `ended` never fires twice: the deck sat paused at
+    // its end for good, where the stall watchdog does not look. Advance now.
+    if (_activeDeckEl().ended && !_advanceInFlight && store.repeatMode !== 'one') {
+      nextTrack({ reason: 'ended' });
+      return;
+    }
     // Gradually return new deck playbackRate to 1.0 over ~10 seconds.
     // WebKit path never stretched tempo (rate stays 1) — nothing to return, skip.
     clearInterval(_rateReturnTimer); // Bug #4: clear previous
@@ -530,7 +748,7 @@ async function _preAnalyzeUpcoming() {
   }
 
   // Step 2: Immediately fetch DJ data for sequential next track (crossfade fallback)
-  const seqNext = store.playerQueue[store.playerIndex + 1];
+  const seqNext = _upcomingItem();
   if (seqNext) {
     const name = _decodeEntities(seqNext.name || '');
     const artist = _decodeEntities(seqNext.artist || '');
@@ -594,7 +812,7 @@ async function _preAnalyzeUpcoming() {
   // Adaptive: keep concurrency low (2) while the immediate-next prefetch is in flight so
   // warming doesn't starve it; raise to 4 once that blob is cached (no bandwidth contention)
   // to restore warming depth deeper into a session.
-  const _immNext = store.playerQueue[store.playerIndex + 1];
+  const _immNext = _upcomingItem();
   const _immReady = _immNext
     ? (getPrefetchStatus(_decodeEntities(_immNext.name || ''), _decodeEntities(_immNext.artist || ''), _immNext.id)?.state === 'ready')
     : true;
@@ -688,21 +906,68 @@ function _waitForCanPlay(deck, timeoutMs = 2500) {
       clearTimeout(timer);
       deck.removeEventListener('canplay', finish);
       deck.removeEventListener('loadeddata', finish);
+      deck.removeEventListener('error', finish);
       resolve();
     };
     const timer = setTimeout(finish, timeoutMs);
     deck.addEventListener('canplay', finish, { once: true });
     deck.addEventListener('loadeddata', finish, { once: true });
+    // A source that failed outright (404, 429, undecodable) will never reach canplay.
+    // Resolve at once so the caller can see deck.error instead of sitting out the
+    // timeout and then fading into a deck that cannot play.
+    deck.addEventListener('error', finish, { once: true });
   });
 }
 
 let _lastAbUpdate = 0;
 
+// Every pause/resume that does not come from the on-screen button — the Android
+// notification, a headset key, the lock screen, a remote device — goes through these
+// two. They used to call pause() on the active deck alone, which mid-crossfade is the
+// INCOMING one: the outgoing track played on for the rest of the fade after "pause".
+// And a bare play() never looked at the AudioContext, so a context the OS had
+// suspended during the pause resumed into silence.
+// A press on pause/play while a failed track is waiting to be retried means "stop":
+// nothing is audible, so the only thing left to pause is the retry itself. Without
+// this the backoff's timer started the music again up to 30 s after the user paused.
+function _stopErrorBackoff() {
+  if (!_cancelErrorBackoff()) return false;
+  updatePlayPauseIcon(false);
+  pausePrefetch(); abPause(); // the errored deck's own `pause` is ignored — say it here
+  return true;
+}
+// Play/pause on a deck that holds a load error. play() on it is rejected and pause()
+// changes nothing anyone can see, so the button used to be dead until Next was pressed.
+// "Playing" → stop (the icon tells the truth); stopped → load the same track again.
+function _toggleDeadDeck(deck) {
+  if (!(deck.error || deck.networkState === 3) || !deck.src || store.playerIndex < 0) return false;
+  if (store.playerPlaying) {
+    try { deck.pause(); } catch {}
+    updatePlayPauseIcon(false);
+    pausePrefetch(); abPause();
+  } else {
+    loadAndPlay();
+  }
+  return true;
+}
+function _pauseLocalPlayback() {
+  if (_stopErrorBackoff()) return;
+  { const d = _activeDeckEl(); if (d.error && store.playerPlaying && _toggleDeadDeck(d)) return; }
+  if (_crossfading) _finalizeCrossfadeOnPause().pause();
+  else _activeDeckEl().pause();
+}
+function _resumeLocalPlayback() {
+  _ensureAudioContext();
+  if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
+  { const d = _activeDeckEl(); if (!store.playerPlaying && _toggleDeadDeck(d)) return; }
+  _activeDeckEl().play().catch(() => {});
+}
+
 // Android native media action callback (notification buttons → WebView)
 window._androidMediaAction = function(action) {
   switch (action) {
-    case 'play': _activeDeckEl().play().catch(() => {}); break;
-    case 'pause': _activeDeckEl().pause(); break;
+    case 'play': _resumeLocalPlayback(); break;
+    case 'pause': _pauseLocalPlayback(); break;
     case 'next': nextTrack(); break;
     case 'prev': prevTrack(); break;
   }
@@ -718,7 +983,7 @@ window._androidMediaAction = function(action) {
 // user gesture on the target — that's an inherent limitation we can't work around here.
 function _prepareRemotePlayback() {
   _ensureAudioContext();
-  if (_ctx && _ctx.state === 'suspended') _ctx.resume();
+  if (_ctx && _ctx.state !== 'running') _ctx.resume().catch(() => {});
   if (_activeGain()) { _activeGain().gain.cancelScheduledValues(0); _activeGain().gain.value = 1; }
   if (_inactiveGain()) { _inactiveGain().gain.cancelScheduledValues(0); _inactiveGain().gain.value = 0; }
 }
@@ -727,7 +992,7 @@ export function applyRemoteCommand(action, value) {
   const a = getAudio();
   switch (action) {
     case 'play':  _prepareRemotePlayback(); a.play().catch(() => {}); updatePlayPauseIcon(true); break;
-    case 'pause': a.pause(); updatePlayPauseIcon(false); break;
+    case 'pause': _pauseLocalPlayback(); updatePlayPauseIcon(false); break;
     case 'next':  nextTrack(); break;
     case 'prev':  prevTrack(); break;
     case 'seek':  try { a.currentTime = Number(value) || 0; } catch {} break;
@@ -748,7 +1013,18 @@ export function applyRemoteCommand(action, value) {
       // in a playlist), matching what `next`/`prev` already get. A raw deck.play()
       // here bypassed the DJ setup, so transferred tracks didn't DJ-mix. loadAndPlay
       // handles the audio context + deck gain itself.
-      loadQueueState().then(() => { loadAndPlay(); });
+      // loadAndPlay starts a track at 0 by design (it drops the pending restore seek);
+      // a transfer is the one caller that means "carry on where the other device was".
+      loadQueueState().then(async () => {
+        const pos = _restorePos;
+        const gen = _loadGen + 1;
+        await loadAndPlay();
+        if (!(pos > 0) || gen !== _loadGen) return;
+        const d = _activeDeckEl();
+        const seek = () => { if (gen === _loadGen && d === _activeDeckEl()) { try { d.currentTime = pos; } catch {} } };
+        if (d.readyState >= 1) seek();
+        else d.addEventListener('loadedmetadata', seek, { once: true });
+      });
       break;
   }
 }
@@ -763,7 +1039,9 @@ window._androidBridgeReady = function() {
 
 // ── Helper: get duration with Safari fallback ──
 function _getDuration() {
-  const item = store.playerQueue[store.playerIndex] || _currentRecItem;
+  // A recommendation played outside the queue is the track on the deck — the queue
+  // item at playerIndex is the one it replaced.
+  const item = _currentRecItem || store.playerQueue[store.playerIndex];
   const metaSec = item && item.duration_ms > 0 ? item.duration_ms / 1000 : 0;
   const deck = _activeDeckEl();
   const dur = deck.duration;
@@ -780,7 +1058,13 @@ function _getDuration() {
   // length even when it differs from Spotify metadata (e.g. yt-dlp/Soulseek edits).
   if (IS_WEBKIT && metaSec > 0 && deckOk) {
     const tracksPlayhead = dur <= (deck.currentTime || 0) + 1;
-    const disagrees = Math.abs(dur - metaSec) > metaSec * 0.15;
+    // "Disagrees with the metadata" is evidence of a bogus duration only for a STREAM.
+    // A blob is the whole file, decoded locally: its duration is the file's, and a file
+    // that is honestly longer than its Spotify entry (an extended mix matched by name,
+    // a video version with an outro) was being faded out and stopped at the Spotify
+    // length — a 7:00 mix behind a 3:30 entry was cut at 3:30.
+    const isBlob = String(deck.src || '').startsWith('blob:');
+    const disagrees = !isBlob && Math.abs(dur - metaSec) > metaSec * 0.15;
     return (tracksPlayhead || disagrees) ? metaSec : dur;
   }
   if (deckOk) return dur;
@@ -801,6 +1085,7 @@ export function playTrack(item) {
 // ── Add to Queue ──
 export function addToQueue(items, playNow = false) {
   const startIdx = store.playerQueue.length;
+  _noNextLatch = false; // there is something to play next now
   store.playerQueue = store.playerQueue.concat(items);
   if (playNow || store.playerIndex < 0) {
     store.playerIndex = startIdx;
@@ -836,17 +1121,96 @@ export async function loadAndPlay() {
   // a jump to a row above the divider; replacing or clearing the queue ends it.
   const keepRec = _keepRecCursor || autoplayStart() >= 0;
   _keepRecCursor = false;
+  // Whoever calls this is starting a track now — a queue row, a new playlist, the
+  // backoff's own timer (which has already cleared itself). A backoff still pending
+  // is void; left armed it would hold the advance latch over the new track and then
+  // skip it. The latch itself is not touched: the caller may hold it, finally frees it.
+  if (_errRetryTimer) { clearTimeout(_errRetryTimer); _errRetryTimer = null; }
   try {
     return await _loadAndPlayImpl(keepRec);
   } finally {
-    _advanceInFlight = false;
+    // An error backoff that started inside the impl owns the latch until its timer
+    // fires — releasing it here would let the auto-trigger race the backoff.
+    if (!_errRetryTimer) _advanceInFlight = false;
   }
 }
+
+// ── A track that would not load ──
+// One failed track is skipped after a second, as before. A RUN of them is something
+// else: the server's YouTube arm is cooling down (every un-downloaded track 404s for
+// minutes) or the link is gone. Skipping once a second through that emptied a whole
+// queue in the time it takes to notice — and with repeat-all it never stopped asking.
+// So the wait doubles with every consecutive failure (1, 2, 4 … 30 s) and resets the
+// moment a track actually plays. While the browser itself reports no network, the
+// queue position is held and the SAME track is retried when the wait is over.
+let _errStreak = 0;
+let _errRetryTimer = null;
+function _cancelErrorBackoff() {
+  if (!_errRetryTimer) return false;
+  clearTimeout(_errRetryTimer);
+  _errRetryTimer = null;
+  _advanceInFlight = false;
+  return true;
+}
+function _skipAfterError() {
+  if (_errRetryTimer) return;
+  _errStreak++;
+  const failedIdx = store.playerIndex;
+  const failedItem = store.playerQueue[failedIdx];
+  const delay = Math.min(30000, 1000 * Math.pow(2, Math.min(_errStreak - 1, 5)));
+  _advanceInFlight = true; // claim the advance synchronously for the whole wait
+  // One cause of "every track fails" is ours to fix: a stream token that expired
+  // (a refresh that failed once, a device that slept past its lifetime). Get a
+  // fresh one before the next attempt builds its URL.
+  refreshStreamToken();
+  showToast(_errStreak > 1 ? `Stream error, retrying in ${Math.round(delay / 1000)}s...` : 'Stream error, skipping...');
+  if (localStorage.getItem('ms_dj_debug')) console.warn(`[DJ guard] load failed (streak ${_errStreak}) — next attempt in ${delay}ms`);
+  _errRetryTimer = setTimeout(() => {
+    _errRetryTimer = null;
+    _advanceInFlight = false;
+    // The user moved on by hand in the meantime (a queue row, a new playlist) —
+    // that playback is theirs; skipping now would drop the track they just chose.
+    if (store.playerIndex !== failedIdx || store.playerQueue[failedIdx] !== failedItem) return;
+    if (navigator.onLine === false) { loadAndPlay(); return; } // offline: same track again
+    nextTrack({ reason: 'error' });
+  }, delay);
+}
+
+// Nothing could be produced to play next (end of the queue, no radio, no
+// recommendations). This used to pause the deck on the spot — but the auto-trigger
+// asks ~16 beats BEFORE the end, so the last track of every set lost its final ten
+// seconds. A deck that is still playing is left to play out; its own `ended` stops
+// it. _noNextLatch keeps the trigger from asking again on every timeupdate tick.
+let _noNextLatch = false;
+function _noNextTrack() {
+  _advanceInFlight = false;
+  _crossfadeTriggered = false;
+  const d = _activeDeckEl();
+  // A deck holding a load error reads paused === false but will never play: stop it for
+  // real, or the watchdog's error net finds it every 2 s and asks for a next track again.
+  if (d.error) { try { d.pause(); } catch {} }
+  if (d.paused || d.ended) {
+    updatePlayPauseIcon(false); _noNextLatch = false;
+    if (d.error) { pausePrefetch(); abPause(); } // its `pause` event is ignored
+  } else _noNextLatch = true;
+}
+
+// Bumped by every load. A load that waited (cache, canplay) checks it afterwards: if a
+// newer load started meanwhile — a queue row, a remote transfer, a new playlist; none
+// of those take the advance latch — the decks are that load's now. Carrying on used to
+// tear down ITS crossfade and swap back to a deck it had emptied: silence under a
+// "playing" icon, on a paused deck the watchdog did not look at.
+let _loadGen = 0;
 
 async function _loadAndPlayImpl(keepRec) {
   if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) {
     return;
   }
+  const myLoad = ++_loadGen;
+  _rearmedSrc = ''; // a new load: its stream may be re-armed once again
+  // Any pre-analysis still running was started for the previous track; after this
+  // point its writes to _inDjData / the prediction would describe the wrong one.
+  _analyzeGen++;
   if (store.remoteTarget) { try { getAudio().currentTime = 0; } catch {} document.dispatchEvent(new Event('remote:play')); return; }
   // Symptom A (#4) — on advance, abort/evict only NOW-STALE prefetch entries (tracks no
   // longer near the new playerIndex) instead of aborting ALL downloads. Keep the track(s)
@@ -860,8 +1224,10 @@ async function _loadAndPlayImpl(keepRec) {
   if (_predictedNextIdx != null && _predictedNextIdx >= 0 && _predictedNextIdx < store.playerQueue.length) {
     _kAdd(store.playerQueue[_predictedNextIdx]);      // Smart Queue predicted next
   }
+  { const _up = _upcomingItem(); if (_up) _keep.add(_itemKey(_up)); } // shuffle / repeat-all wrap
   abortStale(_keep);
   _crossfadeTriggered = false;
+  _noNextLatch = false;
   const endedBlend = _endedBlend; // Fix 4: consume the one-shot blend-on-ended request
   _endedBlend = false;
   // Stop any virtual rec playback — we're back in the real queue
@@ -907,19 +1273,27 @@ async function _loadAndPlayImpl(keepRec) {
       .catch(e => { showToast('Cast failed: ' + (e.message || '')); cast.castState.transitioning = false; cast.castState.skipAutoAdvance = false; });
   } else {
     _ensureAudioContext();
-    if (_ctx.state === 'suspended') _ctx.resume();
-    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: (store.streamToken || store.authToken) })}&quality=${streamQuality()}`;
+    if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
+    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}`;
 
     const currentDeck = _activeDeckEl();
     // Fix 4: a track that ended WITHOUT firing the auto trigger leaves currentDeck paused
     // (ended → paused), which would normally take the cold-start hard-swap branch. Honor
     // _endedBlend to route through the crossfade branch instead so the next track eases in
     // with a (brief, since the outgoing already ended) blend rather than a silent cut.
-    if ((!currentDeck.paused || endedBlend) && currentDeck.src) {
+    // A deck holding a load error keeps paused === false (the failure steps never touch
+    // it), so it looked like a playing track to fade out of: the track after a broken
+    // one came up from silence over a whole beat-length fade, tempo-matched to a deck
+    // that was not producing sound. A dead deck is a cold start.
+    const curDead = !!currentDeck.error || currentDeck.networkState === 3;
+    if ((!currentDeck.paused || endedBlend) && currentDeck.src && !curDead) {
       // Crossfade: use cache if ready, brief wait if almost done, else stream
       let cached = getCachedUrl(cleanName, cleanArtist, item.id);
       if (!cached) { const w = await waitForCache(cleanName, cleanArtist, 2000, item.id); if (w) cached = w; }
+      if (myLoad !== _loadGen) return; // superseded while waiting
       const src = cached || streamUrl;
+      let incomingFailed = false;
+      let swapped = false;
       pausePrefetch();
       // Resolve the incoming track's DJ data SYNCHRONOUSLY from the cache so the beat
       // grid is available at fade time. _startCrossfade does _outDjData=_inDjData;
@@ -929,9 +1303,17 @@ async function _loadAndPlayImpl(keepRec) {
       // previously-predicted (different) track can't survive and feed the PLL the wrong
       // beat grid (Android beat drift). The sync cache is the source of truth; the async
       // fetch is only a warmup for a cache miss (and only fills if still unset).
-      _inDjData = getDjData(cleanName, cleanArtist) || null;
+      const _resolveIn = () => { _inDjData = getDjData(cleanName, cleanArtist) || null; };
+      _resolveIn();
       if (!_inDjData) {
-        fetchDjData(cleanName, cleanArtist).then(d => { if (!_inDjData) _inDjData = d; }).catch(() => {});
+        // Late arrival: before the swap this is the incoming track's data; after it,
+        // the track is the CURRENT one and the data belongs in _outDjData. Written
+        // into _inDjData after the swap it described the wrong track to the next fade.
+        fetchDjData(cleanName, cleanArtist).then(d => {
+          if (!d || myLoad !== _loadGen) return;
+          if (!swapped) { if (!_inDjData) _inDjData = d; }
+          else if (!_outDjData && store.playerQueue[store.playerIndex] === item) _outDjData = d;
+        }).catch(() => {});
       }
       if (cached && IS_WEBKIT) {
         // Prefetch-HIGH (WebKit only): the incoming gain ramp must NOT start before the
@@ -948,13 +1330,16 @@ async function _loadAndPlayImpl(keepRec) {
         _setDeckSrc(nextDeck, src);
         nextDeck.play().catch(() => {});
         await _waitForCanPlay(nextDeck, 1500);
-        _startCrossfade(true); // cached blob = seekable — also swaps _activeDeck
+        if (myLoad !== _loadGen) return; // superseded while waiting — the decks are not ours
+        if (nextDeck.error) incomingFailed = true;
+        else { _resolveIn(); _startCrossfade(true); swapped = true; } // cached blob = seekable — also swaps _activeDeck
       } else if (cached) {
         // IMPORTANT: call _startCrossfade BEFORE setting src on the next deck.
         // _startCrossfade's rapid-skip handler clears _fadingOutDeck.src, and during
         // a rapid skip _fadingOutDeck IS the inactive deck we're about to load.
         // If we set src first, the rapid-skip handler would clear it, causing silence.
         const xfResult = _startCrossfade(true); // cached blob = seekable — also swaps _activeDeck
+        swapped = true;
         const nextDeck = _activeDeckEl(); // after swap, the NEW active deck is the one to load
         _setDeckSrc(nextDeck, src);
         // _setDeckSrc() calls load(), which resets playbackRate to 1 — that clobbers the
@@ -979,7 +1364,15 @@ async function _loadAndPlayImpl(keepRec) {
         _setDeckSrc(nextDeck, src);
         nextDeck.play().catch(() => {});
         await _waitForCanPlay(nextDeck, 2500);
-        _startCrossfade(false); // non-seekable live stream — also swaps _activeDeck
+        // The error event for this deck was ignored while we waited — it was not the
+        // active deck and no crossfade was running yet. Swapping to it anyway faded
+        // the playing track out into a deck that could never start: 15 s of silence
+        // until the stall watchdog gave up on it. Keep the outgoing track playing
+        // and move on to the next one instead.
+        if (myLoad !== _loadGen) return; // superseded while waiting — the decks are not ours
+        if (nextDeck.error) incomingFailed = true;
+        // Re-resolve: anything written to _inDjData during the wait was not for this track.
+        else { _resolveIn(); _startCrossfade(false); swapped = true; } // non-seekable live stream — also swaps _activeDeck
       }
       // Symptom A (#4) — the swap is done; resume prefetch PROMPTLY instead of waiting for
       // the crossfade-complete timer (~line 333). pausePrefetch() above freed bandwidth for
@@ -991,16 +1384,14 @@ async function _loadAndPlayImpl(keepRec) {
       // the incoming deck is still buffering from the stream; starting up to MAX_CONCURRENT=3
       // downloads concurrently would starve it → audible stutter during the fade. Leave
       // prefetch paused and rely on the existing crossfade-complete resume (~line 333).
-      if (cached) {
+      if (incomingFailed) {
+        const dead = _inactiveDeckEl();
+        dead.pause(); dead.src = '';
         resumePrefetch();
-        const _afterIdx = store.playerIndex;
-        let _afterNext = null;
-        if (_djSetting('smart_queue', 'off') !== 'off' && _predictedNextIdx != null
-            && _predictedNextIdx >= 0 && _predictedNextIdx < store.playerQueue.length) {
-          _afterNext = store.playerQueue[_predictedNextIdx];
-        } else {
-          _afterNext = store.playerQueue[_afterIdx + 1];
-        }
+        _skipAfterError();
+      } else if (cached) {
+        resumePrefetch();
+        const _afterNext = _upcomingItem();
         if (_afterNext) {
           prefetchTrack(_decodeEntities(_afterNext.name || ''), _decodeEntities(_afterNext.artist || ''), _afterNext.id);
         }
@@ -1013,6 +1404,9 @@ async function _loadAndPlayImpl(keepRec) {
         _teardownCrossfade(); _crossfading = false;
       }
       const deck = currentDeck;
+      // A rate-return still easing the PREVIOUS track back to 1.0 would keep writing its
+      // old rate onto this one; a seek still waiting for metadata would land in it.
+      clearInterval(_rateReturnTimer); _cancelTempoRamp(); clearPendingSeek(deck);
       _setDeckSrc(deck, getCachedUrl(cleanName, cleanArtist, item.id) || streamUrl);
       deck.play().catch(() => {});
       if (_activeGain()) {
@@ -1071,7 +1465,7 @@ async function _loadAndPlayImpl(keepRec) {
       // LUFS level-match on the active deck (attenuate-only, cap 1.0; 1.0 when absent).
       if (_activeLevel()) _activeLevel().gain.value = _levelGainFor(_outDjData?.lufs);
       // Cleanup old blob URLs (safe — no crossfade in progress)
-      prefetchCleanup(store.playerQueue, store.playerIndex);
+      prefetchCleanup(store.playerQueue, store.playerIndex, _upcomingKeep());
     }
   }
   // Deck swap (or cast POST) issued. The advance latch is released by the loadAndPlay
@@ -1182,6 +1576,12 @@ export function hidePlayerBar() {
 let _lastNextTime = 0;
 export function nextTrack(opts = {}) {
   const reason = opts.reason || 'user';
+  // A user skip outranks a pending error backoff — the buttons must never go dead
+  // for the length of the wait.
+  if (reason === 'user') {
+    if (Date.now() - _lastNextTime < 500) return; // throttled: touch nothing
+    _cancelErrorBackoff();
+  }
   // In-flight latch: block a concurrent advance while a previous one is still resolving
   // its async loadAndPlay (deck swap not yet done). nextTrack→loadAndPlay is async and
   // timeupdate/ended keep firing, so without this a second advance fires mid-flight →
@@ -1239,9 +1639,7 @@ export function nextTrack(opts = {}) {
     if (_currentRecItem) {
       // Rec advance does not go through loadAndPlay — release the latch here.
       _advanceInFlight = false;
-      m.playNextRec().then(filled => {
-        if (!filled) { _activeDeckEl().pause(); updatePlayPauseIcon(false); }
-      });
+      m.playNextRec().then(filled => { if (!filled) _noNextTrack(); }).catch(() => _noNextTrack());
       return;
     }
     _nextTrackInQueue();
@@ -1343,21 +1741,32 @@ function _nextTrackTerminal() {
   if (store.repeatMode === 'all') {
     store.playerIndex = 0;
     loadAndPlay();
-  } else if (store.radioMode && !store.radioLoading) {
+  } else if (store.radioMode && store.radioLoading) {
+    // A refill is already on its way and will start the next track itself.
+    _advanceInFlight = false;
+  } else if (store.radioMode) {
     // Auto-fill queue with more radio tracks
     store.radioLoading = true;
+    // The refill is a network round trip with no deadline of its own. Holding the
+    // advance latch across it swallowed Next, Previous, `ended` and the error handler
+    // for as long as the request hung; radioLoading is the guard for this window.
+    _advanceInFlight = false;
     const seed = store.playerQueue[store.playerQueue.length - 1] || store.radioSeedTrack;
     if (seed) {
       showToast('Loading more similar tracks...');
       const params = new URLSearchParams({ track: seed.name || '', artist: seed.artist || '', artist_id: seed.id || store.currentArtistId || '' });
-      apiJson(`/api/radio?${params}`).then(data => {
+      const _radioOpts = (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? { signal: AbortSignal.timeout(20000) } : {};
+      apiJson(`/api/radio?${params}`, _radioOpts).then(data => {
         const newTracks = (data.tracks || []).filter(t => {
           const key = (t.name || '').toLowerCase() + '|' + (t.artist || '').toLowerCase();
           return !store.playerQueue.some(q => (q.name || '').toLowerCase() + '|' + (q.artist || '').toLowerCase() === key);
         });
         if (newTracks.length) {
+          // The first NEW track, by position — not "current + 1": the latch is no
+          // longer held across this request, so the index may have moved meanwhile.
+          const firstNew = store.playerQueue.length;
           store.playerQueue = store.playerQueue.concat(newTracks);
-          store.playerIndex++;
+          store.playerIndex = firstNew;
           loadAndPlay();
           renderQueue();
           saveQueueDebounced();
@@ -1365,21 +1774,15 @@ function _nextTrackTerminal() {
           import('./upnext.js').then(u => u.mirrorAdd(newTracks));
         } else {
           showToast('No more similar tracks found');
-          _activeDeckEl().pause();
-          updatePlayPauseIcon(false);
-          _advanceInFlight = false; // terminal, no loadAndPlay — release latch
-          _crossfadeTriggered = false; // M4: no advance occurred — re-arm trigger
+          _noNextTrack(); // terminal, no loadAndPlay — releases the latch
         }
       }).catch(() => {
         showToast('Failed to load more tracks');
-        _activeDeckEl().pause();
-        updatePlayPauseIcon(false);
-        _advanceInFlight = false; // terminal, no loadAndPlay — release latch
-        _crossfadeTriggered = false; // M4: no advance occurred — re-arm trigger
+        _noNextTrack(); // terminal, no loadAndPlay — releases the latch
       }).finally(() => { store.radioLoading = false; });
     } else {
-      _advanceInFlight = false; // no seed to fetch radio from — release latch
-      _crossfadeTriggered = false; // M4: no advance occurred — re-arm trigger
+      store.radioLoading = false; // nothing was requested — don't leave the guard set
+      _noNextTrack(); // no seed to fetch radio from — releases the latch
     }
   } else {
     _advanceInFlight = false; // the autofill reaches loadAndPlay through playRecTrack
@@ -1408,11 +1811,10 @@ function _autofillFromRecs() {
         // Nothing came back, so playRecTrack never ran and the hand-off is moot.
         _autofillPending = false;
         showToast('No more recommendations for this queue');
-        _activeDeckEl().pause();
-        updatePlayPauseIcon(false);
+        _noNextTrack();
       }
-    });
-  }).catch(() => { _autofillPending = false; });
+    }).catch(() => { _autofillPending = false; _noNextTrack(); });
+  }).catch(() => { _autofillPending = false; _noNextTrack(); });
 }
 
 // True exactly once per _autofillFromRecs, for the playRecTrack call it triggered —
@@ -1481,7 +1883,11 @@ export async function playRecTrack(item) {
     return;
   }
   _currentRecItem = item;
+  _loadGen++; // a queue load still waiting on cache/canplay must not fade this track out
+  _rearmedSrc = '';
+  _cancelErrorBackoff(); // this track supersedes whatever the backoff was waiting to skip
   _crossfadeTriggered = false; // fresh track — re-arm the auto-crossfade trigger
+  _noNextLatch = false;
   setArt($('#playerImg'), item.image);
   $('#playerTitle').textContent = item.name || '';
   $('#playerArtist').textContent = item.artist || '';
@@ -1510,8 +1916,8 @@ export async function playRecTrack(item) {
     }}).catch(e => { showToast('Cast failed: ' + (e.message || '')); cast.castState.transitioning = false; cast.castState.skipAutoAdvance = false; });
   } else {
     _ensureAudioContext();
-    if (_ctx.state === 'suspended') _ctx.resume();
-    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: (store.streamToken || store.authToken) })}&quality=${streamQuality()}`;
+    if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
+    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}`;
     const cached = getCachedUrl(cleanName, cleanArtist, item.id);
     const src = cached || streamUrl;
     const curDeck = _activeDeckEl();
@@ -1528,8 +1934,14 @@ export async function playRecTrack(item) {
         _fadingOutDeck.pause(); _fadingOutDeck.src = ''; _fadingOutDeck = null;
         _teardownCrossfade(); _crossfading = false;
       }
+      clearInterval(_rateReturnTimer); _cancelTempoRamp(); clearPendingSeek(curDeck);
       _setDeckSrc(curDeck, src);
       curDeck.play().catch(() => {});
+      // The deck now holds another track; the previous one's grid and outro would time
+      // this one's transition (a lead longer than the fade → its ending cut). The
+      // `playing` handler only refills when this is empty.
+      _outDjData = getDjData(cleanName, cleanArtist) || null;
+      _inDjData = null;
       if (_activeGain()) {
         _activeGain().gain.cancelScheduledValues(0);
         _activeGain().gain.value = 1;
@@ -1558,8 +1970,8 @@ function updateMediaSessionWith(item) {
     title: item.name || '', artist: item.artist || '', album: item.album || '',
     artwork: item.image ? [{ src: item.image, sizes: '300x300', type: 'image/jpeg' }] : [],
   });
-  navigator.mediaSession.setActionHandler('play', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'play' } })); return; } _activeDeckEl().play(); });
-  navigator.mediaSession.setActionHandler('pause', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'pause' } })); return; } _activeDeckEl().pause(); });
+  navigator.mediaSession.setActionHandler('play', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'play' } })); return; } _resumeLocalPlayback(); });
+  navigator.mediaSession.setActionHandler('pause', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'pause' } })); return; } _pauseLocalPlayback(); });
   navigator.mediaSession.setActionHandler('previoustrack', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'prev' } })); return; } prevTrack(); });
   navigator.mediaSession.setActionHandler('nexttrack', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'next' } })); return; } nextTrack(); });
 }
@@ -1569,6 +1981,7 @@ export function prevTrack() {
   // an in-flight auto-advance runs a concurrent loadAndPlay() and clears the latch out
   // from under nextTrack → overlapping crossfades. Claim it synchronously at entry; it is
   // released by loadAndPlay's finally on paths that load, and explicitly here otherwise.
+  _cancelErrorBackoff(); // a user action outranks a pending error backoff
   if (_advanceInFlight) return;
   _advanceInFlight = true;
   if (store.castDevice) {
@@ -1627,7 +2040,13 @@ export function updatePlayPauseIcon(playing) {
   if (fpIcon) fpIcon.innerHTML = playing ? pausePath : playPath;
 }
 
-export function pauseLocal() { try { _deckA.pause(); _deckB.pause(); } catch {} updatePlayPauseIcon(false); }
+export function pauseLocal() {
+  try {
+    if (_crossfading) _finalizeCrossfadeOnPause(); // or the fade timer outlives the pause
+    _deckA.pause(); _deckB.pause();
+  } catch {}
+  updatePlayPauseIcon(false);
+}
 
 // ── Resolve Item Tracks (album/artist → track list) ──
 // Album/artist ids are provider-scoped; the backend otherwise assumes the
@@ -1707,14 +2126,28 @@ export async function loadQueueState() {
         $('#playerTitle').textContent = item.name || '';
         $('#playerArtist').textContent = item.artist || '';
         const deck = _activeDeckEl();
-        const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: (store.streamToken || store.authToken) });
+        const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: streamToken() });
         const restoreSrc = `/api/player/stream?${params}&quality=${streamQuality()}`;
-        if (deck === _deckA) _expectedSrcA = restoreSrc;
-        else _expectedSrcB = restoreSrc;
+        if (deck === _deckA) _expectedSrcA = _absUrl(restoreSrc);
+        else _expectedSrcB = _absUrl(restoreSrc);
         deck.src = restoreSrc;
         deck.preload = 'none';
+        _restorePos = data.position_seconds > 0 ? data.position_seconds : 0;
         if (data.position_seconds > 0) {
-          deck.addEventListener('loadedmetadata', () => { deck.currentTime = data.position_seconds; }, { once: true });
+          // preload is 'none', so this waits for whatever loads on the deck FIRST. If
+          // that is not the restored track — the user opened the app and picked another
+          // song — the saved position belonged to a different file: the new song
+          // started in its middle, or past its end and was skipped outright. Seek only
+          // if the deck still holds the restored source (the classic engine always did).
+          // And only when the listener resumes it (Play): an explicit load of a track
+          // — even the same one, from a playlist — starts at 0; _setDeckSrc drops this.
+          const want = _absUrl(restoreSrc);
+          _restoreSeek = () => {
+            deck.removeEventListener('loadedmetadata', _restoreSeek);
+            _restoreSeek = null;
+            if (deck.src === want) deck.currentTime = data.position_seconds;
+          };
+          deck.addEventListener('loadedmetadata', _restoreSeek);
         }
         syncFullPlayer();
         updateDownloadButtons(item);
@@ -1739,8 +2172,8 @@ function updateMediaSession() {
     title: item.name || '', artist: item.artist || '', album: item.album || '',
     artwork: item.image ? [{ src: item.image, sizes: '300x300', type: 'image/jpeg' }] : [],
   });
-  navigator.mediaSession.setActionHandler('play', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'play' } })); return; } _activeDeckEl().play(); });
-  navigator.mediaSession.setActionHandler('pause', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'pause' } })); return; } _activeDeckEl().pause(); });
+  navigator.mediaSession.setActionHandler('play', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'play' } })); return; } _resumeLocalPlayback(); });
+  navigator.mediaSession.setActionHandler('pause', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'pause' } })); return; } _pauseLocalPlayback(); });
   navigator.mediaSession.setActionHandler('previoustrack', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'prev' } })); return; } prevTrack(); });
   navigator.mediaSession.setActionHandler('nexttrack', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'next' } })); return; } nextTrack(); });
 }
@@ -1774,6 +2207,11 @@ export function init() {
     });
     deck.addEventListener('playing', () => {
       if (deck !== _activeDeckEl()) return;
+      _errStreak = 0; // a track is audibly playing — the failure run is over
+      { // Audible now, whatever `pause` an outgoing deck reported on the way here.
+        const _it = _currentRecItem || store.playerQueue[store.playerIndex];
+        if (_it) abPlay(_it.name, _it.artist);
+      }
       // Fetch DJ data for current track (lightweight API call, doesn't compete)
       if (!_outDjData) {
         const item = store.playerQueue[store.playerIndex];
@@ -1798,12 +2236,15 @@ export function init() {
       resumePrefetch(); // clear _paused so prefetchTrack isn't a no-op
       const sm = _djSetting('smart_queue', 'off');
       let immediate = null;
-      if (sm !== 'off' && _predictedNextIdx != null
+      if (store.shuffleEnabled) {
+        // Shuffle outranks Smart Queue at commit (_nextTrackInQueue) — so it must here.
+        immediate = _upcomingItem();
+      } else if (sm !== 'off' && _predictedNextIdx != null
           && _predictedNextIdx >= 0 && _predictedNextIdx < store.playerQueue.length) {
         // Prediction already bound (e.g. a previous playing event or pre-analysis already
         // ran) — reuse it: same track dot/crossfade/prefetch all target → no divergence.
         immediate = store.playerQueue[_predictedNextIdx];
-      } else if (sm !== 'off' && !store.shuffleEnabled) {
+      } else if (sm !== 'off') {
         // FIX 2: _predictedNextIdx is null because it was consumed at the prior advance
         // (nulled before loadAndPlay). In smart mode the DJ data for the current track is
         // usually already cached from the prior _preAnalyzeUpcoming run; if so, compute the
@@ -1827,9 +2268,9 @@ export function init() {
             immediate = earlyItem;
           }
         }
-        if (!immediate) immediate = store.playerQueue[store.playerIndex + 1]; // DJ data miss → sequential fallback
+        if (!immediate) immediate = _upcomingItem(); // DJ data miss → sequential fallback
       } else {
-        immediate = store.playerQueue[store.playerIndex + 1];
+        immediate = _upcomingItem();
       }
       if (immediate) {
         prefetchTrack(_decodeEntities(immediate.name || ''), _decodeEntities(immediate.artist || ''), immediate.id);
@@ -1844,6 +2285,10 @@ export function init() {
     });
     deck.addEventListener('pause', () => {
       if (deck !== _activeDeckEl()) return;
+      // A failed load can leave the deck paused. That is the error handler's business
+      // (it is about to skip) — reporting it as a pause would tell the UI and the
+      // Android shell that the listener stopped the music.
+      if (deck.error) return;
       updatePlayPauseIcon(false);
       pausePrefetch();
       abPause();
@@ -1856,6 +2301,7 @@ export function init() {
       // already-fired auto trigger (_crossfadeTriggered) is ALREADY handling the advance —
       // don't fire a second one. _advanceInFlight is covered by nextTrack's own latch.
       if (deck !== _activeDeckEl() || _crossfading || _crossfadeTriggered || !deck.src) return;
+      _noNextLatch = false; // the track played out; this advance is the real attempt
       if (store.repeatMode === 'one') {
         deck.currentTime = 0;
         deck.play().catch(() => {});
@@ -1865,10 +2311,7 @@ export function init() {
         // advance was swallowed). A bare nextTrack here would hard-cut. Request a blend so the
         // next track eases in instead of a silent cut. Only when a real next track can be
         // produced and we're not casting (cast has its own advance path).
-        const hasNext = store.playerIndex < store.playerQueue.length - 1
-          || store.repeatMode === 'all'
-          || store.radioMode
-          || _djSetting('smart_queue', 'off') !== 'off';
+        const hasNext = _canAdvance() || store.radioMode;
         if (hasNext && !store.castDevice) _endedBlend = true;
         nextTrack({ reason: 'ended' });
       }
@@ -1900,9 +2343,16 @@ export function init() {
         _teardownCrossfade();
         _crossfading = false;
       }
-      _advanceInFlight = true; // claim the advance synchronously before the deferred skip
-      showToast('Stream error, skipping...');
-      setTimeout(() => { _advanceInFlight = false; nextTrack({ reason: 'error' }); }, 1000);
+      // A connection that dropped part-way through a song (MEDIA_ERR_NETWORK) is not a
+      // broken track. Now that this handler really runs for streams, skipping here
+      // would throw away the rest of a song over one lost packet run — ask for the
+      // same stream again from where it stopped, once, before giving the track up.
+      if (deck === _activeDeckEl() && deck.error && deck.error.code === 2
+          && deck.currentTime > 1 && _canRearm(deck)) {
+        _rearmDeck(deck);
+        return;
+      }
+      _skipAfterError(); // claims the advance synchronously, then skips after a backoff
     });
   });
 
@@ -1931,14 +2381,7 @@ export function init() {
         // Next: in Smart Queue the PREFETCHED track is the predicted index, NOT the
         // sequential successor. Query the track we actually prefetched so the dot reflects
         // reality (else the lookup misses → dot never green). Fall back to playerIndex+1.
-        let nextItem;
-        if (_djSetting('smart_queue', 'off') !== 'off'
-            && _predictedNextIdx != null
-            && _predictedNextIdx >= 0 && _predictedNextIdx < store.playerQueue.length) {
-          nextItem = store.playerQueue[_predictedNextIdx];
-        } else {
-          nextItem = store.playerQueue[store.playerIndex + 1];
-        }
+        const nextItem = _upcomingItem();
         // Now: green when the current track is actually playing/ready — i.e. the active
         // deck has HAVE_FUTURE_DATA and isn't errored — OR it's a cached blob OR prefetch
         // still reports 'ready'. A live-streamed (or already-consumed-blob) current track
@@ -1973,7 +2416,9 @@ export function init() {
       }
       if (_ab() && Math.abs(deck.currentTime - (_lastAbUpdate || 0)) >= 1) {
         _lastAbUpdate = deck.currentTime;
-        _ab().onProgress(Math.floor(deck.currentTime * 1000), Math.floor(dur * 1000));
+        // Never let the native side throw into this handler — the auto-crossfade
+        // trigger sits below it.
+        try { _ab().onProgress(Math.floor(deck.currentTime * 1000), Math.floor(dur * 1000)); } catch {}
       }
       // ── Auto-crossfade: trigger nextTrack when approaching end ──
       // Wait for DJ data before calculating trigger (avoids a premature fallback crossfade)
@@ -2006,7 +2451,7 @@ export function init() {
           // Lead time MUST equal that fade length, or the fade overruns/undershoots the
           // track boundary (the beat-grid lead of ~11s but ≤10s fade caused a gap).
           const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
-          triggerAt = webkitCrossfadeDuration(_outDjData?.bpm, numBeats);
+          triggerAt = webkitCrossfadeDuration(_outDjData?.bpm, numBeats, _crossfadeDur());
           // #36: mirror the beat-grid clamp — on short tracks a long beat-derived fade
           // would trigger too early. Never trigger earlier than 25% from end, max 30s.
           if (triggerAt > dur * 0.25 || triggerAt > 30) triggerAt = _crossfadeDur();
@@ -2026,11 +2471,31 @@ export function init() {
           // Clamp: never trigger earlier than 25% from end, max 30s
           if (triggerAt > dur * 0.25 || triggerAt > 30) triggerAt = _crossfadeDur();
         }
-        if (remaining <= triggerAt && remaining > -5 && !_crossfadeTriggered
+        // The re-arm test below keeps using the full lead: a shortened one would re-arm
+        // the trigger inside the window it has already fired in.
+        const armAt = triggerAt;
+        // A drop cut (clashing keys) silences the outgoing track at its cut point, so it
+        // must START a few beats before the end, not a whole fade before it — else the
+        // song's last ~8 s are never heard. Only when the incoming track is already in
+        // memory: an uncached one needs the long lead to cover its load, and the
+        // scheduler then blends instead (see resolveTransitionStyle / endBound in djmix).
+        // Looked up only inside the window, from the same sources commit will use.
+        if (!IS_WEBKIT && remaining <= triggerAt && !_crossfadeTriggered && _outDjData) {
+          const up = _upcomingItem();
+          if (up) {
+            const upName = _decodeEntities(up.name || ''), upArtist = _decodeEntities(up.artist || '');
+            const planned = resolveTransitionStyle(_djSetting('transition_style', 'auto'), _outDjData, getDjData(upName, upArtist));
+            if (planned === 'drop_cut' && getCachedUrl(upName, upArtist, up.id)) {
+              triggerAt = Math.min(triggerAt, dropCutLead(_outDjData.bpm) + 0.4);
+            }
+          }
+        }
+        if (remaining <= triggerAt && remaining > -5 && !_crossfadeTriggered && !_noNextLatch
             && !_advanceInFlight && store.repeatMode !== 'one' && !store.castDevice
             && deck.currentTime > 10) { // don't trigger in first 10s
-          const hasNext = store.playerIndex < store.playerQueue.length - 1 || store.repeatMode === 'all'
-            || _djSetting('smart_queue', 'off') !== 'off'; // smart mode can pick an unplayed earlier track
+          // Radio refills at the end of the queue; without it here the last track of
+          // every batch ran to its end and the refill then started from silence.
+          const hasNext = _canAdvance() || (store.radioMode && !store.radioLoading);
           if (hasNext) {
             if (localStorage.getItem('ms_dj_debug') === '1') {
               const _cur = store.playerQueue[store.playerIndex];
@@ -2043,8 +2508,9 @@ export function init() {
             nextTrack({ reason: 'auto' });
           }
         }
-        if (remaining > triggerAt + 1) {
+        if (remaining > armAt + 1) {
           _crossfadeTriggered = false;
+          _noNextLatch = false;
         }
       }
     });
@@ -2058,9 +2524,13 @@ export function init() {
       else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
     } else {
       _ensureAudioContext();
-      if (_ctx.state === 'suspended') _ctx.resume();
+      if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
       const deck = _activeDeckEl();
-      if (deck.paused) {
+      if (_stopErrorBackoff()) {
+        // stopped the pending retry — nothing else to do
+      } else if (_toggleDeadDeck(deck)) {
+        // a deck that failed to load: stop it, or try the track again
+      } else if (deck.paused) {
         deck.play().catch(() => {});
       } else if (_crossfading) {
         // Finalize the fade to a clean single deck, then pause it (avoids timers/ramps
@@ -2219,9 +2689,13 @@ export function init() {
           else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
         } else {
           _ensureAudioContext();
-          if (_ctx.state === 'suspended') _ctx.resume();
+          if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
           const deck = _activeDeckEl();
-          if (deck.paused) {
+          if (_stopErrorBackoff()) {
+            // stopped the pending retry
+          } else if (_toggleDeadDeck(deck)) {
+            // failed deck: stop, or retry the track
+          } else if (deck.paused) {
             deck.play().catch(() => {});
           } else if (_crossfading) {
             _finalizeCrossfadeOnPause().pause();
@@ -2269,10 +2743,15 @@ export function init() {
         xhr.setRequestHeader('Content-Type', 'application/json');
         const token = store.authToken;
         if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+        // Same slot and same shape as saveQueueNow: without the device id this wrote
+        // the "default" queue instead of this device's, and without shuffle_order it
+        // would erase the saved running order the moment it did reach the right one.
+        if (store.deviceId) xhr.setRequestHeader('X-Device-ID', store.deviceId);
         xhr.send(JSON.stringify({
           queue: store.playerQueue, current_index: store.playerIndex,
           position_seconds: _activeDeckEl().currentTime || 0, volume: store.playerVolume,
           playlist_mode: store.playlistMode,
+          shuffle_order: serializeShuffleOrder(),
         }));
       } catch {}
     }

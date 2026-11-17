@@ -998,10 +998,15 @@ export function init() {
         xhr.setRequestHeader('Content-Type', 'application/json');
         const token = store.authToken;
         if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+        // Same slot and same shape as saveQueueNow: without the device id this wrote
+        // the "default" queue instead of this device's, and without shuffle_order it
+        // would erase the saved running order the moment it did reach the right one.
+        if (store.deviceId) xhr.setRequestHeader('X-Device-ID', store.deviceId);
         xhr.send(JSON.stringify({
           queue: store.playerQueue, current_index: store.playerIndex,
           position_seconds: audio.currentTime || 0, volume: store.playerVolume,
           playlist_mode: store.playlistMode,
+          shuffle_order: serializeShuffleOrder(),
         }));
       } catch {}
     }

@@ -100,6 +100,31 @@ LOCAL_CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024  # ms-local-cache (transcoded loc
 EVICT_RECENCY_SEC = 5 * 60  # never delete a file modified/accessed in the last 5 min
 
 
+def touch_cache_file(path: str) -> None:
+    """Record that a cache file was just chosen to be served.
+
+    The eviction guard above trusts max(mtime, atime), but a `relatime` mount does not
+    move atime on a read — so a file a deck is playing right now looked untouched and
+    could be evicted, and the deck's next Range request then met a different
+    representation (local) or a rebuild/404 (Navidrome/YouTube). Bump atime only and
+    leave mtime as it is."""
+    try:
+        os.utime(path, (time.time(), os.stat(path).st_mtime))
+    except OSError:
+        pass
+
+
+def is_audio_response(resp) -> bool:
+    """True when an upstream answer really carries audio. Subsonic reports errors as
+    HTTP 200 with a JSON/XML body, which `raise_for_status()` lets through; writing
+    that ~200-byte body into a cache would serve it as audio/mpeg until evicted."""
+    ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    # video/* and application/ogg are how some servers label m4a/ogg audio; the thing
+    # to keep out is a text body (json/xml/html), not an unusual container.
+    return (ctype.startswith(("audio/", "video/"))
+            or ctype in ("application/octet-stream", "application/ogg"))
+
+
 def evict_cache_dir(path: str, max_bytes: int) -> None:
     """Best-effort LRU-ish sweep of an on-disk temp cache directory.
 
@@ -506,6 +531,10 @@ async def cache_navidrome_stream(song_id: str, lossless: bool = False) -> str | 
                 async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
                     async with client.stream("GET", url, params=params) as resp:
                         resp.raise_for_status()
+                        if not is_audio_response(resp):
+                            logger.warning("Navidrome answered song %s with %r, not audio — not caching",
+                                           song_id, resp.headers.get("content-type"))
+                            return None
                         with open(cache_path + ".tmp", "wb") as f:
                             async for chunk in resp.aiter_bytes(8192):
                                 f.write(chunk)
@@ -563,20 +592,45 @@ def raw_pinned(path: str) -> bool:
     return True
 
 
-def local_transcode_cached_path(path: str) -> str | None:
-    """Return the ms-local-cache path for *path* IFF it already exists and is
-    non-empty. Never builds, never awaits — safe to call from HEAD or the GET
-    fast path to decide whether to serve the cached MP3 or fall through to
-    progressive streaming."""
-    import tempfile, hashlib
+def local_transcode_cache_path(path: str) -> str | None:
+    """Where the transcoded MP3 for *path* lives (it may not exist). The ONE place the
+    key is derived — sha1(abspath + mtime) — so the cache code and the tag-write
+    carry-over below cannot drift apart. None when the source cannot be stat'ed."""
+    import hashlib
     try:
         abspath = os.path.abspath(path)
         mtime = os.path.getmtime(path)
     except OSError:
         return None
     key = hashlib.sha1(f"{abspath}{mtime}".encode()).hexdigest()
-    cache_path = os.path.join(tempfile.gettempdir(), "ms-local-cache", f"{key}.mp3")
-    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+    return os.path.join(tempfile.gettempdir(), "ms-local-cache", f"{key}.mp3")
+
+
+def carry_local_transcode(old_cache_path: str | None, path: str) -> None:
+    """Re-key a cached transcode after *path* was rewritten in place (new mtime).
+
+    A tag write does not change the audio, but the mtime in the key makes the old MP3
+    unfindable: the next Range request on the SAME stream URL then got raw FLAC bytes
+    while the browser was mid-way through decoding the MP3. Call with the path taken
+    BEFORE the rewrite. Never raises."""
+    try:
+        if not old_cache_path or not os.path.exists(old_cache_path):
+            return
+        new_cache_path = local_transcode_cache_path(path)
+        if new_cache_path and new_cache_path != old_cache_path:
+            os.replace(old_cache_path, new_cache_path)
+            touch_cache_file(new_cache_path)  # in use right now — not the next file to evict
+    except Exception:
+        pass
+
+
+def local_transcode_cached_path(path: str) -> str | None:
+    """Return the ms-local-cache path for *path* IFF it already exists and is
+    non-empty. Never builds, never awaits — safe to call from HEAD or the GET
+    fast path to decide whether to serve the cached MP3 or fall through to
+    progressive streaming."""
+    cache_path = local_transcode_cache_path(path)
+    if cache_path and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
         return cache_path
     return None
 
@@ -588,20 +642,15 @@ async def cache_local_transcode(path: str) -> str | None:
     lock + double-checked existence (so prefetch×3 + prewarm + the real GET collapse
     to a single ffmpeg run), writes atomically (.tmp then os.rename), and evicts the
     cache dir after the rename. Returns None on failure (caller falls back to raw)."""
-    import tempfile, hashlib
     cache_dir = os.path.join(tempfile.gettempdir(), "ms-local-cache")
     os.makedirs(cache_dir, exist_ok=True)
     try:
         os.chmod(cache_dir, 0o700)  # keep cached audio private to the app user
     except OSError:
         pass
-    try:
-        abspath = os.path.abspath(path)
-        mtime = os.path.getmtime(path)
-    except OSError:
+    cache_path = local_transcode_cache_path(path)
+    if cache_path is None:
         return None
-    key = hashlib.sha1(f"{abspath}{mtime}".encode()).hexdigest()
-    cache_path = os.path.join(cache_dir, f"{key}.mp3")
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
         return cache_path
     # Serialize per-target so concurrent prefetch/prewarm/stream GET don't all
@@ -738,6 +787,7 @@ async def cache_youtube_stream(youtube_url: str, name: str, artist: str, bitrate
         async with lock:
             if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
                 return cache_path
+            proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     "ffmpeg", "-reconnect", "1", "-reconnect_streamed", "1",
@@ -752,8 +802,28 @@ async def cache_youtube_stream(youtube_url: str, name: str, artist: str, bitrate
                     os.rename(cache_path + ".tmp", cache_path)
                     evict_cache_dir(cache_dir, YT_CACHE_MAX_BYTES)
                     return cache_path
+                # ffmpeg gave up on the URL (403, expired, refused): the resolution is
+                # dead — forget it and leave the track alone for a while. Decided HERE
+                # because only this function can tell a refusal from a TIMEOUT: a long
+                # or throttled download is slow, not dead, and marking it failed would
+                # 404 the track for the next five minutes.
+                forget_dead_youtube(name, artist)
             except Exception:
                 pass
+            finally:
+                # After a timeout the first ffmpeg would keep downloading into a file
+                # we are about to unlink while the router starts a second one for the
+                # live stream — double the YouTube traffic right when we are closest to
+                # the rate limit. Kill it (the same finally cache_local_transcode has).
+                if proc is not None and proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        await proc.wait()
+                    except Exception:
+                        pass
             for p in (cache_path + ".tmp", cache_path):
                 if os.path.exists(p):
                     try:
@@ -767,8 +837,18 @@ async def cache_youtube_stream(youtube_url: str, name: str, artist: str, bitrate
 
 def invalidate_cache(name: str, artist: str):
     """Remove a cached URL (e.g. on stream error for re-resolution)."""
-    key = _cache_key(name, artist)
+    key = _cache_key(nfc(name), nfc(artist))  # resolve_stream stores under the folded spelling
     _url_cache.pop(key, None)
+
+
+def forget_dead_youtube(name: str, artist: str) -> None:
+    """A resolved YouTube URL whose download failed: drop it, AND leave the track
+    alone for YT_FAIL_TTL. Dropping it alone would send the very next request for
+    this track straight back to YouTube (one search plus up to five extractions) —
+    and a download that fails is most often YouTube refusing us already. Asking
+    harder at that moment is how the address got parked twice in November 2026."""
+    invalidate_cache(name, artist)
+    _note_yt_failure(_cache_key(nfc(name), nfc(artist)))
 
 
 # ── Queue Persistence ──
