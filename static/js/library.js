@@ -523,8 +523,14 @@ function _wireDragHandle(handle, card, playlistId) {
       const curIdx = sibs.indexOf(card);
       if (overIdx < 0 || curIdx < 0) return;
       // Move the dragged node toward the hovered card (works for list + grid).
-      if (overIdx < curIdx) container.insertBefore(card, overCard);
-      else container.insertBefore(card, overCard.nextSibling);
+      // Into the hovered card's OWN parent: since the playlist became a row list the
+      // rows sit in a wrapper inside #libraryTracks, and inserting into the outer
+      // container threw NotFoundError ("not a child of this node") on every move —
+      // the row never left its place. Only a drop past the last row, where the
+      // reference node is null and the call degrades to an append, did anything.
+      const parent = overCard.parentNode;
+      if (overIdx < curIdx) parent.insertBefore(card, overCard);
+      else parent.insertBefore(card, overCard.nextSibling);
       moved = true;
     };
     const onUp = () => {
