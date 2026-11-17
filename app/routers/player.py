@@ -76,10 +76,11 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
             mime = _mime_for_path(path)
             headers["Content-Length"] = str(os.path.getsize(path))
     elif result["source"] == "navidrome":
-        cached = await player.cache_navidrome_stream(result["song_id"], lossless=lossless)
+        cached = await player.cache_navidrome_stream(result["song_id"], lossless=lossless,
+                                                     raw_ext=result.get("raw_ext"))
         if cached:
             player.touch_cache_file(cached)
-            mime = _mime_for_path(cached) if lossless else "audio/mpeg"
+            mime = _mime_for_path(cached)   # flac, mp3, or the song's own compact format
             headers["Content-Length"] = str(os.path.getsize(cached))
         else:
             player.invalidate_cache(name, artist)
@@ -133,7 +134,8 @@ async def player_stream_duration(name: str, artist: str = "", quality: str = "st
     result = player.cached_resolution(name, artist)
     path = None
     if result and result["source"] == "navidrome":
-        path = player.navidrome_cache_path(result["song_id"], lossless=lossless)
+        path = player.navidrome_cache_path(result["song_id"], lossless=lossless,
+                                           raw_ext=result.get("raw_ext"))
     elif result and result["source"] == "local":
         path = result["path"] if os.path.exists(result["path"]) else None
     elif result is None or result["source"] == "youtube":
@@ -208,12 +210,15 @@ async def player_stream(request: Request, name: str, artist: str = "", quality: 
         return FileResponse(path, media_type=mime, headers=file_headers)
     elif source == "navidrome":
         # Try cached file first (supports Range requests, seeking, correct duration)
-        mime = "audio/flac" if lossless else "audio/mpeg"
-        nav_path = os.path.join(tempfile.gettempdir(), "ms-nav-cache",
-                                f"{result['song_id']}.{'flac' if lossless else 'mp3'}")
+        raw_ext = result.get("raw_ext")
+        nav_path, _ = player.nav_cache_target(result["song_id"], lossless, raw_ext)
+        mime = _mime_for_path(nav_path)
+        # A song served untouched needs no "while it is built" treatment: copying it
+        # takes a second or two, and the plain file gives the deck a real duration and
+        # Range from the first byte.
         resp = await _file_or_follow(
-            player.cache_navidrome_stream(result["song_id"], lossless=lossless),
-            nav_path, progressive, mime, file_headers, headers)
+            player.cache_navidrome_stream(result["song_id"], lossless=lossless, raw_ext=raw_ext),
+            nav_path, progressive and ".raw." not in nav_path, mime, file_headers, headers)
         if resp is not None:
             return resp
         # Resolved, but the song cannot be fetched: forget it so the next play
@@ -259,7 +264,8 @@ async def _prewarm_track(track: dict, lossless: bool) -> None:
         source = result["source"]
         if source == "navidrome":
             # Idempotent + locked: builds the transcoded/cached file if missing.
-            if not await player.cache_navidrome_stream(result["song_id"], lossless=lossless):
+            if not await player.cache_navidrome_stream(result["song_id"], lossless=lossless,
+                                                       raw_ext=result.get("raw_ext")):
                 player.invalidate_cache(name, artist)
         elif source == "youtube":
             bitrate = "320k" if lossless else "192k"

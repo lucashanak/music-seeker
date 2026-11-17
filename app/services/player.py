@@ -380,13 +380,14 @@ async def resolve_stream(name: str, artist: str) -> dict | None:
 async def _resolve_navidrome(name: str, artist: str) -> dict | None:
     """Check if track exists in Navidrome and return stream info."""
     try:
-        song_id = await library.find_song_id(name, artist)
-        if not song_id:
+        song = await library.find_song(name, artist)
+        if not song or not song.get("id"):
             return None
-        return {
-            "source": "navidrome",
-            "song_id": song_id,
-        }
+        result = {"source": "navidrome", "song_id": song["id"]}
+        raw_ext = nav_raw_ext(song)
+        if raw_ext:
+            result["raw_ext"] = raw_ext
+        return result
     except Exception:
         return None
 
@@ -499,9 +500,51 @@ async def stream_local_file(file_path: str):
             await proc.wait()
 
 
-def navidrome_cache_path(song_id: str, lossless: bool = False) -> str | None:
+# A Navidrome song that is already compact and plays in every browser is fetched AS IT
+# IS (`format=raw`), not as a 320k MP3. The transcode made such a file bigger, and for a
+# long one it never finished in time: a 2 h 24 min AAC set (172 MB as MP3) took minutes
+# to transcode, the client gave up after 45 s and the track "would not play" — measured
+# on production 2026-11-17. A raw copy of the same file arrives in a second or two.
+# ALAC hides in .m4a too and no browser but Safari decodes it; its bitrate gives it away.
+_NAV_RAW_EXT = {"mp3", "m4a", "aac"}
+
+
+def nav_raw_ext(song: dict) -> str | None:
+    """Suffix under which this Subsonic song can be served untouched, or None."""
+    ext = str(song.get("suffix") or "").lower()
+    if ext not in _NAV_RAW_EXT:
+        return None
+    try:
+        if int(song.get("bitRate") or 0) > 400:      # lossless in a lossy-looking container
+            return None
+    except (TypeError, ValueError):
+        return None
+    return ext
+
+
+def nav_cache_target(song_id: str, lossless: bool = False, raw_ext: str | None = None) -> tuple[str, dict]:
+    """(cache file, Subsonic stream params) for this song — ONE place, so the builder,
+    the "is it finished" check and the router's progressive follower agree.
+
+    Whichever representation is ALREADY on disk wins, raw first: the BPM analysis
+    builds the MP3 for the same song id on its own schedule, and a stream URL must not
+    change which bytes it serves because a second file happened to appear."""
+    cache_dir = os.path.join(tempfile.gettempdir(), "ms-nav-cache")
+    if lossless:
+        return os.path.join(cache_dir, f"{song_id}.flac"), library._params(id=song_id)
+    mp3 = os.path.join(cache_dir, f"{song_id}.mp3")
+    if raw_ext in _NAV_RAW_EXT:
+        raw = os.path.join(cache_dir, f"{song_id}.raw.{raw_ext}")
+        have_raw = os.path.exists(raw) and os.path.getsize(raw) > 0
+        have_mp3 = os.path.exists(mp3) and os.path.getsize(mp3) > 0
+        if have_raw or not have_mp3:
+            return raw, library._params(id=song_id, format="raw")
+    return mp3, library._params(id=song_id, format="mp3", maxBitRate=320)
+
+
+def navidrome_cache_path(song_id: str, lossless: bool = False, raw_ext: str | None = None) -> str | None:
     """The finished Navidrome cache file for this song, or None. Never builds."""
-    p = os.path.join(tempfile.gettempdir(), "ms-nav-cache", f"{song_id}.{'flac' if lossless else 'mp3'}")
+    p, _ = nav_cache_target(song_id, lossless, raw_ext)
     return p if os.path.exists(p) and os.path.getsize(p) > 0 else None
 
 
@@ -607,7 +650,7 @@ async def follow_build(task: "asyncio.Task", cache_path: str):
             f.close()
 
 
-async def cache_navidrome_stream(song_id: str, lossless: bool = False) -> str | None:
+async def cache_navidrome_stream(song_id: str, lossless: bool = False, raw_ext: str | None = None) -> str | None:
     """Download Navidrome stream to temp file and return path.
     Cached files enable Content-Length, Range requests, and correct duration."""
     import tempfile
@@ -617,12 +660,7 @@ async def cache_navidrome_stream(song_id: str, lossless: bool = False) -> str | 
         os.chmod(cache_dir, 0o700)  # keep cached audio private to the app user
     except OSError:
         pass
-    if lossless:
-        cache_path = os.path.join(cache_dir, f"{song_id}.flac")
-        params = library._params(id=song_id)  # No format/bitrate = original
-    else:
-        cache_path = os.path.join(cache_dir, f"{song_id}.mp3")
-        params = library._params(id=song_id, format="mp3", maxBitRate=320)
+    cache_path, params = nav_cache_target(song_id, lossless, raw_ext)
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
         return cache_path
     # Serialize per-target so a concurrent pre-warm + stream GET don't both

@@ -191,6 +191,13 @@ def _artist_matches(lib_artist: str, search_artist: str) -> bool:
 
 async def find_song_id(name: str, artist: str, album: str = "") -> str | None:
     """Find a song's Navidrome ID by name and artist. If album is set, only match songs on that album."""
+    song = await find_song(name, artist, album)
+    return song.get("id") if song else None
+
+
+async def find_song(name: str, artist: str, album: str = "") -> dict | None:
+    """The Subsonic song object find_song_id matches — for callers that also need to
+    know what the file IS (suffix, bitRate), not only where it is."""
     if not NAVIDROME_PASSWORD:
         return None
     async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=10) as client:
@@ -202,7 +209,7 @@ async def find_song_id(name: str, artist: str, album: str = "") -> str | None:
             if _matches(song.get("title", ""), name) and _artist_matches(song.get("artist", ""), artist):
                 if album and not _matches(song.get("album", ""), album):
                     continue
-                return song.get("id")
+                return song
     return None
 
 

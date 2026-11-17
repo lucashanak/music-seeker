@@ -317,3 +317,37 @@ def test_youtube_refusing_after_a_cut_download(tmp, monkeypatch):
     assert not player.youtube_refusing("Song", "Artist")
     assert _run_yt(monkeypatch, _FF_CUT) is None
     assert player.youtube_refusing("Song", "Artist")   # → the router answers 502, no live re-download
+
+
+# ── A compact Navidrome song is fetched as it is, not as a 320k MP3 ──────────
+def test_nav_raw_ext_only_for_compact_lossy_files():
+    assert player.nav_raw_ext({"suffix": "m4a", "bitRate": 160}) == "m4a"
+    assert player.nav_raw_ext({"suffix": "MP3", "bitRate": 320}) == "mp3"
+    assert player.nav_raw_ext({"suffix": "flac", "bitRate": 900}) is None
+    assert player.nav_raw_ext({"suffix": "m4a", "bitRate": 850}) is None     # ALAC
+    assert player.nav_raw_ext({"suffix": "opus", "bitRate": 128}) is None    # Safari
+    assert player.nav_raw_ext({}) is None
+
+
+def test_nav_target_asks_navidrome_for_the_raw_file(tmp, monkeypatch):
+    monkeypatch.setattr(player.library, "_params", lambda **kw: kw)
+    path, params = player.nav_cache_target("abc", False, "m4a")
+    assert path.endswith("abc.raw.m4a") and params == {"id": "abc", "format": "raw"}
+    path, params = player.nav_cache_target("abc", False, None)               # unknown suffix: as before
+    assert path.endswith("abc.mp3") and params["format"] == "mp3"
+    path, params = player.nav_cache_target("abc", True, "m4a")               # lossless request: original
+    assert path.endswith("abc.flac") and "format" not in params
+
+
+def test_nav_target_sticks_to_the_representation_already_on_disk(tmp, monkeypatch):
+    """BPM analysis builds <id>.mp3 for the same song on its own schedule. A stream URL
+    must not change which bytes it serves because the other file appeared."""
+    monkeypatch.setattr(player.library, "_params", lambda **kw: kw)
+    d = tmp / "ms-nav-cache"
+    d.mkdir(exist_ok=True)
+    (d / "s1.mp3").write_bytes(b"x" * 10)                                    # MP3 was there first
+    assert player.nav_cache_target("s1", False, "m4a")[0].endswith("s1.mp3")
+    (d / "s2.raw.m4a").write_bytes(b"x" * 10)                                # raw was there first...
+    (d / "s2.mp3").write_bytes(b"x" * 10)                                    # ...then BPM built the MP3
+    assert player.nav_cache_target("s2", False, "m4a")[0].endswith("s2.raw.m4a")
+    assert player.navidrome_cache_path("s2", False, "m4a").endswith("s2.raw.m4a")
