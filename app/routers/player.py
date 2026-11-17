@@ -1,5 +1,6 @@
 import asyncio
 import os
+import tempfile
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
@@ -18,7 +19,8 @@ _prewarm_tasks: set[asyncio.Task] = set()
 def _mime_for_path(path: str) -> str:
     """Return correct MIME type based on file extension."""
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-    return {"flac": "audio/flac", "opus": "audio/ogg", "m4a": "audio/mp4"}.get(ext, "audio/mpeg")
+    return {"flac": "audio/flac", "opus": "audio/ogg", "ogg": "audio/ogg", "m4a": "audio/mp4",
+            "mp4": "audio/mp4", "aac": "audio/aac", "wav": "audio/wav"}.get(ext, "audio/mpeg")
 
 
 async def _resolve_alive(name: str, artist: str) -> dict | None:
@@ -54,7 +56,7 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
     headers = {"X-Stream-Source": result["source"], "Accept-Ranges": "bytes"}
     if result["source"] == "local":
         path = result["path"]
-        is_mp3 = path.rsplit(".", 1)[-1].lower() == "mp3" if "." in path else False
+        is_mp3 = not player.wants_local_transcode(path)  # mp3 and other compact files: served raw
         # Match GET: non-mp3 local files are served as a cached 320k MP3 unless
         # lossless was requested, so report that file's MIME + Content-Length.
         if not is_mp3 and not lossless:
@@ -86,9 +88,67 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
     return Response(content=b"", headers=headers, media_type=mime)
 
 
+async def _file_or_follow(build, cache_path: str, progressive: bool, mime: str,
+                          file_headers: dict, headers: dict):
+    """Await a cache build and serve the file — or, for a deck that asked for it
+    (`progressive=1`) and a build that is not done within a moment, serve the file as
+    it grows (player.follow_build). Returns None when the build failed outright.
+
+    Only a DECK asks for this. A progressive answer has no Content-Length, so the
+    browser cannot tell its duration and a prefetch cannot tell a short read from a
+    complete one; prefetch keeps waiting for the finished file, as before."""
+    task = asyncio.create_task(build)
+    _prewarm_tasks.add(task)            # keep a reference: the build outlives this request
+
+    def _done(t: asyncio.Task) -> None:
+        _prewarm_tasks.discard(t)
+        if not t.cancelled():
+            t.exception()               # retrieved, so an abandoned build never warns
+    task.add_done_callback(_done)
+    if progressive:
+        done, _ = await asyncio.wait({task}, timeout=1.0)
+        if not done:
+            return StreamingResponse(
+                player.follow_build(task, cache_path), media_type=mime,
+                headers={**headers, "Accept-Ranges": "none", "Cache-Control": "no-store",
+                         "X-Stream-Progressive": "1"})
+    cached = await asyncio.shield(task)
+    if not cached:
+        return None
+    player.touch_cache_file(cached)
+    return FileResponse(cached, media_type=mime, headers=file_headers)
+
+
+@router.get("/stream-duration")
+async def player_stream_duration(name: str, artist: str = "", quality: str = "standard",
+                                 user: dict = Depends(_stream_auth)):
+    """Has this track's cache file been finished, and how long is it? Never builds,
+    never waits. The deck that is playing a progressive stream asks this until the
+    answer is yes: until then it has no duration to time its transition by."""
+    lossless = quality == "lossless"
+    # The resolution the stream request already made — looked up, never performed: a
+    # deck polls this every few seconds and must not be able to start a lookup. And
+    # only the file of THAT source: an old YouTube download of the same title is a
+    # different recording with a different length.
+    result = player.cached_resolution(name, artist)
+    path = None
+    if result and result["source"] == "navidrome":
+        path = player.navidrome_cache_path(result["song_id"], lossless=lossless)
+    elif result and result["source"] == "local":
+        path = result["path"] if os.path.exists(result["path"]) else None
+    elif result is None or result["source"] == "youtube":
+        path = player.youtube_cache_path(name, artist, "320k" if lossless else "192k")
+    dur = await asyncio.to_thread(player.audio_duration, path) if path else None
+    return {"ready": bool(dur), "duration": dur}
+
+
 @router.get("/stream")
-async def player_stream(name: str, artist: str = "", quality: str = "standard",
-                         user: dict = Depends(_stream_auth)):
+async def player_stream(request: Request, name: str, artist: str = "", quality: str = "standard",
+                         progressive: int = 0, user: dict = Depends(_stream_auth)):
+    # A Range that does not start at 0 is a seek or a resumed download: it needs the
+    # real file, never a from-the-top progressive body.
+    _rng = (request.headers.get("range") or "").replace(" ", "").lower()
+    progressive = bool(progressive) and _rng in ("", "bytes=0-")
     lossless = quality == "lossless"
     result = await _resolve_alive(name, artist)
     if not result:
@@ -110,7 +170,7 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
     file_headers = {**headers, "Cache-Control": "private, max-age=86400"}
     if source == "local":
         path = result["path"]
-        is_mp3 = path.rsplit(".", 1)[-1].lower() == "mp3" if "." in path else False
+        is_mp3 = not player.wants_local_transcode(path)  # mp3 and other compact files: served raw
         # Local FLAC is the only fat-blob path (Navidrome/YouTube are already 320k
         # MP3). Transcode non-mp3 local files to a cached 320k MP3 so prefetch blobs
         # shrink — unless lossless was requested (audiophile/DLNA path → raw FLAC).
@@ -148,11 +208,14 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
         return FileResponse(path, media_type=mime, headers=file_headers)
     elif source == "navidrome":
         # Try cached file first (supports Range requests, seeking, correct duration)
-        cached = await player.cache_navidrome_stream(result["song_id"], lossless=lossless)
-        if cached:
-            player.touch_cache_file(cached)
-            mime = _mime_for_path(cached) if lossless else "audio/mpeg"
-            return FileResponse(cached, media_type=mime, headers=file_headers)
+        mime = "audio/flac" if lossless else "audio/mpeg"
+        nav_path = os.path.join(tempfile.gettempdir(), "ms-nav-cache",
+                                f"{result['song_id']}.{'flac' if lossless else 'mp3'}")
+        resp = await _file_or_follow(
+            player.cache_navidrome_stream(result["song_id"], lossless=lossless),
+            nav_path, progressive, mime, file_headers, headers)
+        if resp is not None:
+            return resp
         # Resolved, but the song cannot be fetched: forget it so the next play
         # resolves afresh instead of failing for the rest of the 4 h TTL.
         player.invalidate_cache(name, artist)
@@ -162,10 +225,19 @@ async def player_stream(name: str, artist: str = "", quality: str = "standard",
     else:
         bitrate = "320k" if lossless else "192k"
         # Try cached file first for proper duration/seeking
-        cached = await player.cache_youtube_stream(result["url"], name, artist, bitrate=bitrate)
-        if cached:
-            player.touch_cache_file(cached)
-            return FileResponse(cached, media_type="audio/mpeg", headers=file_headers)
+        resp = await _file_or_follow(
+            player.cache_youtube_stream(result["url"], name, artist, bitrate=bitrate),
+            player._yt_cache_path(name, artist, bitrate), progressive, "audio/mpeg",
+            file_headers, headers)
+        if resp is not None:
+            return resp
+        # A build that was refused or cut short has just told us YouTube is not
+        # serving this — downloading the same URL a second time, live, is the traffic
+        # the backoff exists to prevent (and its body, with no Content-Length, would be
+        # cached by a prefetch however short it came out). Only a build that merely
+        # TIMED OUT falls through to the live stream, as it always did.
+        if progressive or player.youtube_refusing(name, artist):
+            raise HTTPException(502, "Stream could not be fetched")
         return StreamingResponse(player.stream_youtube(result["url"], bitrate=bitrate),
                                   media_type="audio/mpeg", headers=headers)
 
@@ -197,8 +269,7 @@ async def _prewarm_track(track: dict, lossless: bool) -> None:
             # GET; warm it here (idempotent + locked) so the first track doesn't
             # pay a cold transcode on its first GET. mp3 files are already fast.
             path = result["path"]
-            is_mp3 = path.rsplit(".", 1)[-1].lower() == "mp3" if "." in path else False
-            if not is_mp3 and not lossless:
+            if player.wants_local_transcode(path) and not lossless:
                 await player.cache_local_transcode(path)
     except Exception:
         # Pre-warm is best-effort: never surface errors.

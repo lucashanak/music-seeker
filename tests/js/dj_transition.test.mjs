@@ -158,6 +158,27 @@ test('compatible keys are untouched: a 16-beat blend that ends on the track end'
   assert.ok(Math.abs((NOW + 11.5) - silentAt(o)) < 0.3);
 });
 
+// ── "16 beats" must not mean 16 seconds ──────────────────────────────────────
+test('a fade is bounded in time: half-time grids lose whole bars, normal tempos keep 16', () => {
+  assert.equal(D.fadeBeatsFor(82, 16), 16);
+  assert.equal(D.fadeBeatsFor(104, 16), 16);
+  assert.equal(D.fadeBeatsFor(75, 16), 16);            // 12.8 s — inside the tolerance
+  assert.equal(D.fadeBeatsFor(62, 16), 12);            // was 15.5 s, now 11.6 s
+  assert.equal(D.fadeBeatsFor(58, 16), 12);
+  assert.equal(D.fadeBeatsFor(62, 32), 24);            // the user's longer setting scales too
+  assert.equal(D.fadeBeatsFor(undefined, 16), 16);
+  for (const bpm of [58, 60, 62, 66, 70, 74, 78, 82, 96, 115]) {
+    const sec = D.fadeBeatsFor(bpm, 16) * 60 / bpm;
+    assert.ok(sec <= 13.3 && D.fadeBeatsFor(bpm, 16) % 4 === 0, `${bpm} BPM → ${sec.toFixed(1)} s`);
+  }
+});
+
+test('the scheduler fades over the bounded count', () => {
+  const o = deck(1, 200), i = deck(0, 0);
+  const r = D.scheduleDjTransitionV3(ctx, o, i, { bpm: 62, camelot: '8A' }, { bpm: 62, camelot: '8A' }, { numBeats: 16, tempoRange: 8 });
+  assert.ok(Math.abs(r.duration - 12 * 60 / 62) < 0.01, `fade is ${r.duration.toFixed(1)} s`);
+});
+
 // ── The other ways a song lost its start or its end ─────────────────────────
 test('floor is 1 s: with 1.5 s left the fade ends with the track, not 1.5 s after it', () => {
   const { r, o } = run(MATCH, { fadeCapSec: 1.5 });

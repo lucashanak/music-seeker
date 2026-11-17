@@ -166,6 +166,23 @@ export function resolveTransitionStyle(forceStyle, outData, inData) {
   return getTransitionStyle(outData.camelot, inData.camelot) === 'cut' ? 'drop_cut' : 'blend';
 }
 
+/**
+ * How many beats a fade really gets on THIS track. The setting says "16 beats", but
+ * the analysis folds every tempo into 58–116 BPM, so a real 124 BPM track is stored as
+ * 62 and its "16 beats" are 16 half-time beats: a 15.5 s fade where an 82 BPM track
+ * gets 11.7 s. 40 % of the library sits below 80 folded BPM (measured 2026-11-17). The
+ * true tempo is not stored, so the count is bounded by TIME instead: never (much)
+ * longer than the same setting takes at 80 BPM, shortened by whole bars so the fade
+ * still starts on a bar line.
+ */
+export function fadeBeatsFor(bpm, numBeats = 16) {
+  if (!(Number.isFinite(bpm) && bpm > 0)) return numBeats;
+  const maxSec = numBeats * 0.75 * 1.1; // length at 80 BPM, +10 % so 73–80 keep the full count
+  let n = numBeats;
+  while (n > 4 && n * (60 / bpm) > maxSec) n -= 4;
+  return n;
+}
+
 /** Length of a drop cut's pre-roll (seconds): 4 beats of the outgoing track, 2–4 s. */
 export function dropCutLead(outBpm) {
   const bpm = Number.isFinite(outBpm) && outBpm > 0 ? outBpm : 85;
@@ -989,7 +1006,8 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   const matchedBpm = (Number.isFinite(outBpm) && outBpm > 0 ? outBpm : 85) * outRate;
   const beatPeriod = 60 / matchedBpm;
   const fallbackSec = opts.fallbackSec || 5;
-  const beatFade = outData?.bpm ? numBeats * beatPeriod : fallbackSec;
+  const fadeBeats = fadeBeatsFor(outBpm, numBeats);
+  const beatFade = outData?.bpm ? fadeBeats * beatPeriod : fallbackSec;
   // The outgoing deck plays at `outRate`, so it needs `fadeCap / outRate` WALL-CLOCK
   // seconds to actually reach its effective end. Land the outgoing gain at 0 exactly
   // there. Using just `beatFade` (or an un-rate-adjusted `fadeCap`) drops the deck to
@@ -1214,7 +1232,7 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   if (style === 'eq_swap') {
     const killDb = -(opts.eqKillDepth || 36);
     const swapFrac = opts.bassSwapPoint || 0.5;
-    const swapBeats = Math.round(numBeats * swapFrac);
+    const swapBeats = Math.round(fadeBeats * swapFrac);
     // Clamp to the (possibly fadeCap-shortened) duration — an uncapped swapBeats
     // time could land PAST endTime, leaving the incoming bass/mids killed after
     // the blend completed and making the gain timeline non-monotonic.

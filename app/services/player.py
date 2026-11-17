@@ -499,6 +499,114 @@ async def stream_local_file(file_path: str):
             await proc.wait()
 
 
+def navidrome_cache_path(song_id: str, lossless: bool = False) -> str | None:
+    """The finished Navidrome cache file for this song, or None. Never builds."""
+    p = os.path.join(tempfile.gettempdir(), "ms-nav-cache", f"{song_id}.{'flac' if lossless else 'mp3'}")
+    return p if os.path.exists(p) and os.path.getsize(p) > 0 else None
+
+
+def _fresh_tmp(tmp_path: str) -> None:
+    """A build always starts on a NEW inode. A .tmp left by a killed process would
+    otherwise be truncated and rewritten in place, and a follower already reading it
+    (follow_build) would splice the old bytes onto the new file."""
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+
+
+def cached_resolution(name: str, artist: str) -> dict | None:
+    """What this track is ALREADY resolved to, or None. Never resolves — a caller that
+    only wants to know about a finished file must not be able to start a lookup."""
+    hit = _url_cache.get(_cache_key(nfc(name), nfc(artist)))
+    return hit[0] if hit else None
+
+
+def youtube_refusing(name: str, artist: str) -> bool:
+    """YouTube is parked, or this very track just failed there."""
+    return youtube_rate_limited() or _yt_recently_failed(_cache_key(nfc(name), nfc(artist)))
+
+
+_duration_memo: dict[tuple, float] = {}
+
+
+def audio_duration(path: str) -> float | None:
+    """Length in seconds of a finished audio file, read from the file itself."""
+    try:
+        st = os.stat(path)
+        key = (path, st.st_size, st.st_mtime_ns)
+        if key in _duration_memo:
+            return _duration_memo[key]
+        import mutagen
+        f = mutagen.File(path)
+        dur = float(f.info.length) if f is not None and f.info and f.info.length else None
+        if dur and dur > 0:
+            if len(_duration_memo) > 2000:
+                _duration_memo.clear()
+            _duration_memo[key] = dur
+            return dur
+    except Exception:
+        pass
+    return None
+
+
+async def follow_build(task: "asyncio.Task", cache_path: str):
+    """Serve a cache file WHILE it is being built: the bytes written so far, then each
+    new one as it lands, until the build task finishes.
+
+    A track that is not on disk (Navidrome-only, YouTube) used to send nothing until
+    its whole file had been fetched and transcoded — 5 to 30 s of silence with a deck
+    that looked frozen, which the stall watchdog then skipped. The build writes to
+    `<cache>.tmp` and renames it when done; a rename keeps the inode, so one open file
+    descriptor follows the file across it.
+
+    The build runs as its own task and outlives this response: a listener who skips
+    away still leaves a finished cache file behind for the next play. If the build
+    FAILS, this raises — the connection is cut rather than closed cleanly, so the
+    client sees an error and not a track that just happens to be short."""
+    tmp = cache_path + ".tmp"
+    f = None
+    try:
+        while f is None:
+            for p in (tmp, cache_path):
+                try:
+                    f = open(p, "rb")
+                    break
+                except OSError:
+                    continue
+            if f is None:
+                if task.done():
+                    raise RuntimeError("stream build produced no file")
+                await asyncio.sleep(0.1)
+        while True:
+            chunk = f.read(65536)
+            if chunk:
+                yield chunk
+                continue
+            if task.done():
+                chunk = f.read(65536)   # whatever landed between the read and the check
+                if chunk:
+                    yield chunk
+                    continue
+                if task.cancelled() or task.exception() or not task.result():
+                    raise RuntimeError("stream build failed")
+                # The file we followed must BE the file that was finished. When the
+                # build we latched onto failed and a second one (waiting on the same
+                # lock) then succeeded, our descriptor is the first one's unlinked
+                # .tmp: we would end cleanly, half-way through the song.
+                try:
+                    same = os.fstat(f.fileno()).st_ino == os.stat(task.result()).st_ino
+                except OSError:
+                    same = False
+                if not same:
+                    raise RuntimeError("followed a build that was replaced")
+                return
+            await asyncio.sleep(0.15)
+    finally:
+        if f is not None:
+            f.close()
+
+
 async def cache_navidrome_stream(song_id: str, lossless: bool = False) -> str | None:
     """Download Navidrome stream to temp file and return path.
     Cached files enable Content-Length, Range requests, and correct duration."""
@@ -535,6 +643,7 @@ async def cache_navidrome_stream(song_id: str, lossless: bool = False) -> str | 
                             logger.warning("Navidrome answered song %s with %r, not audio — not caching",
                                            song_id, resp.headers.get("content-type"))
                             return None
+                        _fresh_tmp(cache_path + ".tmp")
                         with open(cache_path + ".tmp", "wb") as f:
                             async for chunk in resp.aiter_bytes(8192):
                                 f.write(chunk)
@@ -606,6 +715,51 @@ def local_transcode_cache_path(path: str) -> str | None:
     return os.path.join(tempfile.gettempdir(), "ms-local-cache", f"{key}.mp3")
 
 
+# Local files that are ALREADY compact and that every browser plays are served as they
+# are. The 320k MP3 transcode exists to shrink a 28 MB FLAC into a 9 MB prefetch blob;
+# applied to an .m4a it made the file BIGGER, and for an hour-long mix it could not
+# even finish — every play and every prewarm burned its whole ffmpeg timeout and then
+# served the raw file anyway.
+_SERVE_RAW_EXT = {"mp3", "m4a", "aac", "mp4"}
+
+
+_alac_memo: dict[tuple, bool] = {}
+
+
+def _is_alac(path: str) -> bool:
+    """An .m4a can hold ALAC (lossless) instead of AAC. Chrome and Firefox cannot decode
+    it, and it is as bulky as FLAC — it wants the transcode like any lossless file."""
+    try:
+        st = os.stat(path)
+        key = (path, st.st_size, st.st_mtime_ns)
+        if key not in _alac_memo:
+            from mutagen.mp4 import MP4
+            if len(_alac_memo) > 2000:
+                _alac_memo.clear()
+            _alac_memo[key] = (MP4(path).info.codec or "").lower().startswith("alac")
+        return _alac_memo[key]
+    except Exception:
+        return False
+
+
+def wants_local_transcode(path: str) -> bool:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    if ext not in _SERVE_RAW_EXT:
+        return True
+    return ext in ("m4a", "mp4") and _is_alac(path)
+
+
+def local_transcode_timeout(path: str) -> float:
+    """20 s was enough for a 4-minute FLAC on an idle box and for nothing longer: a
+    killed encode leaves no cache, so the next play is cold again — forever. Scale
+    with the input instead (≈0.75 s per MB, measured headroom ×2), capped."""
+    try:
+        mb = os.path.getsize(path) / 1e6
+    except OSError:
+        mb = 0
+    return min(300.0, 20.0 + 0.75 * mb)
+
+
 def carry_local_transcode(old_cache_path: str | None, path: str) -> None:
     """Re-key a cached transcode after *path* was rewritten in place (new mtime).
 
@@ -673,7 +827,7 @@ async def cache_local_transcode(path: str) -> str | None:
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-                await asyncio.wait_for(proc.wait(), timeout=20)
+                await asyncio.wait_for(proc.wait(), timeout=local_transcode_timeout(path))
                 if proc.returncode == 0 and os.path.exists(cache_path + ".tmp"):
                     os.rename(cache_path + ".tmp", cache_path)
                     evict_cache_dir(cache_dir, LOCAL_CACHE_MAX_BYTES)
@@ -767,6 +921,36 @@ def youtube_cache_path(name: str, artist: str, bitrate: str = "192k") -> str | N
     return None
 
 
+_FF_DURATION = re.compile(r"Duration:\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)")
+_FF_TIME = re.compile(r"time=\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)")
+
+
+def _hms(m) -> float:
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+
+
+def ffmpeg_cut_short(stderr_text: str) -> tuple[float, float] | None:
+    """(declared, encoded) seconds when ffmpeg encoded materially LESS than the input
+    said it held, else None. ffmpeg treats a read error on a network input as end of
+    file and exits 0, so a download YouTube dropped half-way looked like a success —
+    and was cached as the whole track, with a header for the short length: the deck
+    then faded out at the truncation point on every play until the file was evicted.
+    Both numbers come from ffmpeg's own log: the input's `Duration:` and the last
+    `time=` it reported. Unknown either way → None (no verdict, keep the file)."""
+    d = _FF_DURATION.search(stderr_text or "")
+    times = _FF_TIME.findall(stderr_text or "")
+    if not d or not times:
+        return None
+    declared = _hms(d)
+    h, m, s = times[-1]
+    encoded = int(h) * 3600 + int(m) * 60 + float(s)
+    if declared <= 0:
+        return None
+    if encoded < declared - 3 and encoded < declared * 0.98:
+        return declared, encoded
+    return None
+
+
 async def cache_youtube_stream(youtube_url: str, name: str, artist: str, bitrate: str = "192k") -> str | None:
     """Download YouTube audio to temp file via ffmpeg. Returns file path."""
     cache_dir = os.path.join(tempfile.gettempdir(), "ms-yt-cache")
@@ -789,19 +973,31 @@ async def cache_youtube_stream(youtube_url: str, name: str, artist: str, bitrate
                 return cache_path
             proc = None
             try:
+                _fresh_tmp(cache_path + ".tmp")
                 proc = await asyncio.create_subprocess_exec(
                     "ffmpeg", "-reconnect", "1", "-reconnect_streamed", "1",
                     "-i", youtube_url,
                     "-f", "mp3", "-ab", bitrate, "-vn",
                     "-y", cache_path + ".tmp",
                     stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                await asyncio.wait_for(proc.wait(), timeout=120)
-                if proc.returncode == 0 and os.path.exists(cache_path + ".tmp"):
+                # communicate(), not wait(): the log is read as it is written, so a
+                # chatty ffmpeg can never block on a full pipe.
+                _, err_b = await asyncio.wait_for(proc.communicate(), timeout=120)
+                err = (err_b or b"").decode("utf-8", "replace").replace("\r", "\n")
+                cut = ffmpeg_cut_short(err) if proc.returncode == 0 else None
+                if proc.returncode == 0 and not cut and os.path.exists(cache_path + ".tmp"):
                     os.rename(cache_path + ".tmp", cache_path)
                     evict_cache_dir(cache_dir, YT_CACHE_MAX_BYTES)
                     return cache_path
+                if cut:
+                    logger.warning("YouTube download of %r cut short: %.0fs of %.0fs — not caching",
+                                   f"{artist} - {name}"[:80], cut[1], cut[0])
+                # What ffmpeg said goes where yt-dlp's stderr goes: a 429/403 here is the
+                # same refusal and has to park the YouTube arm the same way.
+                tail = "\n".join(l for l in err.splitlines() if l.strip() and "time=" not in l)[-600:]
+                _note_ytdlp_stderr(f"download {artist} - {name}"[:80], tail)
                 # ffmpeg gave up on the URL (403, expired, refused): the resolution is
                 # dead — forget it and leave the track alone for a while. Decided HERE
                 # because only this function can tell a refusal from a TIMEOUT: a long

@@ -10,6 +10,7 @@ import * as djPanel from './djpanel.js';
 // Forward references set during init to avoid circular imports
 let nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon;
 let _audioRef = null;    // static ref (classic player)
+let _engineSeek = null;
 let _audioGetter = null; // dynamic getter (crossfade player — returns active deck)
 
 function audio() {
@@ -25,6 +26,7 @@ export function setPlayerRefs(refs) {
   updatePlayPauseIcon = refs.updatePlayPauseIcon;
   _audioRef = refs.audio;
   _audioGetter = refs.getAudio || null;
+  _engineSeek = refs.seekToFraction || null; // DJ engine only; classic leaves it unset
 }
 
 // ── Shared player-mode toggles (engine-agnostic: drive store, sync both UIs) ──
@@ -371,14 +373,17 @@ export function init() {
   // Full player seek
   function _fpSeek(e) {
     const a = audio();
-    const dur = a.duration && isFinite(a.duration) && a.duration > 0
-      ? a.duration
-      : (() => { const item = store.playerQueue[store.playerIndex]; return item?.duration_ms > 0 ? item.duration_ms / 1000 : null; })();
-    if (!dur) return;
     const bar = $('#fpProgressBar');
     const rect = bar.getBoundingClientRect();
     const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
     const pct = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+    // The DJ engine knows durations this element does not (a stream served while its
+    // file is still being built reports Infinity) and how to seek in such a stream.
+    if (!store.castDevice && _engineSeek) { _engineSeek(pct); return; }
+    const dur = a.duration && isFinite(a.duration) && a.duration > 0
+      ? a.duration
+      : (() => { const item = store.playerQueue[store.playerIndex]; return item?.duration_ms > 0 ? item.duration_ms / 1000 : null; })();
+    if (!dur) return;
     if (store.castDevice) {
       apiJson('/api/dlna/seek', { method: 'POST', body: { position_seconds: pct * dur } }).catch(() => {});
     } else {

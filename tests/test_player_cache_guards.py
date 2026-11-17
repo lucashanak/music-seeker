@@ -107,6 +107,10 @@ class _Proc:
     def kill(self):
         self.killed = True
 
+    async def communicate(self):
+        await self.wait()
+        return b"", b""
+
 
 def test_youtube_timeout_kills_ffmpeg_and_removes_tmp(tmp, monkeypatch):
     proc = _Proc()
@@ -148,3 +152,168 @@ def test_touch_cache_file_bumps_atime_only(tmp):
 
 def test_touch_cache_file_ignores_missing(tmp):
     player.touch_cache_file(str(tmp / "nope.mp3"))  # must not raise
+
+
+# ── A YouTube download that was dropped half-way is not a track ──────────────
+_FF_OK = """Input #0, matroska,webm, from 'https://x':
+  Duration: 00:03:45.12, start: 0.000000, bitrate: 128 kb/s
+size=    1024kB time=00:01:00.00 bitrate= 192.0kbits/s speed=40x
+size=    5273kB time=00:03:45.09 bitrate= 192.0kbits/s speed=41x
+"""
+_FF_CUT = _FF_OK.replace("time=00:03:45.09", "time=00:01:58.40") + "https @ 0x1: HTTP error 403 Forbidden\n"
+
+
+def test_ffmpeg_cut_short_reads_ffmpegs_own_numbers():
+    assert player.ffmpeg_cut_short(_FF_OK) is None
+    declared, encoded = player.ffmpeg_cut_short(_FF_CUT)
+    assert round(declared) == 225 and round(encoded) == 118
+    assert player.ffmpeg_cut_short("") is None                      # nothing to go on → no verdict
+    assert player.ffmpeg_cut_short("Duration: N/A, bitrate: N/A\ntime=00:00:10.00") is None
+
+
+class _DoneProc:
+    def __init__(self, err):
+        self.returncode = 0
+        self._err = err.encode()
+
+    async def communicate(self):
+        return b"", self._err
+
+    async def wait(self):
+        return 0
+
+    def kill(self):
+        pass
+
+
+def _run_yt(monkeypatch, err):
+    async def fake_exec(*args, **kw):
+        open(args[-1], "wb").write(b"x" * 50000)
+        return _DoneProc(err)
+    monkeypatch.setattr(player.asyncio, "create_subprocess_exec", fake_exec)
+    return asyncio.run(player.cache_youtube_stream("http://u", "Song", "Artist"))
+
+
+def test_truncated_youtube_download_is_not_cached(tmp, monkeypatch):
+    player._yt_failed.clear()
+    assert _run_yt(monkeypatch, _FF_CUT) is None         # ffmpeg exited 0 — and still no file
+    assert os.listdir(tmp / "ms-yt-cache") == []
+    # ...and the track is left alone for a while instead of re-asking YouTube at once.
+    assert player._yt_recently_failed(player._cache_key(player.nfc("Song"), player.nfc("Artist")))
+
+
+def test_complete_youtube_download_is_cached(tmp, monkeypatch):
+    path = _run_yt(monkeypatch, _FF_OK)
+    assert path and os.path.getsize(path) == 50000
+
+
+# ── Compact local files are served as they are ───────────────────────────────
+def test_only_bulky_local_formats_are_transcoded():
+    assert player.wants_local_transcode("/m/a.flac")
+    assert player.wants_local_transcode("/m/a.wav")
+    assert player.wants_local_transcode("/m/a.opus")        # Safari cannot be trusted with it
+    for ext in ("mp3", "m4a", "aac", "MP3", "M4A"):
+        assert not player.wants_local_transcode(f"/m/Mixes/hour-long.{ext}")
+
+
+def test_transcode_timeout_grows_with_the_file(tmp):
+    small, big = tmp / "s.flac", tmp / "b.flac"
+    small.write_bytes(b"x" * 1_000_000)
+    with open(big, "wb") as f:
+        f.truncate(200_000_000)                              # sparse: no disk used
+    assert 20 <= player.local_transcode_timeout(str(small)) < 22
+    assert player.local_transcode_timeout(str(big)) > 150
+    assert player.local_transcode_timeout(str(tmp / "missing.flac")) == 20
+
+
+# ── A cache file can be served while it is still being built ─────────────────
+def test_follow_build_streams_the_file_as_it_grows_and_across_the_rename(tmp):
+    final = str(tmp / "song.mp3")
+    parts = [bytes([i]) * 40000 for i in range(1, 6)]
+
+    async def run():
+        async def build():
+            with open(final + ".tmp", "wb") as f:
+                for p in parts:
+                    f.write(p)
+                    f.flush()
+                    await asyncio.sleep(0.05)
+            os.rename(final + ".tmp", final)       # same inode: the reader keeps its place
+            return final
+        task = asyncio.create_task(build())
+        got, first_at = b"", None
+        async for chunk in player.follow_build(task, final):
+            if first_at is None:
+                first_at = task.done()
+            got += chunk
+        return got, first_at
+
+    got, build_done_at_first_byte = asyncio.run(run())
+    assert got == b"".join(parts)                    # every byte, once, in order
+    assert build_done_at_first_byte is False         # ...and the first ones BEFORE the build ended
+
+
+def test_follow_build_cuts_the_connection_when_the_build_fails(tmp):
+    final = str(tmp / "bad.mp3")
+
+    async def run():
+        async def build():
+            with open(final + ".tmp", "wb") as f:
+                f.write(b"x" * 1000)
+            await asyncio.sleep(0.05)
+            os.unlink(final + ".tmp")
+            return None                              # what the cache builders return on failure
+        task = asyncio.create_task(build())
+        async for _ in player.follow_build(task, final):
+            pass
+
+    with pytest.raises(RuntimeError):                # not a clean end: the client must see an error
+        asyncio.run(run())
+
+
+def test_audio_duration_of_a_missing_or_non_audio_file_is_none(tmp):
+    junk = tmp / "junk.mp3"
+    junk.write_bytes(b"not audio at all")
+    assert player.audio_duration(str(junk)) is None
+    assert player.audio_duration(str(tmp / "nope.mp3")) is None
+
+
+def test_follow_build_refuses_a_file_that_was_replaced_under_it(tmp):
+    """The build we latched onto fails and a second one succeeds: our descriptor is the
+    first one's unlinked .tmp. Ending cleanly there would be half a song."""
+    final = str(tmp / "song.mp3")
+
+    async def run():
+        with open(final + ".tmp", "wb") as f:      # the first build's partial file
+            f.write(b"a" * 65536)
+
+        async def second_build():
+            await asyncio.sleep(0.1)
+            player._fresh_tmp(final + ".tmp")       # what every builder now does first
+            with open(final + ".tmp", "wb") as f:
+                f.write(b"b" * 163840)
+            os.rename(final + ".tmp", final)
+            return final
+        task = asyncio.create_task(second_build())
+        async for _ in player.follow_build(task, final):
+            pass
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(run())
+
+
+def test_cached_resolution_never_resolves(monkeypatch):
+    async def boom(*a, **k):
+        raise AssertionError("a duration poll must not start a lookup")
+    monkeypatch.setattr(player, "_resolve_youtube", boom)
+    monkeypatch.setattr(player, "_resolve_navidrome", boom)
+    assert player.cached_resolution("Never Seen", "Nobody") is None
+    player._cache_put(player._cache_key(player.nfc("Seen"), "a"), {"source": "navidrome", "song_id": "7"})
+    assert player.cached_resolution("Seen", "a")["song_id"] == "7"
+
+
+def test_youtube_refusing_after_a_cut_download(tmp, monkeypatch):
+    player._yt_failed.clear()
+    assert not player.youtube_refusing("Song", "Artist")
+    assert _run_yt(monkeypatch, _FF_CUT) is None
+    assert player.youtube_refusing("Song", "Artist")   # → the router answers 502, no live re-download

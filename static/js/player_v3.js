@@ -8,7 +8,7 @@ import { openModal } from './downloads.js';
 import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, playOrder, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, abortStale, keyFor as prefetchKey, resumePrefetch, streamQuality, setUpcomingProvider } from './prefetch.js';
-import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration, resolveTransitionStyle, dropCutLead, clearPendingSeek } from './djmix.js';
+import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration, resolveTransitionStyle, dropCutLead, clearPendingSeek, fadeBeatsFor } from './djmix.js';
 import { getDjData } from './bpm.js';
 import * as cast from './cast.js';
 import { ab as _ab, abPlay, abPause, abStop } from './androidbridge.js';
@@ -398,7 +398,11 @@ function _rearmDeck(deck) {
     let src = old;
     try {
       const u = new URL(old);
-      if (tok && u.searchParams.has('token')) { u.searchParams.set('token', tok); src = u.href; }
+      if (tok && u.searchParams.has('token')) u.searchParams.set('token', tok);
+      // The finished, seekable file — a progressive body cannot be seeked back to
+      // where the deck stopped, so the song would restart from 0.
+      u.searchParams.delete('progressive');
+      src = u.href;
     } catch {}
     _rearmedSrc = src;
     const onMeta = () => {
@@ -562,7 +566,7 @@ function _startCrossfade(seekable = true) {
   // bring the next one straight in (see quickIn in djmix).
   let outDead = _fadingOutDeck.ended || _fadingOutDeck.paused || !!_fadingOutDeck.error;
   {
-    const oDur = _fadingOutDeck.duration;
+    const oDur = _deckDur(_fadingOutDeck);
     if (oDur && isFinite(oDur) && oDur > 0) {
       let eff = oDur;
       const oSkip = _djSetting('outro_skip', '0');
@@ -1037,6 +1041,46 @@ window._androidBridgeReady = function() {
   }
 };
 
+// ── A deck's duration when the browser cannot know it ──
+// A track that is not on disk yet is served WHILE the server builds its file
+// (`progressive=1`): it starts at once instead of after 5–30 s of silence, but the
+// answer has no Content-Length, so the element reports duration = Infinity — measured
+// in Chromium — until it has read the stream to its very end. The transition is timed
+// off the duration, so without one the track would either run into `ended` or be cut
+// at whatever length the catalogue claims. The server knows the real length as soon as
+// the file is finished (a few seconds in); the deck asks until it is told.
+// Kept ON the deck element (both decks can be mid-poll during a fade, and one shared
+// slot let the outgoing track's late answer overwrite the incoming track's).
+function _deckDur(deck) {
+  const d = deck.duration;
+  if (d && isFinite(d) && d > 0) return d;
+  const l = deck._msLearned;
+  return (l && l.src === deck.src) ? l.dur : d;
+}
+function _learnDuration(deck, item) {
+  const src = deck.src;
+  if (!src || src.startsWith('blob:') || deck._msLearning === src || deck._msLearned?.src === src) return;
+  if (deck.duration && isFinite(deck.duration)) return;
+  deck._msLearning = src;
+  const q = new URLSearchParams({ name: _decodeEntities(item.name || ''), artist: _decodeEntities(item.artist || ''), token: streamToken() });
+  let tries = 0;
+  const ask = async () => {
+    if (deck.src !== src || (deck.duration && isFinite(deck.duration))) { if (deck._msLearning === src) deck._msLearning = ''; return; }
+    try {
+      const r = await fetch(`/api/player/stream-duration?${q}&quality=${streamQuality()}`);
+      const d = r.ok ? await r.json() : null;
+      if (d && d.ready && d.duration > 0 && deck.src === src) {
+        deck._msLearned = { src, dur: d.duration };
+        deck._msLearning = '';
+        if (localStorage.getItem('ms_dj_debug')) console.log(`[DJ dur] learned ${d.duration.toFixed(1)}s for a progressive stream`);
+        return;
+      }
+    } catch {}
+    if (++tries < 60) setTimeout(ask, 3000); else if (deck._msLearning === src) deck._msLearning = '';
+  };
+  setTimeout(ask, 1500);
+}
+
 // ── Helper: get duration with Safari fallback ──
 function _getDuration() {
   // A recommendation played outside the queue is the track on the deck — the queue
@@ -1044,7 +1088,7 @@ function _getDuration() {
   const item = _currentRecItem || store.playerQueue[store.playerIndex];
   const metaSec = item && item.duration_ms > 0 ? item.duration_ms / 1000 : 0;
   const deck = _activeDeckEl();
-  const dur = deck.duration;
+  const dur = _deckDur(deck);
   const deckOk = dur && isFinite(dur) && dur > 0;
   // WebKit/WKWebView (notably AVFoundation on macOS) can report a streamed track's
   // audio.duration as a small value that TRACKS the playhead (duration ≈ currentTime),
@@ -1070,6 +1114,37 @@ function _getDuration() {
   if (deckOk) return dur;
   if (metaSec > 0) return metaSec;
   return null;
+}
+
+/** Seek the local deck to `to` seconds. Exported for the full-player bar too. */
+export function seekLocal(to) {
+  const d = _activeDeckEl();
+  // A progressive stream (duration unknown to the element) has nothing seekable:
+  // the click was silently dropped. Reload the finished file and seek in that.
+  if (!(d.duration && isFinite(d.duration)) && String(d.src).includes('progressive=1') && !_crossfading) {
+    let src = d.src;
+    try { const u = new URL(src); u.searchParams.delete('progressive'); src = u.href; } catch {}
+    const learned = d._msLearned ? { src, dur: d._msLearned.dur } : null;
+    const wasPlaying = !d.paused;
+    const onMeta = () => {
+      d.removeEventListener('loadedmetadata', onMeta);
+      if (d !== _activeDeckEl() || d.src !== src) return;
+      try { d.currentTime = to; } catch {}
+      if (wasPlaying) d.play().catch(() => {});
+    };
+    d.addEventListener('loadedmetadata', onMeta);
+    _setDeckSrc(d, src);
+    if (learned) d._msLearned = learned;
+    if (wasPlaying) d.play().catch(() => {});
+    return;
+  }
+  try { d.currentTime = to; } catch {}
+}
+
+/** Fraction → seconds with the engine's own idea of the duration (learned lengths included). */
+export function seekToFraction(pct) {
+  const dur = _getDuration();
+  if (dur) seekLocal(pct * dur);
 }
 
 // ── Play Track ──
@@ -1274,7 +1349,7 @@ async function _loadAndPlayImpl(keepRec) {
   } else {
     _ensureAudioContext();
     if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
-    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}`;
+    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}&progressive=1`;
 
     const currentDeck = _activeDeckEl();
     // Fix 4: a track that ended WITHOUT firing the auto trigger leaves currentDeck paused
@@ -1616,7 +1691,8 @@ export function nextTrack(opts = {}) {
       const cur = store.playerQueue[store.playerIndex];
       if (cur && cur.name) {
         const deck = _activeDeckEl();
-        const dur = deck && deck.duration ? deck.duration : 0;
+        const _d = deck ? _deckDur(deck) : 0;
+        const dur = _d && isFinite(_d) ? _d : 0;
         const pos = deck && deck.currentTime ? deck.currentTime : 0;
         const ratio = dur > 0 ? pos / dur : 0;
         import('./recommendations.js').then(m => {
@@ -1917,7 +1993,7 @@ export async function playRecTrack(item) {
   } else {
     _ensureAudioContext();
     if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
-    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}`;
+    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}&progressive=1`;
     const cached = getCachedUrl(cleanName, cleanArtist, item.id);
     const src = cached || streamUrl;
     const curDeck = _activeDeckEl();
@@ -2208,6 +2284,7 @@ export function init() {
     deck.addEventListener('playing', () => {
       if (deck !== _activeDeckEl()) return;
       _errStreak = 0; // a track is audibly playing — the failure run is over
+      { const _li = _currentRecItem || store.playerQueue[store.playerIndex]; if (_li) _learnDuration(deck, _li); }
       { // Audible now, whatever `pause` an outgoing deck reported on the way here.
         const _it = _currentRecItem || store.playerQueue[store.playerIndex];
         if (_it) abPlay(_it.name, _it.artist);
@@ -2456,7 +2533,9 @@ export function init() {
           // would trigger too early. Never trigger earlier than 25% from end, max 30s.
           if (triggerAt > dur * 0.25 || triggerAt > 30) triggerAt = _crossfadeDur();
         } else if (_outDjData && _outDjData.beat_grid && _outDjData.bpm) {
-          const numBeats = parseInt(_djSetting('crossfade_beats', '16')) || 16;
+          // The same bounded count the scheduler fades over (fadeBeatsFor) — a lead
+          // longer than the fade would leave the track's tail playing under nothing.
+          const numBeats = fadeBeatsFor(_outDjData.bpm, parseInt(_djSetting('crossfade_beats', '16')) || 16);
           // Prefer bar/phrase-aligned start when downbeat data exists so the fade STARTS
           // on a bar boundary; fall back to the beat grid (identical to today) otherwise.
           let startBeat = null;
@@ -2561,7 +2640,7 @@ export function init() {
     if (store.castDevice) {
       apiJson('/api/dlna/seek', { method: 'POST', body: { position_seconds: pct * dur } }).catch(() => {});
     } else {
-      try { _activeDeckEl().currentTime = pct * dur; } catch {}
+      seekLocal(pct * dur);
     }
   }
   const miniBar = $('#playerProgressBar');

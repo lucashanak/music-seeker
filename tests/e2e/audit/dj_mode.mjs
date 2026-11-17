@@ -17,7 +17,7 @@
 // e2e-djreview; tracks come from the server's own BPM cache (= owned tracks), the
 // recommender and radio are stubbed empty so no test can start a YouTube lookup.
 //
-//   node tests/e2e/audit/dj_mode.mjs --tree [clash blend error cold shuffle last]
+//   node tests/e2e/audit/dj_mode.mjs --tree [clash blend error cold progressive shuffle last]
 import pw from '/home/lucas/music-seeker/node_modules/playwright/index.js';
 import { serveWorktree, URL as BASE, USER, PASS } from '/home/lucas/music-seeker/tests/e2e/audit/helpers.mjs';
 
@@ -242,6 +242,60 @@ const scenarios = {
       const rise = up ? up.end - up.at : 0; // 0 = gain set straight to 1
       check('cold: the track after a broken first one is playing', (await title(s.page)) === c.name, `after ${(took / 1000).toFixed(1)}s`);
       check('cold: it comes in at once, not over a long fade', rise < 1, `gain reaches 1 in ${rise.toFixed(2)}s`);
+    } finally { await s.browser.close(); }
+  },
+  // 3c. A track that is not on disk (served through Navidrome) and whose server cache
+  // is cold: it must start at once, the deck must learn its real length, and the
+  // transition out of it must still end on the track's end.
+  async progressive() {
+    let nav = null;
+    for (const t of lib.slice(40, 160)) {
+      const q = new URLSearchParams({ name: t.name, artist: t.artist });
+      const src = await api(`/api/player/resolve-source?${q}`, null, tok);
+      if (src.source !== 'navidrome') continue;
+      const d = await (await fetch(`${BASE}/api/player/stream-duration?${q}&token=${encodeURIComponent(tok)}`, { headers: { 'User-Agent': 'ms-review/1.0' } })).json().catch(() => ({}));
+      if (d.ready === false) { nav = t; break; }       // resolved, but no finished cache file
+    }
+    if (!nav) { check('progressive: a cold Navidrome-only track exists to test with', false, 'none found (all warm, or endpoint not deployed)'); return; }
+    const b = lib.find(t => t.artist !== nav.artist && styleOf(nav.camelot, t.camelot) === 'blend');
+    const s = await session();
+    try {
+      let prog = false;
+      s.page.on('response', (r) => { if (r.url().includes('/api/player/stream?') && r.headers()['x-stream-progressive'] === '1') prog = true; });
+      const t0 = Date.now();
+      await start(s.page, [item(nav), item(b)]);
+      const took = Date.now() - t0;
+      check('progressive: the stream is served while it is being built', prog, `${nav.artist} – ${nav.name}`);
+      check('progressive: playback starts at once', took < 6000, `audible after ${(took / 1000).toFixed(1)}s (BPM warm-up included)`);
+      const t1 = Date.now();
+      let learned = null;
+      while (Date.now() - t1 < 90000 && !learned) {
+        const l = s.logs.map(x => x.t).find(x => x.startsWith('[DJ dur] learned'));
+        if (l) learned = parseFloat(l.match(/learned ([\d.]+)s/)[1]);
+        else await sleep(500);
+      }
+      const d0 = await decks(s.page);
+      const elDur = d0.find(x => !x.paused)?.d;
+      check('progressive: the deck learns the real length', learned > 30, `learned ${learned}s; element reports ${elDur}`);
+      // The point of learning it: the engine must be USING it while the element still
+      // cannot tell (null here = Infinity through JSON). The total-time label is drawn
+      // from the same value the transition trigger reads.
+      await sleep(1200);
+      const total = await s.page.evaluate(() => document.querySelector('#playerTimeTotal').textContent);
+      const want = `${Math.floor(learned / 60)}:${String(Math.floor(learned % 60)).padStart(2, '0')}`;
+      check('progressive: the engine uses it while the element still reports no duration', !Number.isFinite(elDur) && total === want, `element=${elDur}, shown total=${total}, learned=${want}`);
+      if (!learned) return;
+      await waitCached(s.page, b);
+      await s.page.evaluate(() => { window.__gain.length = 0; });
+      await s.page.evaluate((to) => window.__m.eng.seekLocal(to), learned - 24); // the engine's seek: reloads the finished file
+      await s.page.waitForFunction(() => window.__gain.some(g => g.v < 1e-6 && g.m !== 'setValueAtTime'), null, { timeout: 45000 });
+      await sleep(300);
+      const trig = s.logs.map(l => l.t).filter(t => t.startsWith('[DJ auto]')).pop() || '';
+      const rem = parseFloat((trig.match(/rem=([\d.]+)/) || [])[1]);
+      const g = await s.page.evaluate(() => window.__gain);
+      const zero = g.filter(x => x.v < 1e-6 && x.m !== 'setValueAtTime').sort((x, y) => x.end - y.end)[0];
+      const lost = rem - (zero.end - zero.at);
+      check('progressive: its transition still ends on the track end', Math.abs(lost) < 1.0 && rem > 2, `rem=${rem}s, silent after ${(zero.end - zero.at).toFixed(2)}s`);
     } finally { await s.browser.close(); }
   },
   // 4. Shuffle: what gets prefetched is what shuffle plays next.
