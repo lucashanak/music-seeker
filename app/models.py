@@ -16,6 +16,10 @@ class DownloadRequest(BaseModel):
     playlist_tracks: list[dict] = []
 
 
+class MixInfoRequest(BaseModel):
+    url: str
+
+
 class ResolveRequest(BaseModel):
     name: str
     artist: str = ""

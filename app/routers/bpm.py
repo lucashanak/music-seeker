@@ -4,7 +4,7 @@ import time
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from app.services import auth, bpm, library
+from app.services import auth, bpm, library, mixes
 from app.dependencies import bind_navidrome_creds
 
 # Router-level so it cannot be forgotten on a new endpoint: every handler here
@@ -98,6 +98,11 @@ async def get_track_bpm(
     # TTL can still be analysed on demand.
     if not force and not cached and _is_known_not_owned(name, artist):
         return _not_owned_response(name, artist)
+
+    # A downloaded DJ mix is owned but never analysed: an hour of audio whose tempo
+    # wanders is not one BPM, and libsndfile cannot open its AAC at all.
+    if not cached and mixes.is_mix(name, artist):
+        return {"owned": True, "analysable": False, "mix": True, "name": name, "artist": artist}
 
     song_id = await library.find_song_id(name, artist) or ""
 
@@ -195,6 +200,7 @@ async def lookup_bpm_by_name(
             to_analyze.append(t)
 
     limit = min(req.limit if req.limit and req.limit > 0 else LOOKUP_ANALYZE_DEFAULT, ANALYZE_MAX)
+    to_analyze = [t for t in to_analyze if not mixes.is_mix(t.name, t.artist)]
     for t in to_analyze[:limit]:
         song_id = await library.find_song_id(t.name, t.artist) or ""
         rec = await bpm.analyze_track(song_id, t.name, t.artist)

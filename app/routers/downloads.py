@@ -3,16 +3,50 @@ import os
 
 from fastapi import APIRouter, HTTPException, Depends
 
-from app.models import DownloadRequest
-from app.services import auth, jobs, downloader
+from app.models import DownloadRequest, MixInfoRequest
+from app.services import auth, jobs, downloader, mixes
 from app.dependencies import _get_dir_size, bind_navidrome_creds
 
 router = APIRouter(prefix="/api", tags=["downloads"], dependencies=[Depends(bind_navidrome_creds)])
 
 
+def _require_mix_perms(user: dict) -> None:
+    """A mix is fetched by yt-dlp and kept in its original codec, so only the
+    method is the account's to allow; there is no format being chosen."""
+    allowed = user.get("allowed_methods", auth.DEFAULT_PERMS["allowed_methods"])
+    if "yt-dlp" not in allowed:
+        raise HTTPException(403, "Method 'yt-dlp' not allowed for your account")
+
+
+@router.post("/mix/info")
+async def mix_info(req: MixInfoRequest, user: dict = Depends(auth.get_current_user)):
+    """Details of a pasted Mixcloud/SoundCloud mix link, for the search banner.
+    400 = not a single-mix link (or the site refused it), with the reason."""
+    _require_mix_perms(user)  # only an account that could download it may ask
+    try:
+        info = await mixes.fetch_info(req.url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    from app.services import library
+    try:
+        info["in_library"] = bool(await library.find_song_id(info["title"], info["uploader"]))
+    except Exception:
+        info["in_library"] = False  # Navidrome down: the download job checks again
+    return info
+
+
 @router.post("/download")
 async def start_download(req: DownloadRequest, user: dict = Depends(auth.get_current_user)):
-    auth.require_download_perms(user, req.method, req.format)
+    # A mix link is a mix whatever the client called it: it must never reach the
+    # YouTube search path, and its format is whatever the source serves.
+    if req.url and mixes.parse_mix_url(req.url):
+        req.type, req.method, req.format = "mix", "yt-dlp", "original"
+    if req.type == "mix":
+        if not mixes.parse_mix_url(req.url):
+            raise HTTPException(400, "Not a Mixcloud or SoundCloud mix link")
+        _require_mix_perms(user)
+    else:
+        auth.require_download_perms(user, req.method, req.format)
     # Quota check
     quota_gb = user.get("quota_gb", 0)
     if quota_gb > 0:
@@ -84,7 +118,10 @@ async def retry_job(job_id: str, user: dict = Depends(auth.get_current_user)):
         raise HTTPException(404, 'Job not found or not retryable')
     # Re-check permissions instead of trusting the original job: an admin may
     # have revoked FLAC or slskd since it ran, and a retry must not resurrect it.
-    auth.require_download_perms(user, data['method'], data['format'])
+    if data['type'] == "mix":
+        _require_mix_perms(user)
+    else:
+        auth.require_download_perms(user, data['method'], data['format'])
     job = jobs.create_job(
         type_=data['type'],
         title=data['title'],

@@ -122,7 +122,9 @@ export async function fetchTrackBpm(name, artist) {
   if (isBpmUnavailable(name, artist)) return null;
   try {
     const data = await apiJson(`/api/bpm/track?name=${encodeURIComponent(name)}&artist=${encodeURIComponent(artist)}`);
-    if (data && data.owned === false) {
+    // owned:false = no audio to open; analysable:false = owned, but never analysed
+    // (a downloaded DJ mix). Either way there is nothing to ask again for a while.
+    if (data && (data.owned === false || data.analysable === false)) {
       _notOwned.set(key, Date.now() + NOT_OWNED_TTL_MS);
       return null;
     }

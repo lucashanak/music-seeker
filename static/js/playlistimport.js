@@ -13,6 +13,7 @@ import { apiFetch, apiJson } from './api.js';
 import { openModal } from './downloads.js';
 import { getPlayerModule } from './player_active.js';
 import { showImportedPlaylist } from './spotify.js';
+import { parseMixLink, renderMixLoading, renderMixBanner, fetchMixInfo } from './mixlink.js';
 
 // ── Link sniffing ──
 // Only playlist/album shapes count as a "collection link" — a bare track link
@@ -789,6 +790,10 @@ function openImportModalForTruncated(data) {
 // it → the collection import; anything else (track links, "Artist - Title"
 // lines) → the per-track import.
 export async function runImport(text) {
+  if (parseMixLink(text)) {
+    showToast('That\'s a Mixcloud/SoundCloud mix — paste it into Search to download it', true);
+    return null;
+  }
   const link = parseCollectionLink(text);
   markNewImport();   // any harvest still running is now for the previous import
   showToast('Importing…');
@@ -856,6 +861,9 @@ function onSearchInputChanged() {
   const input = $('#searchInput');
   if (!input) return;
   const raw = input.value || '';
+  // A Mixcloud/SoundCloud mix is one file to download, not a list to import.
+  const mix = parseMixLink(raw);
+  if (mix) { showMixBanner(mix); return; }
   const link = parseCollectionLink(raw);
   if (!link) {
     clearTimeout(_debounceTimer);
@@ -886,6 +894,34 @@ function onSearchInputChanged() {
   // as the id is long enough, so only the settled value should hit the API.
   const gen = ++_bannerGen;
   _debounceTimer = setTimeout(() => importForBanner(raw.trim(), key, gen), 450);
+}
+
+// Same key/generation discipline as the collection banner below: one request
+// per settled link, and a stale answer never paints over a newer one.
+function showMixBanner(mix) {
+  const key = `mix:${mix.url}`;
+  if (key === _bannerKey) return;
+  clearTimeout(_debounceTimer);
+  clearTimeout(store.searchTimeout);
+  _bannerKey = key;
+  const el = bannerEl();
+  if (!el) return;
+  renderMixLoading(el, mix);
+  el.style.display = '';
+  _setResultsHidden(true);
+  const gen = ++_bannerGen;
+  _debounceTimer = setTimeout(async () => {
+    try {
+      const info = await fetchMixInfo(mix.url);
+      if (gen !== _bannerGen || key !== _bannerKey) return;
+      renderMixBanner(el, info);
+      el.style.display = '';
+      _setResultsHidden(true);
+    } catch (e) {
+      if (gen !== _bannerGen || key !== _bannerKey) return;
+      renderBannerHint(e.message || 'Not a mix link');
+    }
+  }, 450);
 }
 
 async function importForBanner(url, key, gen) {

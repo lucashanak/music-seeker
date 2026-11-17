@@ -99,7 +99,13 @@ async def run_download(job: Job):
         job.status = JobStatus.RUNNING
         try:
             downloaded = True
-            if job.method == "yt-dlp":
+            if job.type == "mix":
+                # A Mixcloud/SoundCloud link: download THAT file, never search.
+                from app.services import mixes
+                downloaded = await mixes.run_mix(
+                    job, MUSIC_DIR, PODCAST_DL_TIMEOUT, _check_quota, library.find_song_id,
+                )
+            elif job.method == "yt-dlp":
                 downloaded = await _run_ytdlp(job)
             elif job.method == "slskd":
                 downloaded = await _run_slskd(job)
