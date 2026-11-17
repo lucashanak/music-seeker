@@ -36,7 +36,27 @@ export function wasLongPress(targetEl) {
 function _onScrollOrMove() { hideContextMenu(); }
 
 // ── Public: show menu at coords with arbitrary actions ──
+let _menuOpener = null;
+
+// Decide BEFORE opening: the editor must not open only to say "not in your library".
+async function openClipCutter(it, opener) {
+  let m;
+  try { m = await import('./mixcut.js'); } catch { showToast('Could not open the clip cutter', true); return; }
+  // Names reach the menu entity-encoded; the editor decodes them the same way.
+  const q = new URLSearchParams({ name: m.decodeEntities(it.name), artist: m.decodeEntities(it.artist || '') });
+  let info;
+  try {
+    info = await apiJson(`/api/clips/source?${q}`);
+  } catch (e) {
+    showToast((e && e.message) || 'Could not open the clip cutter', true);
+    return;
+  }
+  try { await m.openCutter({ ...it, resolved: info }, opener); } catch { showToast('Could not open the clip cutter', true); }
+}
+
 export function showContextMenu(x, y, actions, opts = {}) {
+  const a = document.activeElement;
+  _menuOpener = a && a !== document.body ? a : null;
   hideContextMenu();
   if (!actions || !actions.length) return;
   const menu = document.createElement('div');
@@ -353,6 +373,20 @@ export function buildActionsFor(item, type, context = {}) {
     actions.push({
       label: 'Add to other playlist…', icon: '&#9776;',
       onClick: () => _addToNavidromePlaylist(it),
+    });
+  }
+
+  // ── Cut a clip (a library track; the server answers whether this one is stored for the user) ──
+  // Not recommendations (never downloaded) and not podcast episodes (type 'episode' either way).
+  if ((type === 'track' || type === 'queue-track') && it.type !== 'episode' && it.name) {
+    // The element the menu was opened from, read now: by the time the editor closes the
+    // menu is gone and focus has fallen back to <body>.
+    actions.push({
+      label: 'Cut a clip…', icon: '&#9986;',
+      onClick: () => {
+        const opener = _menuOpener;
+        openClipCutter(it, opener);
+      },
     });
   }
 

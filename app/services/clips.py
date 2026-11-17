@@ -16,10 +16,15 @@ import json
 import logging
 import math
 import os
+import re
 import secrets
 import shutil
 import tempfile
+import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import unquote
 
 import numpy as np
 
@@ -30,6 +35,9 @@ logger = logging.getLogger("musicseeker.clips")
 CLIPS_ALBUM = "Clips"
 MARKER = "msclip|"
 SCRATCH_ROOT = ".clip-dl"
+TRACK_DJ = "@track"        # the `dj` of a clip cut from an ordinary library track (it has no DJ folder)
+SCAN_LIMIT = 2000          # files looked at when a tag scan has to find a track
+MEMO_MAX = 500
 
 MIN_LEN, MAX_LEN = 10.0, 1200.0
 END_SLACK = 0.5            # tags round the duration; a client's "to the very end" may overshoot a hair
@@ -290,6 +298,255 @@ async def get_beats(path: str, t: float) -> dict:
             await _kill(proc)
 
 
+# ── Source: a downloaded set, or any track in the user's own library ──
+
+@dataclass(frozen=True)
+class SourceRef:
+    path: str   # absolute, proven inside the caller's own folder
+    dj: str     # with `file`: the stable key clips are matched to their source by
+    file: str
+
+
+# (user, folded name, folded artist) -> path relative to the user's root. A long set is
+# asked for by waveform, beats (many windows) and audio; each must not rescan a NAS.
+_track_memo: dict[tuple, str] = {}
+# The same key -> (expiry, message) for a lookup that found nothing. A miss is as
+# expensive as a hit is cheap (it walks the whole folder), and the editor, the menu's
+# pre-check and a retry all ask again within seconds.
+_miss_memo: dict[tuple, tuple[float, str]] = {}
+MISS_TTL = 60.0
+# One lock for every read-modify-write of both memos (resolution runs in worker threads),
+# and one lock per key so concurrent identical resolves share a single scan.
+_memo_lock = threading.Lock()
+_flights: dict[tuple, threading.Lock] = {}
+_now = time.monotonic       # a name, so tests can move the clock
+NOT_OWNED = "Only a track stored in your own library can be cut"
+IS_CLIP = "A clip cannot be cut again"
+_TITLE_SEPARATORS = re.compile(r'[/\\:*?"<>|]')
+
+
+def _fold(s: str) -> str:
+    return " ".join(player.nfc(s or "").casefold().split())
+
+
+def _is_clip(path: str) -> bool:
+    """A clip of ours: cutting one would make a clip of a clip."""
+    return (os.path.basename(os.path.dirname(path)) == CLIPS_ALBUM and path.lower().endswith(".flac")
+            and _clip_meta(path) is not None)
+
+
+def _accept_track(root: str, path: str, clips_seen: list | None = None) -> str | None:
+    """`path` relative to `root` (POSIX) if it is an audio file really inside the user's
+    own folder, not hidden and not one of our clips; else None. `root` is a realpath.
+    A refused clip is noted in `clips_seen`, so the caller can say WHY nothing was found."""
+    try:
+        real = os.path.realpath(path)
+        if os.path.commonpath([root, real]) != root or real == root:
+            return None
+    except ValueError:
+        return None
+    parts = os.path.relpath(real, root).split(os.sep)
+    if any(p.startswith(".") or not p for p in parts):
+        return None
+    if parts[-1].rsplit(".", 1)[-1].lower() not in mixes.AUDIO_EXTS or "." not in parts[-1]:
+        return None
+    if not os.path.isfile(real):
+        return None
+    if _is_clip(real):
+        if clips_seen is not None:
+            clips_seen.append(real)
+        return None
+    return "/".join(parts)
+
+
+def _walk_files(top: str):
+    """Visible files under `top`, sorted so the answer does not depend on the disk's
+    order, stopping after SCAN_LIMIT of them: a NAS walk must have an end."""
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(top):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for fn in sorted(filenames):
+            if fn.startswith("."):
+                continue
+            seen += 1
+            if seen > SCAN_LIMIT:
+                return
+            yield os.path.join(dirpath, fn), fn
+
+
+def _file_names(name: str) -> set[str]:
+    """The file names the player's lookup would try for this title: the sanitised one
+    and the older spaces-instead-of-underscores one, in every audio extension."""
+    safe = player._sanitize(name)
+    alt = re.sub(r"\s+", " ", _TITLE_SEPARATORS.sub(" ", name).strip().rstrip("."))
+    return {f"{t}.{ext}" for t in (safe, alt) if t for ext in mixes.AUDIO_EXTS}
+
+
+def _tag_artists(path: str) -> list[str]:
+    """ARTIST and ALBUMARTIST of a file (a compilation's tracks carry the former)."""
+    try:
+        import mutagen
+        f = mutagen.File(path, easy=True)
+        tags = (f.tags if f is not None else None) or {}
+        return [_fold(str(v)) for k in ("artist", "albumartist") for v in (tags.get(k) or [])]
+    except Exception:
+        return []
+
+
+def _scan_artist_folder(root: str, artist_dir: str, want_name: str, want_artist: str,
+                        clips_seen: list | None = None) -> str | None:
+    """The file under the user's own artist folder whose TITLE and ARTIST tags are the
+    wanted ones — a set's file name is often not its title. Bounded: a NAS walk."""
+    for path, _ in _walk_files(artist_dir):
+        rel = _accept_track(root, path, clips_seen)
+        if not rel:
+            continue
+        meta = _read_meta(path)
+        if _fold(meta["title"]) == want_name and _fold(meta["artist"]) == want_artist:
+            return rel
+    return None
+
+
+def _by_file_name(root: str, top: str, name: str, want_artist: str, clips_seen: list) -> str | None:
+    """A file under `top` named like the title. Inside the artist's folder the folder is
+    the artist; anywhere else the tags must agree (`want_artist` set), or a same-titled
+    track of someone else would be cut."""
+    names = _file_names(name)
+    for path, fn in _walk_files(top):
+        if fn not in names:
+            continue
+        rel = _accept_track(root, path, clips_seen)
+        if rel and (not want_artist or want_artist in _tag_artists(path)):
+            return rel
+    return None
+
+
+def _locate(root: str, name: str, artist: str, want_name: str, want_artist: str) -> str | None:
+    """Find the caller's own copy. Only inside `root`: the player's lookup walks every
+    user's folders and returns the FIRST hit, which may be someone else's copy while the
+    caller's own sits under another artist folder. Raises ClipError when the only
+    candidates were our own clips."""
+    clips_seen: list = []
+    rel = None
+    folder = player._sanitize(artist) if artist.strip() else ""
+    if folder:
+        try:
+            mixes._one_component(folder)
+        except mixes.MixPathError:
+            folder = ""
+    artist_dir = os.path.join(root, folder) if folder else ""
+    has_artist_dir = bool(artist_dir) and os.path.isdir(artist_dir)
+    if has_artist_dir:
+        rel = _by_file_name(root, artist_dir, name, "", clips_seen)
+    if not rel:
+        rel = _by_file_name(root, root, name, want_artist, clips_seen)
+    if not rel and has_artist_dir:
+        # A missing folder means a missing track: walking the whole library for a tag
+        # would cost minutes on a NAS.
+        rel = _scan_artist_folder(root, artist_dir, want_name, want_artist, clips_seen)
+    if not rel and clips_seen:
+        raise ClipError(404, IS_CLIP)
+    return rel
+
+
+def _recall(root: str, key: tuple) -> tuple[str | None, str | None]:
+    """(path, None) for a hit that still holds, (None, message) for a live miss, else
+    (None, None). A hit is re-proved every time: the file may have vanished or been
+    swapped for a link leading out of the folder since."""
+    with _memo_lock:
+        rel = _track_memo.get(key)
+        miss = _miss_memo.get(key)
+        if miss and miss[0] <= _now():
+            _miss_memo.pop(key, None)
+            miss = None
+    if rel:
+        path = os.path.join(root, *rel.split("/"))
+        if os.path.exists(path) and _accept_track(root, path):
+            return rel, None
+        with _memo_lock:
+            _track_memo.pop(key, None)
+    return None, (miss[1] if miss else None)
+
+
+def _remember(key: tuple, rel: str | None, message: str = NOT_OWNED) -> None:
+    with _memo_lock:
+        if rel:
+            memo, value = _track_memo, rel
+        else:
+            memo, value = _miss_memo, (_now() + MISS_TTL, message)
+            for k in [k for k, v in _miss_memo.items() if v[0] <= _now()]:
+                del _miss_memo[k]
+        if len(memo) >= MEMO_MAX:
+            memo.pop(next(iter(memo)))
+        memo[key] = value
+
+
+def _find_track(root: str, username: str, name: str, artist: str) -> str:
+    """The track's path relative to `root`, or raises ClipError(404)."""
+    key = (username, _fold(name), _fold(artist))
+    rel, miss = _recall(root, key)
+    if not rel and not miss:
+        with _memo_lock:
+            gate = _flights.setdefault(key, threading.Lock())
+        # The first /audio and /waveform arrive together: the second waits here and then
+        # finds the first one's answer in the memo instead of walking the same folders.
+        with gate:
+            rel, miss = _recall(root, key)
+            if not rel and not miss:
+                try:
+                    rel = _locate(root, player.nfc(name), player.nfc(artist), key[1], key[2])
+                    miss = None if rel else NOT_OWNED
+                except ClipError as e:
+                    miss = e.message
+                except OSError:
+                    miss = NOT_OWNED      # e.g. a name too long for the file system: not found
+                _remember(key, rel, miss or NOT_OWNED)
+        with _memo_lock:
+            if _flights.get(key) is gate:
+                del _flights[key]
+    if not rel:
+        raise ClipError(404, miss or NOT_OWNED)
+    return rel
+
+
+def resolve_source(music_dir: str, username: str, *, dj: str | None = None, file: str | None = None,
+                   name: str | None = None, artist: str | None = None) -> SourceRef:
+    """The one place that turns a request into a file. Either a downloaded set (`dj` +
+    `file`) or a track of the caller's own library (`name` + `artist`); blocking (it
+    touches a NAS), so callers run it in a thread. Raises ClipError."""
+    dj, file, name, artist = dj or "", file or "", name or "", artist or ""
+    has_mix, has_track = bool(dj or file), bool(name or artist)
+    if has_mix == has_track:
+        raise ClipError(400, "Give either dj and file, or name and artist")
+    # A real folder called "@track" must never be mistaken for the key of a track source.
+    if dj == TRACK_DJ:
+        raise ClipError(400, "Invalid dj")
+    if len(name.encode("utf-8")) > 255 or len(artist.encode("utf-8")) > 255:
+        raise ClipError(400, "The name or artist is too long")
+    try:
+        root = os.path.realpath(mixes.user_root(music_dir, username))
+        if has_mix:
+            path = mixes.resolve_library_file(music_dir, username, dj, file)
+    except mixes.MixPathError as e:
+        raise ClipError(400, str(e))
+    if has_mix:
+        if not os.path.isfile(path):
+            raise ClipError(404, "Mix not found")
+        return SourceRef(path, dj, file)
+    if not name.strip():
+        raise ClipError(400, "Give the track's name")
+    rel = _find_track(root, username, name, artist)
+    return SourceRef(os.path.join(root, *rel.split("/")), TRACK_DJ, rel)
+
+
+def source_info(ref: SourceRef, name: str = "", artist: str = "") -> dict:
+    """What the editor needs to match clips to this source without knowing the relpath."""
+    meta = _read_meta(ref.path)
+    stem = os.path.splitext(os.path.basename(ref.file))[0]
+    return {"dj": ref.dj, "file": ref.file, "title": meta["title"] or name or stem,
+            "artist": meta["artist"] or artist or (ref.dj if ref.dj != TRACK_DJ else "")}
+
+
 # ── Paths ──
 
 def _clip_path(root: str, artist_dir: str, file: str) -> str:
@@ -398,12 +655,15 @@ def _clip_meta(path: str) -> dict | None:
 # ── Create / list / delete ──
 
 def _field(s: str) -> str:
-    """A text field of the marker: '|' is its separator, so it cannot appear inside."""
-    return s.replace("|", "¦")
+    """A text field of the marker: '|' is its separator, so it cannot appear inside. Only
+    '%', '|' and '¦' are percent-encoded — ordinary names stay readable in the tag, and a
+    name that really contains '¦' or '|' comes back as it was."""
+    return s.replace("%", "%25").replace("|", "%7C").replace("¦", "%C2%A6")
 
 
 def _unfield(s: str) -> str:
-    return s.replace("¦", "|")
+    # A marker written before the encoding has no '%' escapes: taken as it is.
+    return unquote(s) if "%" in s else s
 
 
 def _check_range(start: float, end: float, duration: float) -> None:
@@ -420,17 +680,18 @@ def _check_range(start: float, end: float, duration: float) -> None:
 
 
 async def create_clip(music_dir: str, username: str, dj: str, file: str,
-                      start: float, end: float, title: str, artist: str) -> dict:
+                      start: float, end: float, title: str, artist: str,
+                      src_name: str = "", src_artist: str = "") -> dict:
     title = player.nfc((title or "").strip())
     if not title:
         raise ClipError(400, "Give the clip a title")
-    src = mixes.resolve_library_file(music_dir, username, dj, file)   # MixPathError → 400
-    if not os.path.isfile(src):
-        raise ClipError(404, "Mix not found")
+    ref = await asyncio.to_thread(resolve_source, music_dir, username, dj=dj, file=file,
+                                  name=src_name, artist=src_artist)
+    src, dj, file = ref.path, ref.dj, ref.file
     meta = await asyncio.to_thread(_read_meta, src)
     duration = await asyncio.to_thread(_duration_of, src)
     _check_range(start, end, duration)
-    artist = player.nfc((artist or "").strip()) or player.nfc(meta["artist"]) or player.nfc(dj)
+    artist = player.nfc((artist or "").strip()) or player.nfc(meta["artist"]) or player.nfc(src_artist or (dj if dj != TRACK_DJ else ""))
 
     # The file name must be exactly what player._resolve_local_file looks for.
     base = player._sanitize(title)
@@ -467,7 +728,8 @@ async def create_clip(music_dir: str, username: str, dj: str, file: str,
     scratch = os.path.join(workdir, "cut.flac")
     quality = meta["codec"] + (f" {meta['kbps']} kbps" if meta["kbps"] else "")
     comment = MARKER + "|".join(_field(x) for x in (
-        meta["title"] or os.path.splitext(file)[0], meta["artist"] or dj)
+        meta["title"] or src_name or os.path.splitext(os.path.basename(file))[0],
+        meta["artist"] or src_artist or (dj if dj != TRACK_DJ else ""))
     ) + f"|{start:.3f}|{end:.3f}|{quality}|{_field(dj)}|{_field(file)}"
     proc = None
     try:

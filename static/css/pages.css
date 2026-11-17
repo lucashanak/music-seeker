@@ -418,3 +418,5 @@
 .mixcut-time { width: 6.2em; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border, #2a2a3a);
   background: var(--bg-input, #14141f); color: inherit; font: inherit; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mixcut-time:focus { outline: 2px solid var(--accent, #a3e635); outline-offset: 1px; }
+/* a source the server refuses (e.g. a track that is not in the user's own library) is final: say so plainly */
+.mixcut-status--bad { color: var(--danger, #ff6b6b); font-weight: 600; }

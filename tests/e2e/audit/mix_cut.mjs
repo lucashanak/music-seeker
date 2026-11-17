@@ -14,7 +14,9 @@ const { chromium } = pw;
 const TREE = process.argv.includes('--tree') ? '/home/lucas/music-seeker' : null;
 const KEEP = process.argv.includes('--keep');
 const SHOTS = (process.argv.find(a => a.startsWith('--shots=')) || '').slice(8);
-const LINK = 'https://on.soundcloud.com/R75FlMfwxHTpHxNVXe';
+// A set nobody else on the instance has: a download job answers "Already in library"
+// (and downloads nothing) when Navidrome knows the title + DJ from ANY user's folder.
+const LINK = 'https://www.mixcloud.com/martin-%C5%A1moldas/zouktime-marathon-brno-sunday-set/';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const results = [];
 const check = (name, ok, detail) => { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`); };
@@ -116,6 +118,9 @@ try {
   check('editor: closing removes it and stops its audio', !(await page.locator('.mixcut-overlay').count()) && !stillPlaying);
 
   // The two clips as a queue, through the real DJ engine.
+  // The section re-renders from its own request after a save; wait for BOTH clips.
+  await page.waitForFunction(() => /30:00/.test(document.querySelector('#mixClips')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
+  check('list: the Clips section picked up the clip saved in the editor', /30:00/.test(await page.locator('#mixClips').textContent()));
   await page.waitForSelector('#mixClips [data-a="all"]', { timeout: 15000 });
   await page.click('#mixClips [data-a="all"]');
   await page.waitForFunction(() => window.__media.some(m => !m.paused && m.currentTime > 0.5), null, { timeout: 60000 });
@@ -128,8 +133,46 @@ try {
   await sleep(1500);
   const second = await page.evaluate(() => document.querySelector('#playerTitle').textContent);
   const trig = logs.filter(l => l.startsWith('[DJ auto]')).pop() || '';
-  check('DJ: it crosses over into the next clip', /\(30:00–33:00\)$/.test(second), second.slice(-24));
+  const diag = await page.evaluate(() => JSON.stringify({ media: window.__media.map(m => ({ p: m.paused, e: m.ended, t: +m.currentTime.toFixed(1), d: m.duration, err: m.error?.code || 0, blob: m.src.startsWith('blob:') })), q: document.querySelectorAll('.queue-item').length, idx: window.__q?.() }));
+  check('DJ: it crosses over into the next clip', /\(30:00–33:00\)$/.test(second), second.slice(-24) + ' ' + diag + ' logs=' + logs.slice(-4).join(' ¦ ').slice(0, 300));
   check('DJ: the transition was timed off the clip\'s own beat grid', /grid=beat/.test(trig) && /outBpm=\d/.test(trig), trig.replace(/play=.*? outBpm/, 'outBpm').slice(0, 140));
+  // ── Cut on ANY owned track: the same set, addressed the way a track row addresses it
+  // (title + artist, no dj/file), through the context menu the user would use.
+  await page.evaluate(() => { for (const m of window.__media) m.pause(); });
+  const row = page.locator('.queue-item').first();
+  await row.dispatchEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 });
+  const item = page.locator('.ctx-menu').getByText('Cut a clip');
+  check('track: the context menu of a queue row offers "Cut a clip…"', await item.count() > 0);
+  await page.keyboard.press('Escape');
+  await page.evaluate(async (t) => {
+    const v = [...document.scripts].map(x => x.src).find(x => /app\.js\?v=/.test(x)).split('?v=')[1];
+    const m = await import(`/static/js/mixcut.js?v=${v}`);
+    m.openCutter({ name: t.title, artist: t.artist, type: 'track' }, null);
+  }, { title: mix.title, artist: mix.artist });
+  await page.waitForSelector('.mixcut-overlay canvas', { timeout: 15000 });
+  await page.waitForFunction(() => { const s = document.querySelector('.mixcut-overlay [data-r="status"]'); return !s || !/Analysing/.test(s.textContent) || s.offsetParent === null; }, null, { timeout: 120000 });
+  const T2 = (r) => page.locator(`.mixcut-overlay [data-r="${r}"]`);
+  await T2('rStart').fill('40:00'); await T2('rStart').press('Enter');
+  await T2('rEnd').fill('41:00'); await T2('rEnd').press('Enter');
+  await page.waitForTimeout(500);
+  await T2('playStart').click();
+  await page.waitForTimeout(3000);
+  const au2 = await page.evaluate(() => window.__media.filter(m => !m.paused).map(m => ({ t: m.currentTime, src: m.src.replace(/token=[^&]+/, 'token=…') })));
+  check('track: the editor plays the track\'s own file, addressed by title + artist', au2.length === 1 && au2[0].t > 2400 && au2[0].t < 2406 && /\/api\/clips\/audio\?.*name=/.test(au2[0].src), JSON.stringify(au2).slice(0, 150));
+  await page.locator('.mixcut-overlay form button').last().click();
+  let trackClip = null;
+  for (let i = 0; i < 30 && !trackClip; i++) { await sleep(1000); trackClip = ((await api('/api/clips', { tok })).clips || []).find(c => /\(40:00–41:00\)$/.test(c.title)) || null; }
+  check('track: saving writes a clip that remembers its source as a library track', !!trackClip && trackClip.source_dj === '@track' && /DJ Sets\//.test(trackClip.source_file), trackClip ? `${trackClip.source_dj} | ${trackClip.source_file.slice(0, 60)}… | ${trackClip.duration}s` : 'not saved');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.mixcut-overlay'), null, { timeout: 5000 }).catch(() => {});
+  // A track the user does not own: one clear sentence, no five-minute retry.
+  await page.evaluate(async () => {
+    const v = [...document.scripts].map(x => x.src).find(x => /app\.js\?v=/.test(x)).split('?v=')[1];
+    (await import(`/static/js/mixcut.js?v=${v}`)).openCutter({ name: 'ZZ Not In Anyones Library', artist: 'Nobody At All', type: 'track' }, null);
+  });
+  await page.waitForFunction(() => /own library/.test(document.querySelector('.mixcut-overlay [data-r="status"]')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
+  check('track: a track that is not stored in the library says so', /own library/.test(await page.locator('.mixcut-overlay [data-r="status"]').textContent()), (await page.locator('.mixcut-overlay [data-r="status"]').textContent()).slice(0, 80));
+  await page.keyboard.press('Escape');
   check('no page errors', errors.length === 0, errors.join(' | ').slice(0, 200));
 } catch (e) {
   check('ran to completion', false, String(e.message).split('\n')[0]);

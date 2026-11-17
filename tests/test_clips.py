@@ -666,3 +666,364 @@ def test_double_time_beats_are_folded_onto_the_strong_half():
     assert clips.fold_beats(84.5, times, strengths) == (84.5, times)
     # Too few ticks to judge: untouched rather than guessed.
     assert clips.fold_beats(168.0, times[:3], strengths[:3]) == (168.0, times[:3])
+
+
+# ── a track of the user's own library as the source ──
+
+@pytest.fixture
+def tracks(env, monkeypatch):
+    monkeypatch.setattr(clips, "_track_memo", {})
+    monkeypatch.setattr(clips, "_miss_memo", {})
+    monkeypatch.setattr(clips, "_flights", {})
+
+    def make_track(user="alice", artist="DJ Viking", album="ZoukTime Brno 2022", fname="Saturday Party.flac",
+                   title="ZoukTime Set", tag_artist=None):
+        d = env.music / user / artist / album
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / fname
+        sf.write(str(p), np.zeros(8000 * SET_SECONDS, dtype="int16"), 8000, format="FLAC")
+        f = FLAC(str(p))
+        f["title"], f["artist"] = [title], [tag_artist or artist]
+        f.save()
+        return p
+
+    scans = []
+    orig = clips._scan_artist_folder
+
+    def counting(*a, **kw):
+        scans.append(a)
+        return orig(*a, **kw)
+    monkeypatch.setattr(clips, "_scan_artist_folder", counting)
+    return type("T", (), dict(make=staticmethod(make_track), scans=scans))
+
+
+def _tq(**kw):
+    q = {"name": "ZoukTime Set", "artist": "DJ Viking"}
+    q.update(kw)
+    return q
+
+
+def test_a_track_in_an_album_folder_is_found_by_the_players_lookup(env, tracks):
+    tracks.make(fname="ZoukTime Set.flac")                 # file name = title: the player finds it
+    r = env.client.get("/api/clips/waveform", params=_tq())
+    assert r.status_code == 200, r.text
+    assert r.json()["source"] == {"dj": "@track", "file": "DJ Viking/ZoukTime Brno 2022/ZoukTime Set.flac",
+                                  "title": "ZoukTime Set", "artist": "DJ Viking"}
+    assert tracks.scans == []
+
+
+def test_a_file_name_that_differs_from_the_title_tag_is_found_by_the_tag_scan(env, tracks):
+    tracks.make(fname="Saturday Party 2022-10-08.flac")
+    r = env.client.get("/api/clips/waveform", params=_tq(name="  zouktime   SET "))
+    assert r.status_code == 200, r.text
+    assert r.json()["source"]["file"] == "DJ Viking/ZoukTime Brno 2022/Saturday Party 2022-10-08.flac"
+    assert len(tracks.scans) == 1
+
+
+def test_the_answer_is_remembered_so_the_next_request_does_not_rescan(env, tracks):
+    tracks.make(fname="Saturday Party.flac")
+    for _ in range(3):
+        assert env.client.get("/api/clips/waveform", params=_tq()).status_code == 200
+    assert env.client.get("/api/clips/beats", params=_tq(t=5)).status_code == 200
+    assert env.client.get("/api/clips/audio", params=_tq(token="alice")).status_code == 200
+    assert len(tracks.scans) == 1
+
+
+def test_a_memo_pointing_at_a_vanished_file_is_dropped(env, tracks):
+    p = tracks.make(fname="Saturday Party.flac")
+    assert env.client.get("/api/clips/waveform", params=_tq()).status_code == 200
+    p.unlink()
+    assert env.client.get("/api/clips/waveform", params=_tq()).status_code == 404
+    assert clips._track_memo == {}
+
+
+def test_the_memo_is_bounded(env, tracks, monkeypatch):
+    monkeypatch.setattr(clips, "MEMO_MAX", 3)
+    for i in range(5):
+        tracks.make(fname=f"f{i}.flac", title=f"Set {i}")
+        assert env.client.get("/api/clips/waveform", params=_tq(name=f"Set {i}")).status_code == 200
+    assert len(clips._track_memo) == 3
+
+
+def test_another_users_track_is_never_used(env, tracks):
+    tracks.make(user="bob", fname="ZoukTime Set.flac")
+    r = env.client.get("/api/clips/waveform", params=_tq())
+    assert r.status_code == 404 and "own library" in r.json()["detail"]
+    tracks.make(user="bob", artist="DJ Viking", album="B", fname="Other.flac")
+    clips._miss_memo.clear()      # the 404 above is remembered for a minute; the next copy is new
+    mine = tracks.make(user="alice", fname="Saturday Party.flac")
+    ref = clips.resolve_source(str(env.music), "alice", name="ZoukTime Set", artist="DJ Viking")
+    assert ref.path == str(mine.resolve()) and "bob" not in ref.path
+
+
+def test_neither_and_both_source_forms_are_400(env, tracks):
+    env.make_mix()
+    tracks.make(fname="ZoukTime Set.flac")
+    both = {"dj": "DJ Alpha", "file": "Set.flac", **_tq()}
+    for path, extra in (("waveform", {}), ("beats", {"t": 1}), ("audio", {"token": "alice"})):
+        assert env.client.get(f"/api/clips/{path}", params={**extra}).status_code == 400
+        assert env.client.get(f"/api/clips/{path}", params={**both, **extra}).status_code == 400
+    assert env.client.post("/api/clips", json={"start": 10, "end": 40, "title": "x"}).status_code == 400
+    assert env.client.post("/api/clips", json={**both, "source_artist": "DJ Viking", "start": 10, "end": 40,
+                                               "title": "x"}).status_code == 400
+    assert env.client.get("/api/clips/waveform", params={"artist": "DJ Viking"}).status_code == 400
+
+
+def test_a_clip_cannot_be_a_source(env, tracks):
+    env.make_mix()
+    made = env.client.post("/api/clips", json=_body(title="Drop")).json()
+    clip = env.music / "alice" / "DJ Alpha" / "Clips" / made["file"]
+    assert clip.is_file()
+    r = env.client.get("/api/clips/waveform", params={"name": "Drop", "artist": "DJ Alpha"})
+    assert r.status_code == 404
+    assert env.client.post("/api/clips", json={"name": "Drop", "source_artist": "DJ Alpha", "start": 10,
+                                               "end": 40, "title": "Drop 2"}).status_code == 404
+
+
+def test_an_unmarked_file_in_a_folder_called_clips_is_still_a_track(env, tracks):
+    tracks.make(album="Clips", fname="Real.flac", title="Real album track")
+    r = env.client.get("/api/clips/waveform", params=_tq(name="Real album track"))
+    assert r.status_code == 200 and r.json()["source"]["file"] == "DJ Viking/Clips/Real.flac"
+
+
+def test_a_track_source_cuts_a_clip_marked_with_track_and_relpath(env, tracks):
+    tracks.make(fname="Saturday Party.flac")
+    r = env.client.post("/api/clips", json={"name": "ZoukTime Set", "source_artist": "DJ Viking",
+                                            "start": 10, "end": 40, "title": "Peak", "artist": ""})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["artist"] == "DJ Viking"
+    path = env.music / "alice" / "DJ Viking" / "Clips" / j["file"]
+    t = FLAC(str(path))
+    assert t["comment"][0].endswith("|@track|DJ Viking/ZoukTime Brno 2022/Saturday Party.flac")
+    assert t["comment"][0].startswith("msclip|ZoukTime Set|DJ Viking|10.000|40.000|FLAC")
+    listed = env.client.get("/api/clips").json()["clips"]
+    assert [(c["source_dj"], c["source_file"], c["source_title"], c["source_artist"]) for c in listed] == [
+        ("@track", "DJ Viking/ZoukTime Brno 2022/Saturday Party.flac", "ZoukTime Set", "DJ Viking")]
+    # same limits and 409s as for a set
+    assert env.client.post("/api/clips", json={"name": "ZoukTime Set", "source_artist": "DJ Viking",
+                                               "start": 10, "end": 40, "title": "Peak"}).status_code == 409
+    assert env.client.post("/api/clips", json={"name": "ZoukTime Set", "source_artist": "DJ Viking",
+                                               "start": 10, "end": 15, "title": "Short"}).status_code == 400
+
+
+def test_name_and_artist_cannot_escape_the_users_folder(env, tracks):
+    tracks.make(user="alice", artist="other", fname="x.flac", title="Secret")
+    tracks.make(user="bob", artist="other", fname="y.flac", title="Secret")
+    for q in ({"name": "Secret", "artist": "../other"}, {"name": "../bob/other/y", "artist": "other"},
+              {"name": "Secret", "artist": "../../bob/other"}, {"name": "Secret", "artist": ".."},
+              {"name": "..", "artist": "."}):
+        r = env.client.get("/api/clips/waveform", params=q)
+        assert r.status_code in (404, 400), (q, r.text)
+    # the plain spelling still works, and resolves inside alice's folder only
+    ref = clips.resolve_source(str(env.music), "alice", name="Secret", artist="other")
+    assert ref.path.startswith(str((env.music / "alice").resolve()) + os.sep)
+
+
+def test_a_symlink_out_of_the_users_folder_is_not_a_source(env, tracks, tmp_path):
+    outside = tmp_path / "outside.flac"
+    sf.write(str(outside), np.zeros(8000, dtype="int16"), 8000, format="FLAC")
+    f = FLAC(str(outside))
+    f["title"], f["artist"] = ["Linked"], ["DJ Viking"]
+    f.save()
+    d = env.music / "alice" / "DJ Viking" / "A"
+    d.mkdir(parents=True)
+    (d / "l.flac").symlink_to(outside)
+    assert env.client.get("/api/clips/waveform", params=_tq(name="Linked")).status_code == 404
+
+
+def test_the_tag_scan_stops_after_the_limit_and_never_leaves_the_artist_folder(env, tracks, monkeypatch):
+    monkeypatch.setattr(clips, "SCAN_LIMIT", 3)
+    d = env.music / "alice" / "DJ Viking" / "A"
+    d.mkdir(parents=True)
+    for i in range(3):
+        (d / f"a{i}.txt").write_text("x")
+    tracks.make(album="B", fname="zz.flac")               # the fourth file: past the limit
+    assert env.client.get("/api/clips/waveform", params=_tq()).status_code == 404
+    monkeypatch.setattr(clips, "SCAN_LIMIT", 2000)
+    # Tagged with the SAME artist as the scanned folder, but stored under another artist's
+    # folder: only a scan that stays inside <DJ Viking>/ can miss it.
+    tracks.make(artist="Someone Else", fname="q.flac", title="Elsewhere", tag_artist="DJ Viking")
+    assert env.client.get("/api/clips/waveform", params=_tq(name="Elsewhere")).status_code == 404
+
+
+# ── resolving the caller's OWN copy ──
+
+def test_the_callers_copy_is_found_although_another_user_has_the_same_track(env, tracks):
+    bob = tracks.make(user="bob", artist="Artist", album="B", fname="Hit.flac", title="Hit")
+    mine = tracks.make(user="alice", artist="Various Artists", album="Comp", fname="Hit.flac",
+                       title="Hit", tag_artist="Artist")
+    ref = clips.resolve_source(str(env.music), "alice", name="Hit", artist="Artist")
+    assert ref.path == str(mine.resolve()) and ref.path != str(bob.resolve())
+    assert ref.file == "Various Artists/Comp/Hit.flac"
+    # and bob's is never returned for alice even when she has nothing
+    mine.unlink()
+    clips._miss_memo.clear()
+    with pytest.raises(clips.ClipError) as e:
+        clips.resolve_source(str(env.music), "alice", name="Hit", artist="Artist")
+    assert e.value.status == 404
+
+
+def test_a_same_named_file_under_another_artist_is_refused_when_its_tags_disagree(env, tracks):
+    tracks.make(artist="Various Artists", album="Comp", fname="Hit.flac", title="Hit", tag_artist="Someone Else")
+    with pytest.raises(clips.ClipError) as e:
+        clips.resolve_source(str(env.music), "alice", name="Hit", artist="Artist")
+    assert e.value.status == 404
+
+
+def test_the_album_artist_tag_also_counts(env, tracks):
+    p = tracks.make(artist="Various Artists", album="Comp", fname="Hit.flac", title="Hit", tag_artist="Guest")
+    f = FLAC(str(p))
+    f["albumartist"] = ["Artist"]
+    f.save()
+    ref = clips.resolve_source(str(env.music), "alice", name="Hit", artist="Artist")
+    assert ref.file == "Various Artists/Comp/Hit.flac"
+
+
+def test_a_remaster_in_the_tag_but_not_in_the_file_name_is_found(env, tracks):
+    tracks.make(artist="Artist", album="Hits", fname="Song.flac", title="Song (2011 Remaster)")
+    ref = clips.resolve_source(str(env.music), "alice", name="Song (2011 Remaster)", artist="Artist")
+    assert ref.file == "Artist/Hits/Song.flac"
+    assert len(tracks.scans) == 1
+
+
+def test_two_concurrent_resolves_of_one_key_scan_once(env, tracks, monkeypatch):
+    import threading
+    import time as _t
+    tracks.make(fname="ZoukTime Set.flac")
+    calls = []
+    orig = clips._locate
+
+    def slow(*a):
+        calls.append(a)
+        _t.sleep(0.2)
+        return orig(*a)
+    monkeypatch.setattr(clips, "_locate", slow)
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(
+        clips.resolve_source(str(env.music), "alice", name="ZoukTime Set", artist="DJ Viking"))) for _ in range(2)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert len(calls) == 1 and len(out) == 2 and out[0].path == out[1].path
+    assert clips._flights == {}
+
+
+def test_a_miss_is_not_rescanned_within_the_ttl_but_is_after_it(env, tracks, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(clips, "_now", lambda: clock[0])
+    calls = []
+    monkeypatch.setattr(clips, "_locate", lambda *a: calls.append(a))
+    for _ in range(3):
+        with pytest.raises(clips.ClipError):
+            clips.resolve_source(str(env.music), "alice", name="Nope", artist="Nobody")
+    assert len(calls) == 1
+    clock[0] += clips.MISS_TTL + 1
+    with pytest.raises(clips.ClipError):
+        clips.resolve_source(str(env.music), "alice", name="Nope", artist="Nobody")
+    assert len(calls) == 2
+
+
+def test_the_miss_memo_is_bounded(env, tracks, monkeypatch):
+    monkeypatch.setattr(clips, "MEMO_MAX", 3)
+    for i in range(6):
+        assert env.client.get("/api/clips/waveform", params=_tq(name=f"Nope {i}")).status_code == 404
+    assert len(clips._miss_memo) == 3
+
+
+def test_an_over_long_name_is_400_and_an_os_error_is_404(env, tracks, monkeypatch):
+    for q in ({"name": "x" * 256, "artist": "A"}, {"name": "x", "artist": "é" * 128}):    # 256 bytes
+        assert env.client.get("/api/clips/waveform", params=q).status_code == 400
+    assert env.client.get("/api/clips/waveform", params={"name": "x" * 255, "artist": "A"}).status_code == 404
+
+    def boom(*a):
+        raise OSError(36, "File name too long")
+    monkeypatch.setattr(clips, "_locate", boom)
+    r = env.client.get("/api/clips/waveform", params=_tq(name="Other"))
+    assert r.status_code == 404 and "own library" in r.json()["detail"]
+
+
+def test_a_real_folder_called_at_track_is_not_a_source(env, tracks):
+    for path in ("source", "waveform"):
+        assert env.client.get(f"/api/clips/{path}", params={"dj": "@track", "file": "A/B.flac"}).status_code == 400
+
+
+def test_source_answers_before_the_editor_opens(env, tracks):
+    tracks.make(fname="ZoukTime Set.flac")
+    r = env.client.get("/api/clips/source", params=_tq())
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert (j["dj"], j["file"], j["title"], j["artist"]) == (
+        "@track", "DJ Viking/ZoukTime Brno 2022/ZoukTime Set.flac", "ZoukTime Set", "DJ Viking")
+    assert j["duration"] > 100
+    r = env.client.get("/api/clips/source", params=_tq(name="Nothing here"))
+    assert r.status_code == 404 and r.json()["detail"] == "Only a track stored in your own library can be cut"
+    assert env.client.get("/api/clips/source").status_code == 400
+
+
+def test_source_says_a_clip_cannot_be_cut_again(env, tracks):
+    env.make_mix()
+    made = env.client.post("/api/clips", json=_body(title="Drop")).json()
+    r = env.client.get("/api/clips/source", params={"name": "Drop", "artist": "DJ Alpha"})
+    assert r.status_code == 404 and r.json()["detail"] == "A clip cannot be cut again"
+    assert made["file"]
+
+
+def test_source_accepts_a_downloaded_set_too(env, tracks):
+    env.make_mix()
+    r = env.client.get("/api/clips/source", params={"dj": "DJ Alpha", "file": "Set.flac"})
+    assert r.status_code == 200 and r.json()["dj"] == "DJ Alpha"
+
+
+# ── the marker survives names with its own separators ──
+
+@pytest.mark.parametrize("text", ["a|b", "a¦b", "100% Zouk", "50%25 ¦|", "Plain Name", "Dvořák"])
+def test_a_marker_field_round_trips(text):
+    enc = clips._field(text)
+    assert "|" not in enc and clips._unfield(enc) == text
+
+
+def test_an_old_plain_marker_is_read_as_it_is():
+    # written before the encoding: '|' had become '¦', every other character was raw
+    assert clips._unfield("DJ Viking/Album/Set.flac") == "DJ Viking/Album/Set.flac"
+    assert clips._unfield("a¦b") == "a¦b"
+    assert clips._field("Dvořák") == "Dvořák"      # ordinary names stay readable in the tag
+
+
+def test_a_clip_cut_from_a_name_with_separators_lists_its_source_exactly(env, tracks):
+    tracks.make(album="Live ¦ 100%", fname="Zouk ¦ 100%.flac", title="Zouk ¦ 100%")
+    r = env.client.post("/api/clips", json={"name": "Zouk ¦ 100%", "source_artist": "DJ Viking",
+                                            "start": 10, "end": 40, "title": "Peak"})
+    assert r.status_code == 200, r.text
+    c = env.client.get("/api/clips").json()["clips"][0]
+    assert (c["source_dj"], c["source_file"], c["source_title"]) == (
+        "@track", "DJ Viking/Live ¦ 100%/Zouk ¦ 100%.flac", "Zouk ¦ 100%")
+
+
+# ── _accept_track ──
+
+def test_accept_track_refuses_hidden_folders_and_non_audio(env, tracks):
+    root = os.path.realpath(env.music / "alice")
+    ok = tracks.make(fname="ok.flac")
+    assert clips._accept_track(root, str(ok)) == "DJ Viking/ZoukTime Brno 2022/ok.flac"
+    hidden = tracks.make(album=".hidden", fname="h.flac")
+    assert clips._accept_track(root, str(hidden)) is None
+    txt = ok.parent / "notes.txt"
+    txt.write_text("x")
+    assert clips._accept_track(root, str(txt)) is None
+    noext = ok.parent / "flac"
+    noext.write_bytes(b"x")
+    assert clips._accept_track(root, str(noext)) is None
+
+
+def test_a_memoised_path_later_replaced_by_a_link_out_is_refused(env, tracks, tmp_path):
+    p = tracks.make(fname="ZoukTime Set.flac")
+    assert env.client.get("/api/clips/waveform", params=_tq()).status_code == 200
+    assert clips._track_memo
+    outside = tmp_path / "out.flac"
+    outside.write_bytes(p.read_bytes())
+    p.unlink()
+    p.symlink_to(outside)
+    clips._miss_memo.clear()
+    r = env.client.get("/api/clips/waveform", params=_tq())
+    assert r.status_code == 404
+    assert clips._track_memo == {}

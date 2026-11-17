@@ -198,3 +198,66 @@ test('typed times: m:ss, h:mm:ss, decimals and bare seconds — and nothing else
   assert.equal(parseTime(' 0:07,5 '), 7.5);
   for (const bad of ['', 'abc', '1:75', '1:2:3:4', '-5', '1:', ':30', '12:3a']) assert.equal(parseTime(bad), null, bad);
 });
+
+test('describeSource: a Mixes row keeps its dj + file ref', () => {
+  const d = M.describeSource({ dj: 'DJ A', file: 'Set.m4a', title: 'Sunday', artist: 'DJ A', duration: 3600 });
+  assert.deepEqual(d.ref, { dj: 'DJ A', file: 'Set.m4a' });
+  assert.deepEqual(d.key, { dj: 'DJ A', file: 'Set.m4a' });
+  assert.equal(d.title, 'Sunday'); assert.equal(d.sub, 'DJ A'); assert.equal(d.duration, 3600);
+});
+
+test('describeSource: a track item is addressed by name + artist, entities decoded', () => {
+  const d = M.describeSource({ name: 'Rock &amp; Roll &#39;22 &#x41;', artist: 'Beyonc&eacute; &amp; Co', type: 'track' });
+  assert.equal(d.title, "Rock & Roll '22 A");
+  assert.equal(d.artist, 'Beyonc&eacute; & Co');           // unknown entities are left as they are
+  assert.deepEqual(d.ref, { name: "Rock & Roll '22 A", artist: 'Beyonc&eacute; & Co' });
+  assert.equal(d.sub, d.artist);
+  assert.deepEqual(d.key, { dj: '@track', file: '' });     // the relpath comes from the waveform response
+  assert.equal(M.describeSource({ name: 'X' }).artist, '');
+});
+
+test('refParams and refBody: one form or the other, never both', () => {
+  const m = M.refParams({ dj: 'DJ A&B', file: 'S #1.m4a' });
+  assert.deepEqual([...m.keys()], ['dj', 'file']);
+  assert.equal(m.get('dj'), 'DJ A&B');
+  const t = M.refParams({ name: 'Set', artist: 'DJ V' });
+  assert.deepEqual([...t.keys()], ['name', 'artist']);
+  assert.equal(t.get('artist'), 'DJ V');
+  assert.deepEqual(M.refBody({ dj: 'D', file: 'f' }), { dj: 'D', file: 'f' });
+  // `artist` in the POST body is the clip's artist: the track's own travels as source_artist
+  assert.deepEqual(M.refBody({ name: 'Set', artist: 'DJ V' }), { name: 'Set', source_artist: 'DJ V' });
+});
+
+test('audio url for a track is name + artist + token', () => {
+  const u = M.mixStreamUrl({ name: 'Set & More', artist: 'DJ V' }, 'tok');
+  const q = new URL(u, 'http://x').searchParams;
+  assert.ok(u.startsWith('/api/clips/audio?'));
+  assert.equal(q.get('name'), 'Set & More'); assert.equal(q.get('artist'), 'DJ V'); assert.equal(q.get('token'), 'tok');
+  assert.equal(q.get('dj'), null); assert.equal(q.get('file'), null);
+});
+
+test('clips cut from a track are grouped under the track and matched by the server-given key', () => {
+  const clips = [
+    { title: 'b', source_dj: '@track', source_file: 'DJ V/Brno/Party.m4a', source_title: 'ZoukTime Set', source_artist: 'DJ V', start: 90 },
+    { title: 'a', source_dj: '@track', source_file: 'DJ V/Brno/Party.m4a', source_title: 'ZoukTime Set', source_artist: 'DJ V', start: 10 },
+    { title: 'z', source_dj: '@track', source_file: 'DJ V/Other/Party.m4a', source_title: 'ZoukTime Set', source_artist: 'DJ V', start: 1 },
+  ];
+  const g = M.groupClips(clips);
+  assert.equal(g.length, 2);
+  assert.equal(g[0].title, 'ZoukTime Set'); assert.equal(g[0].artist, 'DJ V');
+  assert.deepEqual(g[0].clips.map((c) => c.title), ['a', 'b']);
+  const key = { dj: '@track', file: 'DJ V/Brno/Party.m4a', title: 'ZoukTime Set', artist: 'DJ V' };
+  assert.deepEqual(M.clipsOfSet(clips, key).map((c) => c.title), ['a', 'b']);
+  assert.deepEqual(M.clipsOfSet(clips, { ...key, file: '' }), []);   // before the waveform answers nothing matches by accident
+});
+
+test('describeSource: a track the server already resolved carries its key and is "known"', () => {
+  const d = M.describeSource({ name: 'ZoukTime Set', artist: 'DJ V',
+    resolved: { dj: '@track', file: 'DJ V/Brno/Party.flac', duration: 321.5 } });
+  assert.deepEqual(d.key, { dj: '@track', file: 'DJ V/Brno/Party.flac' });
+  assert.equal(d.known, true);
+  assert.equal(d.duration, 321.5);
+  assert.deepEqual(d.ref, { name: 'ZoukTime Set', artist: 'DJ V' });   // still asked by name: the server memoises
+  assert.equal(M.describeSource({ name: 'X', artist: 'Y' }).known, false);   // not yet agreed: no audio request
+  assert.equal(M.describeSource({ dj: 'D', file: 'f.m4a' }).known, true);
+});

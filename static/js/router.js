@@ -218,6 +218,10 @@ function handleKeydown(e) {
     import('./utils.js').then(m => m.requestNotificationPermission());
   }
   if (e.key === 'Escape') {
+    // A dialog on the stack owns Escape (each one has its own document listener): without
+    // this the clip editor opened from the queue / full player closed that layer too, and
+    // Escape in its time field — which only leaves the field — closed the panel underneath.
+    if (store.dialogStack && store.dialogStack.length) return;
     if (store.queuePanelOpen) { closeQueuePanel(); return; }
     if (store.fullPlayerOpen) {
       // Synchronous flag check — decided before any microtask can flip it.

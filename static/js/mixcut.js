@@ -176,9 +176,63 @@ export function clampSpan(span) {
 /** The set's own file, served with Range: the editor must play exactly the audio the
  *  cut is made from (the player's stream may be a transcode with other timing). An
  *  <audio> element cannot send a header, hence the token in the query. */
-export function mixStreamUrl(mix, token) {
-  const q = new URLSearchParams({ dj: mix.dj || '', file: mix.file || '', token: token || '' });
+export function mixStreamUrl(source, token) {
+  const q = refParams(refOf(source));
+  q.set('token', token || '');
   return `/api/clips/audio?${q}`;
+}
+
+/** A source is a downloaded set ({dj, file}) or a track of the user's own library
+ *  ({name, artist}); the server takes either form, never both. */
+function refOf(source) {
+  const s = source || {};
+  return s.name && !(s.dj && s.file) ? { name: s.name, artist: s.artist || '' } : { dj: s.dj || '', file: s.file || '' };
+}
+
+/** Query parameters naming the source — waveform, beats and audio all use this one. */
+export function refParams(ref) {
+  const r = refOf(ref);
+  return new URLSearchParams(r.name !== undefined ? { name: r.name, artist: r.artist } : { dj: r.dj, file: r.file });
+}
+
+/** The same ref as a POST body. `artist` there is the CLIP's artist, so a track's own
+ *  artist travels as `source_artist`. */
+export function refBody(ref) {
+  const r = refOf(ref);
+  return r.name !== undefined ? { name: r.name, source_artist: r.artist } : { dj: r.dj, file: r.file };
+}
+
+// Names reach the menu as the search providers sent them, entities and all. The player
+// decodes them through a textarea; this does the same without needing a DOM.
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+export function decodeEntities(s) {
+  if (!s || !String(s).includes('&')) return s || '';
+  return String(s).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+    if (e[0] === '#') {
+      const n = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      try { return String.fromCodePoint(n); } catch { return m; }
+    }
+    return ENTITIES[e.toLowerCase()] ?? m;
+  });
+}
+
+/** One internal shape for whatever the editor was opened with: a Mixes row
+ *  ({dj, file, title, ...}) or a track item from the app ({name, artist, ...}).
+ *  `ref` is what the server is asked with; `key` matches clips to this source. */
+export function describeSource(source) {
+  const s = source || {};
+  if (s.dj && s.file) {
+    return { title: s.title || '', artist: s.artist || s.dj || '', sub: s.dj || s.artist || '',
+      ref: { dj: s.dj, file: s.file }, key: { dj: s.dj, file: s.file }, known: true, duration: Number(s.duration) || 0 };
+  }
+  const name = decodeEntities(s.name || ''); const artist = decodeEntities(s.artist || '');
+  // `resolved` is the answer of GET /api/clips/source, asked before the editor opened: the
+  // server has already agreed this track can be cut and told us its key.
+  const r = s.resolved && s.resolved.dj && s.resolved.file ? s.resolved : null;
+  // otherwise the relpath is only known to the server: waveform's `source` fills `key.file` in
+  return { title: name, artist, sub: artist, ref: { name, artist },
+    key: r ? { dj: r.dj, file: r.file } : { dj: '@track', file: '' }, known: !!r,
+    duration: Number(s.duration) || (r ? Number(r.duration) || 0 : 0) };
 }
 
 /** Was this clip cut from this set? By dj folder + file name — titles are not unique
@@ -246,16 +300,18 @@ const COL_REST_REFL = 'rgba(230,230,238,0.32)';
 const BASE_FRAC = 0.65;          // the centre line: the upper part is 65 % of the height
 const CLIP_COLORS = ['#3ddc97', '#4ea8ff', '#ffd24d', '#c58bff', '#ff6b8b'];
 
-export async function openCutter(mix, opener) {
-  if (!mix || dialogOpen('mixcut') || _open) return;
+export async function openCutter(source, opener) {
+  if (!source || dialogOpen('mixcut') || _open) return;
+  const mix = describeSource(source);   // title, artist, sub, ref, key (what clips are matched by)
   // document.body is what activeElement falls back to: not an opener, so the data-cut-key lookup runs.
   const isOpener = (el) => el && el !== document.body;
   const opening = isOpener(opener) ? opener : (isOpener(document.activeElement) ? document.activeElement : null);
-  const openerKey = `${mix.dj}/${mix.file}`;
+  const openerKey = mix.ref.dj ? `${mix.ref.dj}/${mix.ref.file}` : '';
 
   // ── state ──
   let closed = false;
-  let duration = Number(mix.duration) > 0 ? Number(mix.duration) : 0;
+  let duration = mix.duration > 0 ? mix.duration : 0;
+  let unavailable = false;           // the server said this source cannot be cut: nothing to play either
   let peaks = new Uint8Array(0);
   let rate = 10;
   let sel = null;                    // {start, end}
@@ -284,7 +340,7 @@ export async function openCutter(mix, opener) {
   root.setAttribute('aria-label', 'Cut a clip from this set');
   root.innerHTML = `
     <div class="mixcut-head">
-      <div class="mixcut-headtext"><div class="mixcut-h-title">${esc(mix.title)}</div><div class="mixcut-h-sub">${esc(mix.dj || mix.artist || '')}</div></div>
+      <div class="mixcut-headtext"><div class="mixcut-h-title">${esc(mix.title)}</div><div class="mixcut-h-sub">${esc(mix.sub)}</div></div>
       <button type="button" class="mixcut-close" data-r="close" aria-label="Close">&times;</button>
     </div>
     <div class="mixcut-body">
@@ -330,7 +386,7 @@ export async function openCutter(mix, opener) {
   const R = {};
   root.querySelectorAll('[data-r]').forEach((el) => { R[el.dataset.r] = el; });
   document.body.appendChild(root);
-  R.artist.value = mix.artist || mix.dj || '';
+  R.artist.value = mix.artist;
 
   const audio = R.audio;
   let titleTouched = false;
@@ -434,7 +490,7 @@ export async function openCutter(mix, opener) {
     ovCtx.restore();
     // saved clips: thin markers under the waveform
     // only THIS set's clips: the list holds every clip the user owns
-    clipsOfSet(clips, mix).forEach((c) => {
+    clipsOfSet(clips, matchKey()).forEach((c) => {
       const i = clips.indexOf(c);
       const x0 = timeToX(c.start, 0, duration, w); const x1 = timeToX(c.end, 0, duration, w);
       ovCtx.fillStyle = CLIP_COLORS[i % CLIP_COLORS.length];
@@ -522,7 +578,8 @@ export async function openCutter(mix, opener) {
       await beatSlot();
       try {
         if (closed) return;
-        const q = new URLSearchParams({ dj: mix.dj, file: mix.file, t: String(k * BEAT_WINDOW + BEAT_WINDOW / 2) });
+        const q = refParams(mix.ref);
+        q.set('t', String(k * BEAT_WINDOW + BEAT_WINDOW / 2));
         const d = await apiJson(`/api/clips/beats?${q}`);
         if (closed) return;
         // the window is t±15 s: keep only this window's own beats so windows never double up
@@ -645,7 +702,7 @@ export async function openCutter(mix, opener) {
   on(audio, 'pause', () => { syncUi(); });
   on(audio, 'ended', syncUi);
   on(audio, 'timeupdate', checkBounds);   // rAF stops in a hidden tab / locked phone; this does not
-  on(audio, 'error', () => { if (!closed && audio.getAttribute('src')) showToast('The set could not be played', true); });
+  on(audio, 'error', () => { if (!closed && !unavailable && audio.getAttribute('src')) showToast('The set could not be played', true); });
 
   // ── pointers: overview ──
   const localX = (canvas, e) => e.clientX - canvas.getBoundingClientRect().left;
@@ -780,8 +837,9 @@ export async function openCutter(mix, opener) {
   }
 
   // ── clips list ──
+  const matchKey = () => ({ dj: mix.key.dj, file: mix.key.file, title: mix.title, artist: mix.artist });
   function renderClipList() {
-    const mine = clipsOfSet(clips, mix);
+    const mine = clipsOfSet(clips, matchKey());
     if (!mine.length) { R.clips.innerHTML = '<p class="mixcut-empty">No clips cut from this set yet.</p>'; return; }
     R.clips.innerHTML = mine.map((c, i) => `
       <div class="mixcut-clip" data-i="${i}" tabindex="0" role="button" aria-label="Jump to ${escAttr(c.title)}">
@@ -827,7 +885,7 @@ export async function openCutter(mix, opener) {
     try {
       const r = await apiJson('/api/clips', {
         method: 'POST',
-        body: { dj: mix.dj, file: mix.file, start: sel.start, end: sel.end, title, artist: R.artist.value.trim() },
+        body: { ...refBody(mix.ref), start: sel.start, end: sel.end, title, artist: R.artist.value.trim() },
       });
       showToast(`Saved – ${(r && r.name) || title}`);
       titleTouched = false;           // the next passage gets a fresh default title
@@ -846,7 +904,10 @@ export async function openCutter(mix, opener) {
   syncUi();
   raf = requestAnimationFrame(frame);
   loadClips();
-  try { audio.src = mixStreamUrl(mix, streamToken()); } catch {}
+  // A source the server has not yet agreed to serve gets no <audio> request: its 404 could
+  // beat the waveform's and toast "could not be played" next to the status message.
+  const attachAudio = () => { if (!closed && !unavailable && !audio.getAttribute('src')) { try { audio.src = mixStreamUrl(mix.ref, streamToken()); } catch {} } };
+  if (mix.known) attachAudio();
   await loadWaveform();
 
   // A 2.5 h set can take longer to analyse than nginx waits for one request. The server
@@ -854,7 +915,7 @@ export async function openCutter(mix, opener) {
   async function loadWaveform() {
     const give = Date.now() + WAVE_GIVE_UP_MS;
     R.status.style.display = ''; R.status.textContent = 'Analysing the set…';
-    const q = new URLSearchParams({ dj: mix.dj, file: mix.file });
+    const q = refParams(mix.ref);
     for (;;) {
       let wf;
       try {
@@ -868,11 +929,21 @@ export async function openCutter(mix, opener) {
           if (closed) return;
           continue;
         }
-        R.status.innerHTML = `${esc(e.message || 'Could not analyse the set')} <button type="button" class="mixcut-btn mixcut-btn--sm" data-r="retry">Retry</button>`;
-        R.status.querySelector('[data-r="retry"]').addEventListener('click', () => { loadWaveform(); });
+        // 400/404 are final (the server's own words say why, e.g. "Only a track stored in
+        // your own library can be cut"): shown plainly, no Retry, and nothing left to play.
+        const final = e.status === 400 || e.status === 404;
+        if (final) { unavailable = true; try { audio.removeAttribute('src'); audio.load(); } catch {} }
+        R.status.classList.toggle('mixcut-status--bad', final);
+        R.status.innerHTML = esc(e.message || 'Could not analyse the set')
+          + (final ? '' : ' <button type="button" class="mixcut-btn mixcut-btn--sm" data-r="retry">Retry</button>');
+        const retry = R.status.querySelector('[data-r="retry"]');
+        if (retry) retry.addEventListener('click', () => { R.status.classList.remove('mixcut-status--bad'); loadWaveform(); });
         return;
       }
       if (closed) return;
+      // For a track the relpath is the server's to know; clips are matched by what it says.
+      if (wf.source && wf.source.dj && wf.source.file) { mix.key = { dj: wf.source.dj, file: wf.source.file }; renderClipList(); }
+      attachAudio();
       peaks = decodePeaks(wf.peaks);
       rate = wf.rate || 10;
       duration = Number(wf.duration) || (peaks.length / rate);
@@ -909,7 +980,7 @@ export async function renderClipsSection(container) {
   }
   if (gen !== _sectionGen) return;
   if (!clips.length) {
-    container.innerHTML = '<div class="mixcut-section"><h3 class="mixcut-sec-h">Clips</h3><p class="mix-hint">Clips are cut from a downloaded set with the Cut button on its row.</p></div>';
+    container.innerHTML = '<div class="mixcut-section"><h3 class="mixcut-sec-h">Clips</h3><p class="mix-hint">Clips are cut from a downloaded set with the Cut button on its row, or from any track in your library with “✂ Cut a clip…” in its menu.</p></div>';
     return;
   }
   const groups = groupClips(clips);
