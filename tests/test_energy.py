@@ -202,22 +202,19 @@ def test_the_sweep_works_several_tracks_at_once_on_its_own_workers(sweep):
 
 # -- felt tempo, and a little of it in the energy (feature version 3) --
 
-def test_the_felt_tempo_changes_octave_only_when_the_rhythm_leaves_no_doubt():
-    assert bpm.tempo_feel(62, 62 / 60 * 3.6) == 124.0            # a dense "62" is a 124 BPM track
-    assert bpm.tempo_feel(110, 110 / 60 * 1.7) == 55.0           # one event per beat at 110 feels half
-    assert bpm.tempo_feel(62, 62 / 60 * 3.0) == 62.0             # not dense enough: left alone
-    assert bpm.tempo_feel(72, 72 / 60 * 4.0) == 72.0             # 144 would be a guess; outside the rule
-    assert bpm.tempo_feel(68, 68 / 60 * 4.0) == 68.0
-    assert bpm.tempo_feel(88, 88 / 60 * 1.5) == 88.0
+def test_the_felt_tempo_is_never_doubled_and_halved_only_for_a_calm_track_read_fast():
+    # never doubled: this library is danced as zouk, a 126 BPM track is felt at 63
+    assert all(bpm.tempo_feel(b, b / 60 * 6.0, score=2.0) == float(b) for b in (58, 60, 63, 66, 70, 90))
+    # "Everytime": a 110 BPM ballad on paper, busy piano, calm — felt at 55
+    assert bpm.tempo_feel(110, 110 / 60 * 3.0, score=-1.0) == 55.0
+    assert bpm.tempo_feel(110, 110 / 60 * 1.5, score=-1.0) == 55.0            # the onset count no longer matters
+    assert bpm.tempo_feel(110, 4.0, score=-0.5) == 110.0                      # not calm enough
+    assert bpm.tempo_feel(110, 4.0, score=0.8) == 110.0                       # a driving 110 stays 110
+    assert bpm.tempo_feel(90, 2.0, score=-2.0) == 90.0                        # a calm 90 is a calm 90
+    assert bpm.tempo_feel(96, 2.0, score=-2.0) == 48.0
+    assert bpm.tempo_feel(110, 4.0) == 110.0                                  # nothing known about the track
     assert bpm.tempo_feel(None, 3.0) is None and bpm.tempo_feel(0, 3.0) is None
-    assert bpm.tempo_feel(80, None) == 80.0
-    # density is not speed: a calm, finger-picked "68" stays 68; a driving one doubles
-    assert bpm.tempo_feel(64, 64 / 60 * 4.0, score=-0.4) == 64.0
-    assert bpm.tempo_feel(64, 64 / 60 * 4.0, score=0.6) == 128.0
-    # "Tunnel Vision": 70 BPM, busy hats, calm — doubling stops at 66 whatever the score
-    assert bpm.tempo_feel(70, 70 / 60 * 4.4, score=0.9) == 70.0
-    assert bpm.tempo_feel(110, 110 / 60 * 1.7, score=0.6) == 110.0   # sparse but driving: not halved
-    assert bpm.tempo_feel(110, 110 / 60 * 1.7, score=-0.6) == 55.0
+    assert bpm.tempo_feel("110", None, -1.0) == 55.0
 
 
 def test_a_faster_felt_tempo_raises_the_energy_a_little_and_no_tempo_is_neutral():
@@ -232,12 +229,12 @@ def test_features_carry_the_felt_tempo_through_the_production_path(tmp_path):
     drone = (0.3 * np.sin(2 * np.pi * 220 * np.arange(60 * SR) / SR)).astype(np.float32)
     calm = _flac(tmp_path, "calm.flac", drone)
     f = bpm.compute_features_only(busy, 62.0)
-    assert f["onset_rate"] > 62 / 60 * 3.5 and f["tempo_feel"] == 124.0      # dense and driving: doubled
+    assert f["onset_rate"] > 62 / 60 * 3.5 and f["tempo_feel"] == 62.0       # dense and driving, and still 62
     assert bpm.compute_features_only(busy, 90.0)["tempo_feel"] == 90.0       # nothing to fold at 90
     nobpm = bpm.compute_features_only(busy)
     assert nobpm["energy"] is not None and "tempo_feel" not in nobpm         # no BPM: still an energy
-    # the tempo reaches the energy: the same audio "at 124" does not rank below itself "at 90"
-    assert f["energy"] >= bpm.compute_features_only(busy, 90.0)["energy"]
+    # the tempo reaches the energy: the same audio at 90 outranks itself at 62
+    assert bpm.compute_features_only(busy, 90.0)["energy"] > f["energy"]
     assert bpm.compute_features_only(calm, 62.0)["tempo_feel"] == 62.0       # a drone is not a fast track
     assert "bpm" not in f
 

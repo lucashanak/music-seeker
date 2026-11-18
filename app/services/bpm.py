@@ -29,7 +29,7 @@ BPM_CACHE_FILE = DATA_DIR / "bpm_analysis.json"
 ZOUK_MIN_BPM = 60       # fold window spans exactly one octave (60–120 = 2×) → no dead zone
 ZOUK_MAX_BPM = 120
 BPM_ALGO_VERSION = 5    # bump to invalidate cached/tagged BPM when the algorithm changes
-FEATURE_VERSION = 4     # bump to lazily backfill audio features (energy/danceability/…) — NEVER triggers a BPM re-scan
+FEATURE_VERSION = 5     # bump to lazily backfill audio features (energy/danceability/…) — NEVER triggers a BPM re-scan
 
 # ── Audio-feature normalization anchors (fixed references → reproducible 0..1, NOT dataset-relative) ──
 # All calibratable later; chosen to map typical music into a useful 0..1 spread.
@@ -309,18 +309,11 @@ ENERGY_MU, ENERGY_SIGMA = -0.0578, 0.8400
 # (DEAM, emoMusic over MusiCNN embeddings) put it at the 83rd and the 53rd. It reads
 # 4 of 5 here ("Tunnel Vision": 2 of 5). Getting further needs the listener's verdicts
 # on more tracks to fit against — two examples are not enough to choose weights by.
-# Version 3 adds a little of the FELT tempo (weight 0.20; centre 82 BPM, spread 0.30 octave).
-# The stored BPM is folded into 60–120, which is right for mixing but says nothing about
-# how fast a track feels: a 124 BPM remix is stored as 62 next to a real 62 BPM ballad,
-# and a 110 BPM ballad with one event per beat reads as fast. `tempo_feel` picks the
-# octave from how many onsets fall on a stored beat — and only when it is unmistakable
-# (2 of 67 doubled, 1 halved on the reference playlist). It never changes `bpm`.
+# A little of the FELT tempo goes into the energy (weight 0.20; centre 82 BPM, spread 0.30
+# octave). The stored BPM is folded into 60–120, which is right for mixing; `tempo_feel`
+# (below) only ever halves it, for a calm track read in double time. It never changes `bpm`.
 TEMPO_WEIGHT, TEMPO_CENTRE, TEMPO_SPREAD = 0.20, 82.0, 0.30
-# Doubling stops at 66: "Tunnel Vision" (70, busy hats, calm) was doubled to 140 under the
-# first limit of 70. Onsets per beat IS the double-time-ornament signal, so the rule is
-# only trusted where a real tempo that slow would be a rarity.
-FEEL_DOUBLE = (66.0, 3.5)      # stored bpm at most this AND at least this many onsets per beat
-FEEL_HALVE = (100.0, 1.8)      # stored bpm at least this AND at most this many onsets per beat
+FEEL_HALVE = (96.0, -0.7)      # stored bpm at least this AND an energy score at most this
 ENERGY_SR = 22050
 
 
@@ -351,28 +344,28 @@ def energy_window_raw(mono_22k) -> dict:
     }
 
 
-def tempo_feel(bpm, onset_rate, score=None) -> float | None:
-    """The tempo a listener taps: the stored BPM, doubled or halved when the rhythm's
-    density leaves no doubt. None without a BPM.
+def tempo_feel(bpm, onset_rate=None, score=None) -> float | None:
+    """The tempo a zouk dancer feels: the stored BPM, or HALF of it for a calm track the
+    analysis read in double time. None without a BPM.
 
-    Density alone is not enough: a finger-picked acoustic ballad has four onsets to the
-    beat and is not a 136 BPM track (measured: "Halo – Acoustic", 68 → 136). So a track is
-    doubled only when it also drives (`score` ≥ 0 = above the library's median before the
-    tempo term) and halved only when it does not."""
+    - Never doubled (version 5). Doubling was metrically right — "Get Lucky" 58 → 116,
+      "Strazile Din Bucuresti" 63 → 126 are the songs' real tempos — and wrong for the
+      listener every time they looked ("Tunnel Vision", "Strazile Din Bucuresti":
+      "unrealistically high"). A 126 BPM track is danced at 63 here; the folded BPM
+      already IS the felt tempo.
+    - Halved when the stored BPM is in the upper part of the fold (≥ 96) and the track
+      is clearly calm (`score` = the energy score before the tempo term). "Everytime"
+      (Britney Spears) is a 110 BPM ballad on paper and nobody counts it that way. The
+      first rule also asked for few onsets per beat; a piano arpeggio has many, so it
+      missed exactly the ballads it was written for. `onset_rate` is no longer used.
+    """
     try:
         bpm = float(bpm)
     except (TypeError, ValueError):
         return None
     if not (bpm > 0):
         return None
-    try:
-        per_beat = float(onset_rate) / (bpm / 60.0)
-    except (TypeError, ValueError):
-        return round(bpm, 1)
-    drives = None if score is None else score >= 0.0
-    if bpm <= FEEL_DOUBLE[0] and per_beat >= FEEL_DOUBLE[1] and drives is not False:
-        return round(bpm * 2, 1)
-    if bpm >= FEEL_HALVE[0] and per_beat <= FEEL_HALVE[1] and drives is not True:
+    if score is not None and bpm >= FEEL_HALVE[0] and score <= FEEL_HALVE[1]:
         return round(bpm / 2, 1)
     return round(bpm, 1)
 
