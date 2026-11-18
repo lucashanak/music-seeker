@@ -107,6 +107,7 @@ def sweep(monkeypatch):
     monkeypatch.setattr(bpm, "_save_cache", lambda: st.__setitem__("saves", st["saves"] + 1))
     monkeypatch.setattr(bpm, "_sweep_state", {"running": False, "done": 0, "left": 0})
     monkeypatch.setattr(mixes, "is_mix", lambda n, a: n == "Set")
+    monkeypatch.setattr(bpm, "BG_REFRESH_DELAY", 0)
 
     async def find_song_id(name, artist, album=""):
         return "nd1" if name == "Nav" else None
@@ -346,3 +347,26 @@ def test_dropping_the_cache_of_a_missing_or_odd_file_never_raises(tmp_path, monk
     monkeypatch.setattr(bpm.os, "posix_fadvise", lambda *a: (_ for _ in ()).throw(OSError("unsupported")))
     bpm.drop_file_cache(str(f))
     assert f.read_bytes() == b"x" * 4096
+
+
+def test_a_background_refresh_waits_so_the_player_gets_the_stream_first(sweep, monkeypatch):
+    monkeypatch.setattr(bpm, "BG_REFRESH_DELAY", 0.05)
+
+    async def run():
+        assert bpm.backfill_in_background("Old", "A") is True
+        await asyncio.sleep(0.01)
+        assert sweep["asked"] == []                                 # nothing fetched yet
+        await asyncio.gather(*list(bpm._bg_tasks))
+        assert [n for n, _ in sweep["asked"]] == ["Old"]
+    asyncio.run(run())
+
+
+def test_a_refresh_that_waited_does_nothing_if_the_track_is_current_by_then(sweep, monkeypatch):
+    monkeypatch.setattr(bpm, "BG_REFRESH_DELAY", 0.05)
+
+    async def run():
+        assert bpm.backfill_in_background("Old", "A") is True
+        sweep["cache"]["a::old"]["feature_version"] = bpm.FEATURE_VERSION     # the sweep got there first
+        await asyncio.gather(*list(bpm._bg_tasks))
+    asyncio.run(run())
+    assert sweep["asked"] == [] and not bpm._bg_backfills

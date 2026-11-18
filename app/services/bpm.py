@@ -1501,6 +1501,12 @@ SWEEP_SAVE_EVERY = 50
 
 _bg_backfills: set[str] = set()
 _bg_tasks: set = set()
+# The refresh is asked for at the moment a track starts playing. For a track that lives
+# only in Navidrome it would fetch and transcode the same stream the player is fetching
+# right then; started together, the cold start of that track ran into the e2e's 25 s
+# limit (2026-11-18). Waiting lets the player finish first — the refresh then finds the
+# shared cache file instead of building a second one.
+BG_REFRESH_DELAY = 45.0
 
 
 def backfill_in_background(name: str, artist: str) -> bool:
@@ -1515,6 +1521,10 @@ def backfill_in_background(name: str, artist: str) -> bool:
 
     async def run():
         try:
+            if BG_REFRESH_DELAY:
+                await asyncio.sleep(BG_REFRESH_DELAY)
+            if not _needs_features(_bpm_cache.get(key) or {}):
+                return                      # the sweep or a forced analysis got there first
             try:
                 song_id = await library.find_song_id(name, artist) or ""
             except Exception:
