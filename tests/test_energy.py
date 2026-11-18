@@ -134,21 +134,28 @@ def sweep(monkeypatch):
 def test_the_background_sweep_updates_stale_entries_and_leaves_bpm_alone(sweep):
     cache = sweep["cache"]
     st = asyncio.run(bpm.backfill_stale_features(pause=0))
-    assert sorted(sweep["asked"]) == [("Gone", ""), ("Nav", "nd1"), ("Old", "")]   # not the current one, not the set
+    # Library files only: no Navidrome id is ever resolved, so nothing is fetched into /tmp.
+    assert sorted(sweep["asked"]) == [("Gone", ""), ("Nav", ""), ("Old", "")]
     assert cache["a::old"]["energy"] == 0.33 and cache["a::old"]["bpm"] == 88.0
-    assert cache["a::nav"]["energy"] == 0.33                      # found through its Navidrome id
     assert cache["a::set"]["feature_version"] == 1                # a downloaded set is never analysed
-    assert st["done"] == 2 and st["left"] == 0 and st["running"] is False
+    assert st["left"] == 0 and st["running"] is False
     assert sweep["saves"] == 1                                    # once at the end, not once per track
 
 
 def test_a_track_without_audio_is_marked_and_not_walked_for_again(sweep):
     asyncio.run(bpm.backfill_stale_features(pause=0))
     gone = sweep["cache"]["a::gone"]
-    assert gone["feature_version"] == 1 and gone["energy"] == 0.6 and gone["features_unavailable"] == bpm.FEATURE_VERSION
+    assert gone["feature_version"] == 1 and gone["energy"] == 0.6 and gone["sweep_skipped"] == bpm.FEATURE_VERSION
+    assert "features_unavailable" not in gone                    # a play may still refresh it from Navidrome
     sweep["asked"].clear()
     asyncio.run(bpm.backfill_stale_features(pause=0))
     assert ("Gone", "") not in sweep["asked"]
+
+    async def later():
+        assert bpm.backfill_in_background("Gone", "A") is True
+        await asyncio.gather(*list(bpm._bg_tasks))
+    asyncio.run(later())
+    assert gone["features_unavailable"] == bpm.FEATURE_VERSION   # now really tried, id and all
 
 
 def test_the_sweep_saves_in_batches(sweep, monkeypatch):
@@ -244,7 +251,7 @@ def test_the_sweep_hands_each_tracks_own_bpm_to_the_analysis(sweep):
                 "feature_version": bpm.FEATURE_VERSION}
     bpm._run_in_pool = pool
     asyncio.run(bpm.backfill_stale_features(pause=0))
-    assert sorted(a[1] for a in seen) == [81.0, 88.0]             # Nav and Old, each with its BPM
+    assert sorted(a[1] for a in seen) == [81.0, 88.0]             # each with its own BPM
 
 
 def test_a_file_tagged_current_is_still_measured_for_the_felt_tempo(tmp_path, monkeypatch):
@@ -318,3 +325,27 @@ def test_silence_between_notes_does_not_inflate_the_flux():
     y[SR * 6: SR * 6 + 2000] = 0.5 * np.sin(2 * np.pi * 440 * np.arange(2000) / SR)
     raw = bpm.energy_window_raw(y)
     assert all(np.isfinite(v) for v in raw.values()) and raw["flux_all"] < 5.0
+
+
+# -- the sweep must not fill the container with file cache (OOM kill 2026-11-18) --
+
+def test_a_bulk_refresh_drops_each_files_cache_and_a_listeners_request_does_not(sweep, monkeypatch):
+    dropped = []
+    monkeypatch.setattr(bpm, "drop_file_cache", lambda p: dropped.append(p))
+    asyncio.run(bpm.backfill_stale_features(pause=0))
+    assert dropped == ["/x.flac", "/x.flac"]                     # the two with a file; Gone had none
+
+    dropped.clear()
+    sweep["cache"]["a::fresh"] = {"name": "Fresh", "artist": "A", "bpm": 90.0, "feature_version": 1}
+    asyncio.run(bpm._backfill_features(sweep["cache"]["a::fresh"], "", "Fresh", "A"))
+    assert dropped == []                                          # that file is about to be streamed
+
+
+def test_dropping_the_cache_of_a_missing_or_odd_file_never_raises(tmp_path, monkeypatch):
+    bpm.drop_file_cache(str(tmp_path / "nope.flac"))
+    f = tmp_path / "a.flac"
+    f.write_bytes(b"x" * 4096)
+    bpm.drop_file_cache(str(f))
+    monkeypatch.setattr(bpm.os, "posix_fadvise", lambda *a: (_ for _ in ()).throw(OSError("unsupported")))
+    bpm.drop_file_cache(str(f))
+    assert f.read_bytes() == b"x" * 4096

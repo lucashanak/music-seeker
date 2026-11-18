@@ -1449,6 +1449,31 @@ async def _get_audio_file(song_id: str, name: str, artist: str) -> str | None:
 _analysis_locks: dict[str, asyncio.Lock] = {}
 
 
+def drop_file_cache(path: str) -> None:
+    """Tell the kernel it may forget this file's cached pages.
+
+    The container was OOM-killed on FILE cache, not on what the analysis allocates:
+    2026-11-18 the cgroup stood at 0.5 GB anonymous + 1.5 GB page cache when uvicorn was
+    killed (btrfs under a memory cgroup did not reclaim the cache in time). A bulk pass
+    therefore drops each file once it is done with it. It helps for library files; on
+    the container's overlay /tmp it gave back only ~380 MB of 1.2 GB (measured), which
+    is why the sweep does not fetch anything into /tmp at all. Best effort, never raises."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        try:
+            os.fsync(fd)          # dirty pages (a file we just wrote) cannot be dropped
+        except OSError:
+            pass
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    except (OSError, AttributeError):
+        pass
+    finally:
+        os.close(fd)
+
+
 async def _backfill_features(entry: dict, song_id: str, name: str, artist: str,
                              save: bool = True, executor=None) -> dict:
     """Lazily enrich a cached BPM entry with audio features WITHOUT recomputing BPM.
@@ -1460,6 +1485,8 @@ async def _backfill_features(entry: dict, song_id: str, name: str, artist: str,
     if not file_path:
         return entry  # can't backfill without audio — leave BPM data intact
     feats = await _run_in_pool(compute_features_only, file_path, entry.get("bpm"), executor=executor)
+    if executor is not None:      # the sweep / a background refresh: hundreds of files in a row
+        await asyncio.to_thread(drop_file_cache, file_path)
     # The analysis took seconds. A forced re-analysis or a re-download may have stored a
     # NEW entry meanwhile; putting the captured object back would resurrect the old BPM
     # and beat grid (reproduced). Merge into whatever the cache holds now.
@@ -1519,14 +1546,22 @@ async def backfill_stale_features(pause: float = 0.3) -> dict:
     a playlist would show (and Smart Queue would compare) old and new values side by
     side for months. BPM, key and the beat grid are never touched.
 
-    A track whose audio cannot be found is marked (`features_unavailable`) and not asked
-    for again until the next version: each miss costs several walks over the NAS."""
+    ONLY tracks with a file in the library. A track that exists only in Navidrome would
+    have to be fetched and transcoded into /tmp first, and a sweep doing that for every
+    such track is what got the container OOM-killed (2026-11-18: 752 MB of streams
+    written in minutes; on the overlay /tmp even POSIX_FADV_DONTNEED gave back only a
+    quarter of the page cache — measured). Those tracks are refreshed one at a time,
+    when somebody plays them (`backfill_in_background`).
+
+    A track without a library file is marked (`sweep_skipped`) so the next start does
+    not walk the NAS for it again; that mark does not stop the per-play refresh."""
     if _sweep_state["running"]:
         return _sweep_state
     from app.services import mixes
     stale = [(e.get("name"), e.get("artist", "")) for e in list(_bpm_cache.values())
              if _needs_features(e) and e.get("name")
-             and e.get("features_unavailable") != FEATURE_VERSION]
+             and e.get("features_unavailable") != FEATURE_VERSION
+             and e.get("sweep_skipped") != FEATURE_VERSION]
     _sweep_state.update(running=True, done=0, left=len(stale))
     width = _sweep_executor._max_workers
     counters = {"unsaved": 0}
@@ -1536,15 +1571,11 @@ async def backfill_stale_features(pause: float = 0.3) -> dict:
         entry = _bpm_cache.get(_cache_key(name, artist))
         try:
             if entry is not None and _needs_features(entry) and not mixes.is_mix(name, artist):
-                # Tracks analysed from the Navidrome stream have no file the glob finds.
-                try:
-                    song_id = await library.find_song_id(name, artist) or ""
-                except Exception:
-                    song_id = ""
-                cur = await _backfill_features(entry, song_id, name, artist, save=False,
+                # song_id "" = library files only (see the docstring).
+                cur = await _backfill_features(entry, "", name, artist, save=False,
                                                executor=_sweep_executor)
                 if _needs_features(cur):
-                    cur["features_unavailable"] = FEATURE_VERSION
+                    cur["sweep_skipped"] = FEATURE_VERSION
                 else:
                     _sweep_state["done"] += 1
                 counters["unsaved"] += 1
