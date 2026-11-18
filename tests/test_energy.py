@@ -200,12 +200,15 @@ def test_the_felt_tempo_changes_octave_only_when_the_rhythm_leaves_no_doubt():
     assert bpm.tempo_feel(110, 110 / 60 * 1.7) == 55.0           # one event per beat at 110 feels half
     assert bpm.tempo_feel(62, 62 / 60 * 3.0) == 62.0             # not dense enough: left alone
     assert bpm.tempo_feel(72, 72 / 60 * 4.0) == 72.0             # 144 would be a guess; outside the rule
+    assert bpm.tempo_feel(68, 68 / 60 * 4.0) == 68.0
     assert bpm.tempo_feel(88, 88 / 60 * 1.5) == 88.0
     assert bpm.tempo_feel(None, 3.0) is None and bpm.tempo_feel(0, 3.0) is None
     assert bpm.tempo_feel(80, None) == 80.0
     # density is not speed: a calm, finger-picked "68" stays 68; a driving one doubles
-    assert bpm.tempo_feel(68, 68 / 60 * 4.0, score=-0.4) == 68.0
-    assert bpm.tempo_feel(68, 68 / 60 * 4.0, score=0.6) == 136.0
+    assert bpm.tempo_feel(64, 64 / 60 * 4.0, score=-0.4) == 64.0
+    assert bpm.tempo_feel(64, 64 / 60 * 4.0, score=0.6) == 128.0
+    # "Tunnel Vision": 70 BPM, busy hats, calm — doubling stops at 66 whatever the score
+    assert bpm.tempo_feel(70, 70 / 60 * 4.4, score=0.9) == 70.0
     assert bpm.tempo_feel(110, 110 / 60 * 1.7, score=0.6) == 110.0   # sparse but driving: not halved
     assert bpm.tempo_feel(110, 110 / 60 * 1.7, score=-0.6) == 55.0
 
@@ -285,3 +288,33 @@ def test_a_background_refresh_runs_once_per_track_and_marks_missing_audio(sweep)
     assert cache["a::old"]["energy"] == 0.33 and cache["a::old"]["bpm"] == 88.0
     assert cache["a::gone"]["features_unavailable"] == bpm.FEATURE_VERSION and not bpm._bg_backfills
     assert set(sweep["executors"]) == {bpm._sweep_executor}             # never the listeners' pool
+
+
+# -- version 4: a pluck over silence is not a snare in a full mix --
+
+def _plucked(seconds=40.0, per_sec=5.0):
+    """Dull, decaying 'guitar' notes over near-silence: big dB jumps, no bright percussion."""
+    n = int(seconds * SR)
+    y = np.zeros(n, dtype=np.float64)
+    note = np.sin(2 * np.pi * 330 * np.arange(int(0.25 * SR)) / SR) * np.exp(-np.linspace(0, 7, int(0.25 * SR)))
+    for k in range(int(seconds * per_sec)):
+        i = int(k / per_sec * SR)
+        y[i:i + len(note)] += note[: max(0, min(len(note), n - i))]
+    return (0.6 * y / np.max(np.abs(y))).astype(np.float32)
+
+
+def test_busy_plucking_over_a_quiet_bed_is_not_a_driving_track(tmp_path):
+    plucked = bpm.compute_features_only(_flac(tmp_path, "guitar.flac", _plucked()), 78.0)
+    driving = bpm.compute_features_only(_flac(tmp_path, "drums.flac", _track(5, seconds=40)), 78.0)
+    assert plucked["energy"] < driving["energy"] - 0.2
+    raw = bpm.energy_window_raw(_plucked(12.0))
+    assert raw["perc_hi"] < bpm.energy_window_raw(_track(5))["perc_hi"] / 10     # the separating feature
+    assert "onset_perc" not in raw and "lowflux" not in raw                      # nothing is a dB jump any more
+
+
+def test_silence_between_notes_does_not_inflate_the_flux():
+    # On a dB scale the first sound after digital silence is an enormous "rise".
+    y = np.zeros(SR * 12, dtype=np.float32)
+    y[SR * 6: SR * 6 + 2000] = 0.5 * np.sin(2 * np.pi * 440 * np.arange(2000) / SR)
+    raw = bpm.energy_window_raw(y)
+    assert all(np.isfinite(v) for v in raw.values()) and raw["flux_all"] < 5.0

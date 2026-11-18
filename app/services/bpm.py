@@ -29,7 +29,7 @@ BPM_CACHE_FILE = DATA_DIR / "bpm_analysis.json"
 ZOUK_MIN_BPM = 60       # fold window spans exactly one octave (60–120 = 2×) → no dead zone
 ZOUK_MAX_BPM = 120
 BPM_ALGO_VERSION = 5    # bump to invalidate cached/tagged BPM when the algorithm changes
-FEATURE_VERSION = 3     # bump to lazily backfill audio features (energy/danceability/…) — NEVER triggers a BPM re-scan
+FEATURE_VERSION = 4     # bump to lazily backfill audio features (energy/danceability/…) — NEVER triggers a BPM re-scan
 
 # ── Audio-feature normalization anchors (fixed references → reproducible 0..1, NOT dataset-relative) ──
 # All calibratable later; chosen to map typical music into a useful 0..1 spread.
@@ -286,21 +286,40 @@ def _compute_lufs(data_44k_seg):
 # over 70 tracks of the reference playlist), weighted, and mapped through a normal CDF so
 # the result reads as "more energetic than this share of the library" over the whole 0–1.
 ENERGY_FEATURES = {            # name: (weight, centre, spread, take log)
+    # Version 4 (2026-11-18), after two tracks the listener called calm came out on top
+    # ("Tunnel Vision": calm with busy double-time hats; "Hotel California – Spanish Flow
+    # Mix": nylon guitar and hand percussion over a quiet bed):
+    #  - Nothing is measured as a dB JUMP any more. A pluck over near-silence is a bigger
+    #    jump than a snare in a full mix, so onset strength and band flux on a dB spectrum
+    #    rewarded sparse, quiet recordings. Flux is now linear power rising per frame, as
+    #    a share of the mean frame power — still unmoved by the volume knob.
+    #  - `perc_hi`: percussive energy above 4 kHz as a share of everything — hats, snares,
+    #    claps. Both tracks sit in the lowest quarter; the 14 most energetic at the 74th
+    #    percentile. A guitar's attack is percussive too, but it is not bright.
     "onset_rate": (0.30, 3.9000, 0.7990, False),
-    "onset_perc": (0.30, 2.8178, 0.5033, False),
-    "perc_share": (0.15, -2.4197, 0.6744, True),
-    "lowflux":    (0.15, 0.6352, 0.2898, False),
-    "high":       (0.10, -4.3783, 0.7042, True),
+    "perc_share": (0.30, -2.4197, 0.6744, True),
+    "perc_hi":    (0.20, -5.1340, 0.6128, True),
+    "flux_lo":    (0.10, -2.5518, 0.4011, True),
+    "flux_all":   (0.10, -2.2388, 0.2981, True),
 }
-ENERGY_MU, ENERGY_SIGMA = -0.0337, 0.8523
+ENERGY_MU, ENERGY_SIGMA = -0.0578, 0.8400
+# KNOWN LIMIT: no weighting of level-independent features that keeps the rest of the
+# order (rank correlation ≥ 0.88 with the version the listener called "roughly right")
+# puts "Hotel California" below the 66th percentile, and two trained arousal models
+# (DEAM, emoMusic over MusiCNN embeddings) put it at the 83rd and the 53rd. It reads
+# 4 of 5 here ("Tunnel Vision": 2 of 5). Getting further needs the listener's verdicts
+# on more tracks to fit against — two examples are not enough to choose weights by.
 # Version 3 adds a little of the FELT tempo (weight 0.20; centre 82 BPM, spread 0.30 octave).
 # The stored BPM is folded into 60–120, which is right for mixing but says nothing about
 # how fast a track feels: a 124 BPM remix is stored as 62 next to a real 62 BPM ballad,
 # and a 110 BPM ballad with one event per beat reads as fast. `tempo_feel` picks the
 # octave from how many onsets fall on a stored beat — and only when it is unmistakable
-# (3 of 67 doubled, 1 halved on the reference playlist). It never changes `bpm`.
+# (2 of 67 doubled, 1 halved on the reference playlist). It never changes `bpm`.
 TEMPO_WEIGHT, TEMPO_CENTRE, TEMPO_SPREAD = 0.20, 82.0, 0.30
-FEEL_DOUBLE = (70.0, 3.5)      # stored bpm at most this AND at least this many onsets per beat
+# Doubling stops at 66: "Tunnel Vision" (70, busy hats, calm) was doubled to 140 under the
+# first limit of 70. Onsets per beat IS the double-time-ornament signal, so the rule is
+# only trusted where a real tempo that slow would be a rarity.
+FEEL_DOUBLE = (66.0, 3.5)      # stored bpm at most this AND at least this many onsets per beat
 FEEL_HALVE = (100.0, 1.8)      # stored bpm at least this AND at most this many onsets per beat
 ENERGY_SR = 22050
 
@@ -317,16 +336,18 @@ def energy_window_raw(mono_22k) -> dict:
     mel = librosa.power_to_db(librosa.feature.melspectrogram(S=P2, sr=ENERGY_SR, n_mels=64, fmax=8000), ref=np.max)
     oenv = librosa.onset.onset_strength(S=mel, sr=ENERGY_SR, hop_length=HOP)
     onsets = librosa.onset.onset_detect(onset_envelope=oenv, sr=ENERGY_SR, hop_length=HOP, units="time")
-    melp = librosa.power_to_db(librosa.feature.melspectrogram(S=P ** 2, sr=ENERGY_SR, n_mels=64, fmax=8000),
-                               ref=float(np.max(P2)) or 1.0)
-    oenv_p = librosa.onset.onset_strength(S=melp, sr=ENERGY_SR, hop_length=HOP)
-    low_db = librosa.power_to_db(P2[fr < 200].sum(axis=0) + 1e-9)
+    mean_frame = float(P2.sum(axis=0).mean()) + 1e-12
+
+    def rise(band) -> float:
+        """Linear power rising per frame in a band, as a share of the mean frame power."""
+        return float(np.maximum(0.0, np.diff(P2[band].sum(axis=0))).mean() / mean_frame)
+
     return {
         "onset_rate": len(onsets) / max(1e-6, len(mono_22k) / ENERGY_SR),
-        "onset_perc": float(np.mean(oenv_p)),
         "perc_share": float((P ** 2).sum() / tot),
-        "lowflux": float(np.mean(np.maximum(0.0, np.diff(low_db)))),
-        "high": float(P2[fr > 4000].sum() / tot),
+        "perc_hi": float((P[fr > 4000] ** 2).sum() / tot),
+        "flux_lo": rise(fr < 200),
+        "flux_all": rise(fr >= 0),
     }
 
 
