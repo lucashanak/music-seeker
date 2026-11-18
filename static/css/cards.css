@@ -168,6 +168,23 @@
   white-space: nowrap;
 }
 
+/* ── Energy meter: five bars, calm (cool) → driving (hot). Small enough to stay
+   in a phone's playlist row, where the BPM badge is dropped for room. ── */
+.energy-badge { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; flex: none; }
+.energy-badge i { width: 3px; border-radius: 1px; background: var(--border); }
+.energy-badge i:nth-child(1) { height: 5px; } .energy-badge i:nth-child(2) { height: 7px; }
+.energy-badge i:nth-child(3) { height: 9px; } .energy-badge i:nth-child(4) { height: 11px; }
+.energy-badge i:nth-child(5) { height: 14px; }
+@media (max-width: 640px) {       /* a phone's playlist row has ~30 px to spare for it */
+  .energy-badge { gap: 1px; }
+  .energy-badge i { width: 2px; }
+}
+.energy-badge[data-level="1"] i.on { background: #4a9fd0; }
+.energy-badge[data-level="2"] i.on { background: #45b3a0; }
+.energy-badge[data-level="3"] i.on { background: #d0b23c; }
+.energy-badge[data-level="4"] i.on { background: #e58a35; }
+.energy-badge[data-level="5"] i.on { background: #e5534b; }
+
 /* ── BPM Filter Bar ── */
 .bpm-filter {
   display: flex; align-items: center; gap: 8px;

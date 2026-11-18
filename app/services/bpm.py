@@ -29,7 +29,7 @@ BPM_CACHE_FILE = DATA_DIR / "bpm_analysis.json"
 ZOUK_MIN_BPM = 60       # fold window spans exactly one octave (60–120 = 2×) → no dead zone
 ZOUK_MAX_BPM = 120
 BPM_ALGO_VERSION = 5    # bump to invalidate cached/tagged BPM when the algorithm changes
-FEATURE_VERSION = 1     # bump to lazily backfill audio features (energy/danceability/…) — NEVER triggers a BPM re-scan
+FEATURE_VERSION = 2     # bump to lazily backfill audio features (energy/danceability/…) — NEVER triggers a BPM re-scan
 
 # ── Audio-feature normalization anchors (fixed references → reproducible 0..1, NOT dataset-relative) ──
 # All calibratable later; chosen to map typical music into a useful 0..1 spread.
@@ -116,8 +116,13 @@ def _load_cache() -> dict:
 
 
 def _save_cache():
+    """Compact (the C encoder; `indent` forced the slow pure-Python one — 0.7 s for 27 MB,
+    on the event loop) and atomic: a kill in the middle of a plain write left truncated
+    JSON, which _load_cache reads as an empty cache."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    BPM_CACHE_FILE.write_text(json.dumps(_bpm_cache, indent=2))
+    tmp = BPM_CACHE_FILE.with_name(BPM_CACHE_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(_bpm_cache, separators=(",", ":")))
+    os.replace(tmp, BPM_CACHE_FILE)
 
 
 _bpm_cache = _load_cache()
@@ -263,7 +268,69 @@ def _compute_lufs(data_44k_seg):
 
 # ── Analysis (runs in thread, C extensions release GIL) ──
 
-def _window_features(mono_44k_seg, onset_env, sr: int = 44100) -> dict:
+# ── Energy (feature version 2) ──
+# Version 1 was 0.6·RMS loudness + 0.4·pulse. Measured on the library 2026-11-18: 80 % of
+# tracks fell in 0.47–0.71 and the value followed MASTERING loudness (rank correlation 0.68
+# with mean RMS) — a loud pop ballad outranked a quieter track that drives.
+# Version 2 uses only things a volume knob does not change: how many onsets per second,
+# how strong the percussive onsets are (on a dB spectrum, so level cancels), how much of
+# the signal is percussive, how hard the low end pumps, and the share above 4 kHz.
+# Each is centred and scaled by the constants below (median and half the 16–84 % spread
+# over 70 tracks of the reference playlist), weighted, and mapped through a normal CDF so
+# the result reads as "more energetic than this share of the library" over the whole 0–1.
+ENERGY_FEATURES = {            # name: (weight, centre, spread, take log)
+    "onset_rate": (0.30, 3.9000, 0.7990, False),
+    "onset_perc": (0.30, 2.8178, 0.5033, False),
+    "perc_share": (0.15, -2.4197, 0.6744, True),
+    "lowflux":    (0.15, 0.6352, 0.2898, False),
+    "high":       (0.10, -4.3783, 0.7042, True),
+}
+ENERGY_MU, ENERGY_SIGMA = -0.0207, 0.7769
+ENERGY_SR = 22050
+
+
+def energy_window_raw(mono_22k) -> dict:
+    """The raw, level-independent energy features of one window of 22.05 kHz mono audio."""
+    import librosa
+    HOP = 512
+    S = np.abs(librosa.stft(mono_22k, n_fft=2048, hop_length=HOP))
+    P2 = S ** 2
+    tot = float(P2.sum()) + 1e-12
+    fr = librosa.fft_frequencies(sr=ENERGY_SR, n_fft=2048)
+    _, P = librosa.decompose.hpss(S, margin=2.0)
+    mel = librosa.power_to_db(librosa.feature.melspectrogram(S=P2, sr=ENERGY_SR, n_mels=64, fmax=8000), ref=np.max)
+    oenv = librosa.onset.onset_strength(S=mel, sr=ENERGY_SR, hop_length=HOP)
+    onsets = librosa.onset.onset_detect(onset_envelope=oenv, sr=ENERGY_SR, hop_length=HOP, units="time")
+    melp = librosa.power_to_db(librosa.feature.melspectrogram(S=P ** 2, sr=ENERGY_SR, n_mels=64, fmax=8000),
+                               ref=float(np.max(P2)) or 1.0)
+    oenv_p = librosa.onset.onset_strength(S=melp, sr=ENERGY_SR, hop_length=HOP)
+    low_db = librosa.power_to_db(P2[fr < 200].sum(axis=0) + 1e-9)
+    return {
+        "onset_rate": len(onsets) / max(1e-6, len(mono_22k) / ENERGY_SR),
+        "onset_perc": float(np.mean(oenv_p)),
+        "perc_share": float((P ** 2).sum() / tot),
+        "lowflux": float(np.mean(np.maximum(0.0, np.diff(low_db)))),
+        "high": float(P2[fr > 4000].sum() / tot),
+    }
+
+
+def energy_from_raw(windows: list) -> float | None:
+    """0–1 energy from the per-window raw features (median over windows). None when no
+    window carries them — the caller then has nothing better than neutral."""
+    import math
+    rows = [w for w in windows if w and all(k in w for k in ENERGY_FEATURES)]
+    if not rows:
+        return None
+    score = 0.0
+    for name, (weight, centre, spread, log) in ENERGY_FEATURES.items():
+        v = float(np.median([r[name] for r in rows]))
+        if log:
+            v = math.log(max(v, 1e-9))
+        score += weight * (v - centre) / spread
+    return clamp01(0.5 * (1.0 + math.erf((score - ENERGY_MU) / ENERGY_SIGMA / math.sqrt(2.0))))
+
+
+def _window_features(mono_44k_seg, onset_env, sr: int = 44100, mono_22k=None) -> dict:
     """Per-window raw audio features computed on the ALREADY-loaded segment (no extra
     file reads, no extra heavy DSP). `onset_env` is reused as-is (never recomputed).
     Returns raw (un-normalized) values: {rms, centroid_hz, pulse}."""
@@ -271,7 +338,14 @@ def _window_features(mono_44k_seg, onset_env, sr: int = 44100) -> dict:
     rms = float(np.mean(librosa.feature.rms(y=mono_44k_seg)))
     centroid_hz = float(np.mean(librosa.feature.spectral_centroid(y=mono_44k_seg, sr=sr)))
     pulse = float(np.mean(onset_env))
-    return {"rms": rms, "centroid_hz": centroid_hz, "pulse": pulse}
+    out = {"rms": rms, "centroid_hz": centroid_hz, "pulse": pulse}
+    try:
+        if mono_22k is None:
+            mono_22k = librosa.resample(mono_44k_seg, orig_sr=sr, target_sr=ENERGY_SR)
+        out.update(energy_window_raw(mono_22k))
+    except Exception as e:           # additive: the old three features still stand
+        logger.warning("energy features failed for a window: %s", e)
+    return out
 
 
 def _read_window(file_path: str, start_sec: float, len_sec: float):
@@ -332,7 +406,7 @@ def _detect_window(mono_44k_seg, data_44k_seg, want_key: bool, want_madmom: bool
     # Per-window audio features — reuse the already-computed onset_env (additive, never
     # allowed to break BPM detection).
     try:
-        features = _window_features(mono_44k_seg, onset_env, sr=44100)
+        features = _window_features(mono_44k_seg, onset_env, sr=44100, mono_22k=mono_22k)
     except Exception as e:
         logger.warning("Feature extraction failed: %s", e)
         features = None
@@ -693,9 +767,12 @@ def _aggregate_features(per_window_features: list, key_strength, per_window_keys
             energy_loud = clamp01((20.0 * np.log10(rms_raw + 1e-6) - DBFS_FLOOR) / (DBFS_CEIL - DBFS_FLOOR))
             danceability = clamp01(pulse_raw / PULSE_REF)
             brightness = clamp01(centroid_hz / BRIGHTNESS_REF_HZ)
-            energy = clamp01(0.6 * energy_loud + 0.4 * danceability)  # composite arc target
+            # None when the level-independent features could not be computed. NOT the old
+            # loudness composite: under this version number it would be shown and compared
+            # as if it were the real thing.
+            energy = energy_from_raw(per_window_features)
         else:
-            energy = danceability = brightness = 0.5
+            energy, danceability, brightness = None, 0.5, 0.5
 
         # Key confidence: prefer essentia strength; else cross-window key agreement; else neutral.
         if key_strength is not None and 0.0 < float(key_strength) <= 1.0:
@@ -707,7 +784,7 @@ def _aggregate_features(per_window_features: list, key_strength, per_window_keys
             key_confidence = 0.5
 
         return {
-            "energy": round(float(energy), 4),
+            "energy": None if energy is None else round(float(energy), 4),
             "danceability": round(float(danceability), 4),
             "brightness": round(float(brightness), 4),
             "key_confidence": round(float(key_confidence), 4),
@@ -716,7 +793,7 @@ def _aggregate_features(per_window_features: list, key_strength, per_window_keys
     except Exception as e:
         logger.warning("Feature aggregation failed: %s", e)
         return {
-            "energy": 0.5, "danceability": 0.5, "brightness": 0.5,
+            "energy": None, "danceability": 0.5, "brightness": 0.5,   # unmeasured, and says so
             "key_confidence": 0.5, "feature_version": FEATURE_VERSION,
         }
 
@@ -733,21 +810,32 @@ def compute_features_only(file_path: str) -> dict:
         info = sf.info(file_path)
         track_duration = float(info.duration)
 
-        WIN_LEN = 45.0
-        start = 0.0 if track_duration < 90 else max(0.0, min(0.45 * track_duration, track_duration - WIN_LEN))
-        mono_seg, _ = _read_window(file_path, start, WIN_LEN)
-        if len(mono_seg) == 0:
-            raise ValueError("empty mid-window")
-
-        # Reuse the same onset_env recipe as _detect_window so `pulse` stays comparable.
+        # Three windows across the body: one mid window made the energy of a track with a
+        # quiet middle eight read as the energy of the track.
+        WIN_LEN = 30.0
         HOP = 512
-        mono_22k = librosa.resample(mono_seg, orig_sr=44100, target_sr=22050)
-        _, y_perc = librosa.effects.hpss(mono_22k, margin=3.0)
-        onset_env = librosa.onset.onset_strength(
-            y=y_perc, sr=22050, hop_length=HOP,
-            aggregate=np.median, fmax=8000, n_mels=80,
-        )
-        win_features = _window_features(mono_seg, onset_env, sr=44100)
+        if track_duration < 90:
+            starts = [0.0]
+        else:
+            starts = [max(0.0, min(f * track_duration, track_duration - WIN_LEN)) for f in (0.25, 0.5, 0.75)]
+        feats, mono_seg = [], None
+        for st in starts:
+            seg, _ = _read_window(file_path, st, WIN_LEN)
+            if len(seg) == 0:
+                continue
+            if mono_seg is None or st == starts[len(starts) // 2]:
+                mono_seg = seg                      # the mid window also gives the key strength
+            # Same onset_env recipe as _detect_window so `pulse` stays comparable.
+            mono_22k = librosa.resample(seg, orig_sr=44100, target_sr=22050)
+            _, y_perc = librosa.effects.hpss(mono_22k, margin=3.0)
+            onset_env = librosa.onset.onset_strength(
+                y=y_perc, sr=22050, hop_length=HOP,
+                aggregate=np.median, fmax=8000, n_mels=80,
+            )
+            feats.append(_window_features(seg, onset_env, sr=44100, mono_22k=mono_22k))
+            del y_perc, onset_env, mono_22k
+        if not feats:
+            raise ValueError("empty windows")
 
         key_strength = None
         try:
@@ -757,11 +845,11 @@ def compute_features_only(file_path: str) -> dict:
         except Exception:
             key_strength = None
 
-        return _aggregate_features([win_features], key_strength, [])
+        return _aggregate_features(feats, key_strength, [])
     except Exception as e:
         logger.warning("compute_features_only failed for %s: %s", file_path, e)
         return {
-            "energy": 0.5, "danceability": 0.5, "brightness": 0.5,
+            "energy": None, "danceability": 0.5, "brightness": 0.5,   # unmeasured, and says so
             "key_confidence": 0.5, "feature_version": FEATURE_VERSION,
         }
 
@@ -1177,7 +1265,9 @@ def _analyze_or_read_tag(file_path: str) -> dict:
                            danceability=feats.get("danceability"),
                            brightness=feats.get("brightness"),
                            key_confidence=feats.get("key_confidence"),
-                           feature_ver=FEATURE_VERSION)
+                           # an unmeasured energy must not get the new version stamped
+                           # over the file's old ENERGY tag
+                           feature_ver=FEATURE_VERSION if feats.get("energy") is not None else None)
             except Exception as e:
                 logger.warning("Feature tag write failed for %s: %s", file_path, e)
         result.update(feats)
@@ -1200,7 +1290,7 @@ def _analyze_or_read_tag(file_path: str) -> dict:
                danceability=result.get("danceability"),
                brightness=result.get("brightness"),
                key_confidence=result.get("key_confidence"),
-               feature_ver=FEATURE_VERSION,
+               feature_ver=FEATURE_VERSION if result.get("energy") is not None else None,
                downbeat_anchor=downbeat_anchor,
                time_sig=result.get("time_signature"),
                lufs=result.get("lufs"),
@@ -1267,20 +1357,83 @@ async def _get_audio_file(song_id: str, name: str, artist: str) -> str | None:
 _analysis_locks: dict[str, asyncio.Lock] = {}
 
 
-async def _backfill_features(entry: dict, song_id: str, name: str, artist: str) -> dict:
+async def _backfill_features(entry: dict, song_id: str, name: str, artist: str,
+                             save: bool = True) -> dict:
     """Lazily enrich a cached BPM entry with audio features WITHOUT recomputing BPM.
     Only the feature fields are merged in — bpm/key/camelot/beat_grid stay untouched.
-    Returns the (possibly enriched) entry."""
+    Returns the entry now in the cache."""
     if not _needs_features(entry):
         return entry
     file_path = await _get_audio_file(song_id, name, artist)
     if not file_path:
         return entry  # can't backfill without audio — leave BPM data intact
     feats = await _run_in_pool(compute_features_only, file_path)
-    entry.update(feats)  # feats contains ONLY feature fields → never overwrites bpm/key/grid
-    _bpm_cache[_cache_key(name, artist)] = entry
-    _save_cache()
-    return entry
+    # The analysis took seconds. A forced re-analysis or a re-download may have stored a
+    # NEW entry meanwhile; putting the captured object back would resurrect the old BPM
+    # and beat grid (reproduced). Merge into whatever the cache holds now.
+    key = _cache_key(name, artist)
+    cur = _bpm_cache.get(key)
+    if cur is None:
+        cur = _bpm_cache[key] = entry
+    if _needs_features(cur):
+        cur.update(feats)  # ONLY feature fields → never overwrites bpm/key/grid
+        if save:
+            _save_cache()
+    return cur
+
+
+_sweep_state = {"running": False, "done": 0, "left": 0}
+
+
+SWEEP_SAVE_EVERY = 50
+
+
+async def backfill_stale_features(pause: float = 0.3) -> dict:
+    """Bring every cached track up to the current FEATURE_VERSION, one at a time.
+    Without it a new energy formula reaches a track only when somebody plays it, and
+    a playlist would show (and Smart Queue would compare) old and new values side by
+    side for months. BPM, key and the beat grid are never touched.
+
+    A track whose audio cannot be found is marked (`features_unavailable`) and not asked
+    for again until the next version: each miss costs several walks over the NAS."""
+    if _sweep_state["running"]:
+        return _sweep_state
+    from app.services import mixes
+    stale = [(e.get("name"), e.get("artist", "")) for e in list(_bpm_cache.values())
+             if _needs_features(e) and e.get("name")
+             and e.get("features_unavailable") != FEATURE_VERSION]
+    _sweep_state.update(running=True, done=0, left=len(stale))
+    unsaved = 0
+    try:
+        for name, artist in stale:
+            entry = _bpm_cache.get(_cache_key(name, artist))
+            try:
+                if entry is not None and _needs_features(entry) and not mixes.is_mix(name, artist):
+                    # Tracks analysed from the Navidrome stream have no file the glob finds.
+                    try:
+                        song_id = await library.find_song_id(name, artist) or ""
+                    except Exception:
+                        song_id = ""
+                    cur = await _backfill_features(entry, song_id, name, artist, save=False)
+                    if _needs_features(cur):
+                        cur["features_unavailable"] = FEATURE_VERSION
+                    else:
+                        _sweep_state["done"] += 1
+                    unsaved += 1
+            except Exception as e:
+                logger.warning("feature backfill failed for %s – %s: %s", artist, name, e)
+            _sweep_state["left"] -= 1
+            if unsaved >= SWEEP_SAVE_EVERY:
+                unsaved = 0
+                await asyncio.to_thread(_save_cache)
+            await asyncio.sleep(pause)
+    finally:
+        _sweep_state["running"] = False
+        if unsaved:
+            _save_cache()
+    logger.info("feature backfill: %d of %d tracks brought to version %d",
+                _sweep_state["done"], len(stale), FEATURE_VERSION)
+    return _sweep_state
 
 
 async def analyze_track(song_id: str, name: str, artist: str,

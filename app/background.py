@@ -95,6 +95,17 @@ async def _spotify_health_probe():
         pass  # a failure has already set the latch; nothing else to do here
 
 
+async def _bpm_feature_backfill():
+    """After a start, bring cached tracks up to the current audio-feature version."""
+    await asyncio.sleep(90)          # let the app settle and serve first
+    try:
+        from app.services import bpm
+        await bpm.backfill_stale_features()
+    except Exception as e:
+        import logging
+        logging.getLogger("musicseeker").warning("feature backfill stopped: %s", e)
+
+
 async def startup():
     """Main startup function — called by app factory."""
     if not ADMIN_PASS:
@@ -106,6 +117,7 @@ async def startup():
     asyncio.create_task(_favorites_release_check())
     asyncio.create_task(_mix_follow_auto_check())
     asyncio.create_task(_spotify_health_probe())
+    asyncio.create_task(_bpm_feature_backfill())
     # Start DLNA renderer discovery
     from app.services import dlna
     await dlna.start_discovery()

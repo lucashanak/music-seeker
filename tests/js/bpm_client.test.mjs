@@ -165,3 +165,15 @@ test('lazy path: a panel re-rendered while the request is in flight gets no stal
     assert.equal(inserted.length, 0);
   } finally { globalThis.fetch = prevFetch; }
 });
+
+test('energyLevel: five steps over 0–1, and nothing for the old loudness-based version', async () => {
+  const { energyLevel } = await import('../../static/js/bpm.js');
+  assert.equal(energyLevel({ energy: 0, feature_version: 2 }), 1);
+  assert.equal(energyLevel({ energy: 0.19, feature_version: 2 }), 1);
+  assert.equal(energyLevel({ energy: 0.5, feature_version: 2 }), 3);
+  assert.equal(energyLevel({ energy: 1, feature_version: 2 }), 5);
+  assert.equal(energyLevel({ energy: 0.9, feature_version: 1 }), null);   // version 1 followed mastering loudness
+  assert.equal(energyLevel({ energy: 0.9 }), null);
+  assert.equal(energyLevel({ feature_version: 2 }), null);
+  assert.equal(energyLevel(null), null);
+});

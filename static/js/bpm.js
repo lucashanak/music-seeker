@@ -137,6 +137,37 @@ export async function fetchTrackBpm(name, artist) {
 }
 
 /** Add BPM badges to rendered cards in a container. */
+// Energy is shown only from feature version 2 on: version 1 measured mastering
+// loudness, and a meter that mixes the two would rank a loud ballad over a track
+// that drives. The server re-analyses old entries in the background.
+export const ENERGY_MIN_VERSION = 2;
+
+/** 1..5 for a cached entry's energy, or null when there is none worth showing. */
+export function energyLevel(entry) {
+  if (!entry || !(entry.feature_version >= ENERGY_MIN_VERSION)) return null;
+  if (entry.energy == null) return null;          // analysed, but the energy could not be measured
+  const e = Number(entry.energy);
+  if (!Number.isFinite(e)) return null;
+  return Math.max(1, Math.min(5, Math.floor(e * 5) + 1));
+}
+
+function _energyBadge(entry) {
+  const level = energyLevel(entry);
+  if (level == null) return null;
+  const el = document.createElement('span');
+  el.className = 'energy-badge';
+  el.dataset.level = String(level);
+  const pct = Math.round(Number(entry.energy) * 100);
+  el.title = `Energy ${pct} %`;
+  el.setAttribute('aria-label', `Energy ${level} of 5`);
+  for (let i = 1; i <= 5; i++) {
+    const bar = document.createElement('i');
+    if (i <= level) bar.className = 'on';
+    el.appendChild(bar);
+  }
+  return el;
+}
+
 export function addBpmBadges(container) {
   const cards = $$(`.card`, typeof container === 'string' ? $(container) : container);
   for (const card of cards) {
@@ -146,6 +177,14 @@ export function addBpmBadges(container) {
       if (item.type && item.type !== 'track') continue;
       const bpm = getCachedBpm(item.name, item.artist);
       if (bpm == null) continue;
+      if (!card.querySelector('.energy-badge')) {
+        const eb = _energyBadge(getDjData(item.name, item.artist));
+        const anchor = card.querySelector('.card-meta') || card.querySelector('.song-duration');
+        if (eb && anchor) {
+          if (anchor.classList.contains('card-meta')) anchor.prepend(eb);
+          else anchor.parentNode.insertBefore(eb, anchor);
+        }
+      }
       if (card.querySelector('.bpm-badge')) continue;
       const badge = document.createElement('span');
       badge.className = 'bpm-badge';

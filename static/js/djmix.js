@@ -619,7 +619,7 @@ export function markPlayed(item) {
     const d = getDjData(_djDecode(item.name), _djDecode(item.artist));
     if (d) {
       if (_setStartBpm == null && d.bpm) _setStartBpm = d.bpm;
-      if (_setStartEnergy == null && Number.isFinite(d.energy)) _setStartEnergy = d.energy;
+      if (_setStartEnergy == null && Number.isFinite(usableEnergy(d))) _setStartEnergy = usableEnergy(d);
     }
   }
   _playedCount++;
@@ -638,6 +638,15 @@ export function markPlayed(item) {
 // NOTE: side-effect-free — does NOT mutate _playedKeys, so it is safe to call for
 // prediction (prefetch) and again at commit without desyncing played-state. The caller
 // marks the outgoing track via markPlayed() only on a real advance.
+// Energy from before feature version 2 measured mastering loudness, bunched into
+// 0.47–0.71. Next to the new 0–1 values such a track sits "close to" every mid-range
+// target and wins. Treated as unknown: no energy term, tempo and key still decide.
+export const ENERGY_MIN_VERSION = 2;
+export function usableEnergy(d) {
+  return (d && d.feature_version >= ENERGY_MIN_VERSION && d.energy != null && Number.isFinite(Number(d.energy)))
+    ? Number(d.energy) : NaN;
+}
+
 export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', repeatAll = false) {
   if (!currentDjData || !currentDjData.bpm) return null;
 
@@ -824,7 +833,8 @@ export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', 
     // freely decide among tempo-compatible candidates.
     const tempoContinuity = Math.max(0, bpmDist - BAND) * OOB_PENALTY;
 
-    const eDist = Number.isFinite(data.energy) ? Math.abs(data.energy - targetEnergy) * E_WEIGHT : 0;
+    const _e = usableEnergy(data);
+    const eDist = Number.isFinite(_e) ? Math.abs(_e - targetEnergy) * E_WEIGHT : 0;
 
     // In-band bonus applies ONLY to TRUSTED candidates with a real BPM: keep confident tempo
     // matches preferred among the confident, without hard-filtering (which starved the

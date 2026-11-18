@@ -375,3 +375,12 @@ test('cleanup under shuffle keeps the upcoming permutation, not the storage neig
     assert.equal(P.getStatus(`t${i}`, 'a')?.state, 'ready', `t${i} is next in the shuffle order`);
   }
 });
+
+test('usableEnergy: a version-1 (loudness) energy is unknown to Smart Queue', async () => {
+  const { usableEnergy } = await import('../../static/js/djmix.js');
+  assert.equal(usableEnergy({ energy: 0.4, feature_version: 2 }), 0.4);
+  assert.ok(Number.isNaN(usableEnergy({ energy: 0.6, feature_version: 1 })));
+  assert.ok(Number.isNaN(usableEnergy({ energy: null, feature_version: 2 })));   // analysed, not measurable
+  assert.ok(Number.isNaN(usableEnergy({ feature_version: 2 })));
+  assert.ok(Number.isNaN(usableEnergy(null)));
+});
