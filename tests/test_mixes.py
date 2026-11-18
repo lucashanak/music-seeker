@@ -221,6 +221,61 @@ def _not_owned_fn():
     return not_owned
 
 
+def test_the_finished_file_hands_its_page_cache_back(mix_env, monkeypatch):
+    # The container's memory limit counts page cache; a freshly written mix sits
+    # in it whole (2026-11-18 OOM: 1564 MB of file cache). The tagged file is
+    # flushed and dropped BEFORE it is renamed into the library (same inode): a
+    # cancel during the slow fsync must leave nothing in the library, or the
+    # follow check would retry the job and save the mix again as "<title> (2)".
+    seen, tmp = mix_env
+    final = tmp / "music" / "claude_test" / "Martin Šmoldas" / "DJ Sets" / "Zouktime Marathon Brno Sunday set.m4a"
+    released = []
+    monkeypatch.setattr(mixes, "release_page_cache",
+                        lambda p: released.append((p, os.path.isfile(p), final.exists())))
+    asyncio.run(mixes.run_mix(_Job(SAMPLE), str(tmp / "music"), 2400, lambda u: True, _not_owned_fn()))
+    assert len(released) == 1
+    path, existed, final_there = released[0]
+    assert "/music/.mix-dl/" in path and existed and not final_there
+    assert final.is_file()
+
+
+def test_a_cancel_during_the_cache_release_leaves_no_mix_in_the_library(mix_env, monkeypatch):
+    seen, tmp = mix_env
+
+    def cancelled(p):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(mixes, "release_page_cache", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mixes.run_mix(_Job(SAMPLE), str(tmp / "music"), 2400, lambda u: True, _not_owned_fn()))
+    assert not [f for f in _library_files(tmp) if f.endswith(".m4a")]
+    assert _scratch_left(tmp) == []
+    assert not mixes.is_mix("Zouktime Marathon Brno Sunday set", "Martin Šmoldas")
+
+
+def test_release_page_cache_flushes_then_drops_and_never_raises(monkeypatch, tmp_path):
+    calls = []
+    real_fsync, real_close = os.fsync, os.close
+    monkeypatch.setattr(os, "fsync", lambda fd: (calls.append("fsync"), real_fsync(fd)))
+    monkeypatch.setattr(os, "posix_fadvise",
+                        lambda fd, off, ln, adv: calls.append(("fadvise", off, ln, adv)))
+    f = tmp_path / "a.m4a"
+    f.write_bytes(b"\0" * 4096)
+    mixes.release_page_cache(str(f))
+    # Dirty pages cannot be dropped, so the flush must come first.
+    assert calls == ["fsync", ("fadvise", 0, 0, os.POSIX_FADV_DONTNEED)]
+    mixes.release_page_cache(str(tmp_path / "missing.m4a"))   # gone already: no error
+
+    # A failing flush (EIO on a busy disk) is swallowed and the fd still closed.
+    closed = []
+
+    def bad_fsync(fd):
+        raise OSError(5, "Input/output error")
+    monkeypatch.setattr(os, "fsync", bad_fsync)
+    monkeypatch.setattr(os, "close", lambda fd: (closed.append(fd), real_close(fd)))
+    mixes.release_page_cache(str(f))
+    assert len(closed) == 1
+
+
 def _library_files(tmp):
     """What a user can see: everything under music/ except the scratch root."""
     root = tmp / "music"

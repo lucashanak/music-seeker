@@ -1106,6 +1106,28 @@ def _drop_stale_scratch(parent: str) -> None:
         pass
 
 
+def release_page_cache(path: str) -> None:
+    """Flush `path` to disk and hand its pages back to the kernel.
+
+    The container's memory limit counts page cache too. Writing a mix (yt-dlp,
+    then the tag rewrite) leaves the whole file in cache, dirty at first. That
+    was enough to OOM-kill the container on 2026-11-18: anon 502 MB, but 1564 MB
+    of file cache that btrfs did not give back in time. Measured on /music (btrfs)
+    inside the container: FADV_DONTNEED on a 166 MB set returned all 167 MB.
+    fsync comes first because dirty pages cannot be dropped. Best effort only."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    except (OSError, AttributeError):
+        pass
+    finally:
+        os.close(fd)
+
+
 async def run_mix(job, music_dir: str, timeout: float, check_quota, find_song_id) -> bool:
     """Download one mix for `job`. True when a new file landed in the library.
 
@@ -1182,6 +1204,10 @@ async def run_mix(job, music_dir: str, timeout: float, check_quota, find_song_id
         while os.path.exists(final):
             final = os.path.join(out_dir, f"{base} ({n}).{ext}")
             n += 1
+        # Before the rename, on the same inode: a cancel landing in this await
+        # still leaves nothing in the library. After it, a cancelled job whose file
+        # had already landed would be retried and saved again as "<title> (2)".
+        await asyncio.to_thread(release_page_cache, got)
         os.replace(got, final)
         remember_mix(info, final, quality)
     finally:
