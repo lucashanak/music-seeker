@@ -101,7 +101,7 @@ def sweep(monkeypatch):
         "a::set": {"name": "Set", "artist": "A", "bpm": 80.0, "energy": 0.6, "feature_version": 1},
         "a::nav": {"name": "Nav", "artist": "A", "bpm": 81.0, "energy": 0.6, "feature_version": 1},
     }
-    st = {"cache": cache, "asked": [], "saves": 0, "pool": None}
+    st = {"cache": cache, "asked": [], "saves": 0, "pool": None, "executors": [], "running": 0, "peak": 0}
     monkeypatch.setattr(bpm, "_bpm_cache", cache)
     monkeypatch.setattr(bpm, "_cache_key", lambda n, a: f"{a.lower()}::{n.lower()}")
     monkeypatch.setattr(bpm, "_save_cache", lambda: st.__setitem__("saves", st["saves"] + 1))
@@ -117,7 +117,12 @@ def sweep(monkeypatch):
         return None if name == "Gone" else "/x.flac"
     monkeypatch.setattr(bpm, "_get_audio_file", audio)
 
-    async def pool(fn, *a):
+    async def pool(fn, *a, executor=None):
+        st["executors"].append(executor)
+        st["running"] += 1
+        st["peak"] = max(st["peak"], st["running"])
+        await asyncio.sleep(0.01)
+        st["running"] -= 1
         if st["pool"]:
             await st["pool"]()
         return {"energy": 0.33, "danceability": 0.5, "brightness": 0.5, "key_confidence": 0.5,
@@ -177,3 +182,12 @@ def test_the_cache_file_is_replaced_whole(tmp_path, monkeypatch):
     bpm._save_cache()
     assert seen["old"] == '{"keep": 1}'                           # the old file was whole until the swap
     assert f.read_text() == '{"a":{"bpm":1.0}}' and not list(tmp_path.glob("*.tmp"))
+
+
+def test_the_sweep_works_several_tracks_at_once_on_its_own_workers(sweep):
+    for i in range(12):
+        sweep["cache"][f"a::t{i}"] = {"name": f"T{i}", "artist": "A", "bpm": 80.0, "feature_version": 1}
+    st = asyncio.run(bpm.backfill_stale_features(pause=0))
+    assert 1 < sweep["peak"] <= bpm._sweep_executor._max_workers
+    assert set(sweep["executors"]) == {bpm._sweep_executor}       # never the pool listeners wait on
+    assert st["done"] == 14 and st["left"] == 0

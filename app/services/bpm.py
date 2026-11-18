@@ -93,11 +93,18 @@ def _trim_memory():
         pass
 
 
-async def _run_in_pool(fn, *args):
+# The library-wide feature sweep has its own workers: on the shared pool it would queue
+# behind (and in front of) the analysis a listener is waiting for. Four, not "all cores":
+# each job holds ~100–150 MB while it runs and the container is limited to 2 GB.
+_sweep_executor = ThreadPoolExecutor(max_workers=max(1, int(os.environ.get("BPM_SWEEP_WORKERS", "4"))),
+                                     thread_name_prefix="bpm-sweep")
+
+
+async def _run_in_pool(fn, *args, executor=None):
     """Run a heavy analysis fn in the thread pool, then reclaim native memory."""
     loop = asyncio.get_event_loop()
     try:
-        return await loop.run_in_executor(_executor, fn, *args)
+        return await loop.run_in_executor(executor or _executor, fn, *args)
     finally:
         _trim_memory()
 
@@ -1358,7 +1365,7 @@ _analysis_locks: dict[str, asyncio.Lock] = {}
 
 
 async def _backfill_features(entry: dict, song_id: str, name: str, artist: str,
-                             save: bool = True) -> dict:
+                             save: bool = True, executor=None) -> dict:
     """Lazily enrich a cached BPM entry with audio features WITHOUT recomputing BPM.
     Only the feature fields are merged in — bpm/key/camelot/beat_grid stay untouched.
     Returns the entry now in the cache."""
@@ -1367,7 +1374,7 @@ async def _backfill_features(entry: dict, song_id: str, name: str, artist: str,
     file_path = await _get_audio_file(song_id, name, artist)
     if not file_path:
         return entry  # can't backfill without audio — leave BPM data intact
-    feats = await _run_in_pool(compute_features_only, file_path)
+    feats = await _run_in_pool(compute_features_only, file_path, executor=executor)
     # The analysis took seconds. A forced re-analysis or a re-download may have stored a
     # NEW entry meanwhile; putting the captured object back would resurrect the old BPM
     # and beat grid (reproduced). Merge into whatever the cache holds now.
@@ -1403,33 +1410,44 @@ async def backfill_stale_features(pause: float = 0.3) -> dict:
              if _needs_features(e) and e.get("name")
              and e.get("features_unavailable") != FEATURE_VERSION]
     _sweep_state.update(running=True, done=0, left=len(stale))
-    unsaved = 0
-    try:
-        for name, artist in stale:
-            entry = _bpm_cache.get(_cache_key(name, artist))
-            try:
-                if entry is not None and _needs_features(entry) and not mixes.is_mix(name, artist):
-                    # Tracks analysed from the Navidrome stream have no file the glob finds.
-                    try:
-                        song_id = await library.find_song_id(name, artist) or ""
-                    except Exception:
-                        song_id = ""
-                    cur = await _backfill_features(entry, song_id, name, artist, save=False)
-                    if _needs_features(cur):
-                        cur["features_unavailable"] = FEATURE_VERSION
-                    else:
-                        _sweep_state["done"] += 1
-                    unsaved += 1
-            except Exception as e:
-                logger.warning("feature backfill failed for %s – %s: %s", artist, name, e)
-            _sweep_state["left"] -= 1
-            if unsaved >= SWEEP_SAVE_EVERY:
-                unsaved = 0
+    width = _sweep_executor._max_workers
+    counters = {"unsaved": 0}
+    queue = list(reversed(stale))
+
+    async def one(name: str, artist: str):
+        entry = _bpm_cache.get(_cache_key(name, artist))
+        try:
+            if entry is not None and _needs_features(entry) and not mixes.is_mix(name, artist):
+                # Tracks analysed from the Navidrome stream have no file the glob finds.
+                try:
+                    song_id = await library.find_song_id(name, artist) or ""
+                except Exception:
+                    song_id = ""
+                cur = await _backfill_features(entry, song_id, name, artist, save=False,
+                                               executor=_sweep_executor)
+                if _needs_features(cur):
+                    cur["features_unavailable"] = FEATURE_VERSION
+                else:
+                    _sweep_state["done"] += 1
+                counters["unsaved"] += 1
+        except Exception as e:
+            logger.warning("feature backfill failed for %s – %s: %s", artist, name, e)
+        _sweep_state["left"] -= 1
+
+    async def worker():
+        while queue:
+            name, artist = queue.pop()
+            await one(name, artist)
+            if counters["unsaved"] >= SWEEP_SAVE_EVERY:
+                counters["unsaved"] = 0
                 await asyncio.to_thread(_save_cache)
             await asyncio.sleep(pause)
+
+    try:
+        await asyncio.gather(*[worker() for _ in range(width)])
     finally:
         _sweep_state["running"] = False
-        if unsaved:
+        if counters["unsaved"]:
             _save_cache()
     logger.info("feature backfill: %d of %d tracks brought to version %d",
                 _sweep_state["done"], len(stale), FEATURE_VERSION)
