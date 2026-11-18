@@ -234,15 +234,26 @@ async function run(vpName) {
     await page.click(`#libraryGrid .coll-row:has-text("${bName}")`);
     await page.waitForSelector('#shuffleLibPlaylist', { state: 'visible', timeout: 15000 });
     await page.waitForTimeout(1500);
-    await page.click('#shuffleLibPlaylist');
-    await page.waitForTimeout(3500);
-    const shuffled = (((await api(page, '/api/player/queue')).body || {}).queue || []).map(t => t.id);
+    // Wait for the shuffled queue to be SAVED (it lands a moment after the
+    // click), and deal again if it came out in playlist order (1 in 24). Reading
+    // too early returned the previous queue — a copy of B — and silently skipped
+    // both checks below.
     const bNow = await serverIds(page, B);
+    let shuffled = bNow;
+    for (let deal = 0; deal < 4 && JSON.stringify(shuffled) === JSON.stringify(bNow); deal++) {
+      await page.click('#shuffleLibPlaylist');
+      for (let t = 0; t < 20; t++) {
+        await page.waitForTimeout(500);
+        const q = (((await api(page, '/api/player/queue')).body || {}).queue || []).map(x => x.id);
+        if (q.length === bNow.length && [...q].sort().join() === [...bNow].sort().join()
+            && JSON.stringify(q) !== JSON.stringify(bNow)) { shuffled = q; break; }
+      }
+    }
     await page.click('#libraryTabs .sp-tab[data-lib-tab="manager"]');
     await page.waitForTimeout(2000);
-    if (JSON.stringify(shuffled) === JSON.stringify(bNow)) {
-      console.log(`SKIP  ${tag('shuffled queue left alone')}  (the shuffle dealt the playlist order)`);
-    } else {
+    check(tag('Shuffle dealt a different order'), JSON.stringify(shuffled) !== JSON.stringify(bNow),
+      `B=${bNow.map(x => S.indexOf(x))}`);
+    {
       await page.click('#plmPanes .plm-pane[data-pane="1"] .plm-row[data-idx="0"] .plm-more');
       await page.click('.ctx-menu .ctx-menu-item:has-text("Move to bottom")');
       await idle(page);
