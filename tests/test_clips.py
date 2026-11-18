@@ -1027,3 +1027,137 @@ def test_a_memoised_path_later_replaced_by_a_link_out_is_refused(env, tracks, tm
     r = env.client.get("/api/clips/waveform", params=_tq())
     assert r.status_code == 404
     assert clips._track_memo == {}
+
+
+# ── saving straight into a playlist ──
+
+def _song(sid, title, artist="DJ Alpha", album="Clips", path=""):
+    return {"id": sid, "title": title, "artist": artist, "album": album, "path": path}
+
+
+@pytest.fixture
+def nav(env, monkeypatch):
+    """A Navidrome that indexes a clip after `lag` lookups. Search answers like the real
+    one: every song whose title shares the query's first word, oldest first."""
+    from app.routers import library as library_router
+    from app.services import library
+    st = {"playlists": [{"id": "p1", "name": "Zouk", "owner": "alice"}, {"id": "t1", "name": "__upnext_dev", "owner": "alice"},
+                        {"id": "b1", "name": "Bob's", "owner": "bob"}],
+          "lag": 0, "songs": [], "added": [], "lookups": 0, "ok": True}
+
+    async def get_playlists():
+        return st["playlists"]
+
+    async def search(name):
+        st["lookups"] += 1
+        if st["lookups"] <= st["lag"]:
+            return []
+        return [s for s in st["songs"] if s["title"].split()[0] == name.split()[0]]
+
+    async def update_playlist(pid, song_ids_to_add=None, song_indices_to_remove=None):
+        st["added"].append((pid, list(song_ids_to_add or [])))
+        return st["ok"]
+    monkeypatch.setattr(library, "get_playlists", get_playlists)
+    monkeypatch.setattr(clips, "_search_clip_songs", search)
+    monkeypatch.setattr(library, "update_playlist", update_playlist)
+    monkeypatch.setattr(library_router, "_own_playlists_owner", lambda user: user["username"])
+    monkeypatch.setattr(clips, "INDEX_POLL", 0.01)
+    env.make_mix()
+    return st
+
+
+def test_a_later_clip_of_the_same_set_is_not_mistaken_for_an_earlier_one(env, nav):
+    # To the library's fuzzy match both are "sunday set": the older clip answered first
+    # and the new one never reached the playlist.
+    nav["songs"] = [_song("old", "Sunday set (0:10–0:40)"), _song("new", "Sunday set (0:50–1:20)")]
+    made = _make_clip(env, "Sunday set (0:50–1:20)", start=50, end=80, playlist_id="p1")
+    assert made["playlist"]["state"] == "added" and nav["added"] == [("p1", ["new"])]
+
+
+def test_the_song_must_be_a_clip_of_that_artist_and_ours_by_path():
+    pick = clips.pick_indexed_clip
+    mine = _song("mine", "Drop", path="alice/DJ Alpha/Clips/Drop.flac")
+    theirs = _song("theirs", "Drop", path="bob/DJ Alpha/Clips/Drop.flac")
+    assert pick([_song("a", "Drop", album="Greatest Hits")], "Drop", "DJ Alpha") is None
+    assert pick([_song("a", "Drop", artist="DJ Beta")], "Drop", "DJ Alpha") is None
+    assert pick([_song("", "Drop")], "Drop", "DJ Alpha") is None
+    assert pick([theirs, mine], "Drop", "DJ Alpha", "DJ Alpha", "Drop.flac", "alice")["id"] == "mine"
+    assert pick([_song("x", "Drop", path="Clips/other.flac"), mine], "Drop", "DJ Alpha", "DJ Alpha", "Drop.flac")["id"] == "mine"
+    assert pick([_song("np", "Drop")], "Drop", "DJ Alpha", "DJ Alpha", "Drop.flac")["id"] == "np"   # a server that reports no path
+
+
+def test_someone_elses_playlist_is_refused_before_anything_is_cut(env, nav):
+    r = env.client.post("/api/clips", json=_body(title="Drop", playlist_id="b1"))
+    assert r.status_code == 403 and r.json()["detail"] == "Not your playlist"
+    assert not (env.music / "alice" / "DJ Alpha" / "Clips").exists() and nav["added"] == []
+
+
+def test_a_library_that_does_not_answer_saves_nothing(env, nav, monkeypatch):
+    import httpx
+    from app.services import library
+
+    async def down():
+        raise httpx.ConnectError("no")
+    monkeypatch.setattr(library, "get_playlists", down)
+    assert env.client.post("/api/clips", json=_body(title="Drop", playlist_id="p1")).status_code == 502
+    assert not (env.music / "alice" / "DJ Alpha" / "Clips").exists()
+
+
+def test_a_clip_saved_with_a_playlist_lands_in_it_once_indexed(env, nav):
+    nav["songs"], nav["lag"] = [_song("s9", "Drop")], 3
+    made = _make_clip(env, "Drop", playlist_id="p1")
+    assert made["playlist"] == {"id": "p1", "name": "Zouk", "state": "added"}
+    assert nav["added"] == [("p1", ["s9"])] and nav["lookups"] == 4
+
+
+def test_without_a_playlist_nothing_is_looked_up_or_written(env, nav):
+    made = _make_clip(env, "Plain")
+    assert "playlist" not in made and nav["lookups"] == 0 and nav["added"] == []
+
+
+def test_an_unknown_or_internal_playlist_is_refused_before_anything_is_cut(env, nav):
+    for pid in ("nope", "t1"):
+        r = env.client.post("/api/clips", json=_body(title="Drop", playlist_id=pid))
+        assert r.status_code == 404 and r.json()["detail"] == "Playlist not found"
+    assert not (env.music / "alice" / "DJ Alpha" / "Clips").exists() and nav["added"] == []
+
+
+def test_a_similar_title_is_not_taken_for_the_new_clip(env, nav, monkeypatch):
+    # The library's match is "one contains the other": "Drop 2" answers a search for "Drop".
+    nav["songs"] = [_song("other", "Drop 2")]
+    monkeypatch.setattr(clips, "INDEX_WAIT", 0.05)
+    made = _make_clip(env, "Drop", playlist_id="p1")
+    assert made["playlist"]["state"] == "failed" and nav["added"] == []
+
+
+def test_a_slow_scan_answers_pending_and_finishes_in_the_background(env, nav, monkeypatch):
+    nav["songs"], nav["lag"] = [_song("s1", "Late")], 10 ** 9
+    monkeypatch.setattr(clips_router, "PLAYLIST_INLINE_WAIT", 0.05)
+
+    async def run():
+        made = await clips.create_clip(str(env.music), "alice", "DJ Alpha", "Set.flac", 10, 40, "Late", "")
+        state = await clips_router._into_playlist(made, "p1")
+        assert state == "pending" and nav["added"] == [] and len(clips_router._playlist_tasks) == 1
+        nav["lag"] = 0                                     # the scan catches up
+        await asyncio.gather(*clips_router._playlist_tasks)
+        assert nav["added"] == [("p1", ["s1"])] and not clips_router._playlist_tasks
+    asyncio.run(run())
+
+
+def test_a_refused_playlist_write_is_reported_and_the_clip_stays(env, nav):
+    nav["songs"], nav["ok"] = [_song("s2", "Kept")], False
+    made = _make_clip(env, "Kept", playlist_id="p1")
+    assert made["playlist"]["state"] == "failed"
+    assert (env.music / "alice" / "DJ Alpha" / "Clips" / made["file"]).is_file()
+
+
+def test_a_scan_that_missed_the_file_is_asked_again(env, nav, monkeypatch):
+    scans = []
+
+    async def scan():
+        scans.append(1)
+    monkeypatch.setattr(downloader, "_trigger_navidrome_scan", scan)
+    monkeypatch.setattr(clips, "INDEX_RESCAN", 0.03)
+    nav["songs"], nav["lag"] = [_song("s3", "Again")], 8
+    made = _make_clip(env, "Again", playlist_id="p1")
+    assert made["playlist"]["state"] == "added" and len(scans) == 2   # the save's own + ONE repeat

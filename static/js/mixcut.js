@@ -15,6 +15,17 @@ import { store } from './store.js';
 
 // ───────────────────────── pure logic ─────────────────────────
 
+// What the toast says after a save. The clip itself is always saved by now; the
+// playlist part can be done, still waiting for Navidrome to index the file, or failed.
+export function saveMessage(r, title) {
+  const base = `Saved – ${(r && r.name) || title}`;
+  const pl = r && r.playlist;
+  if (!pl) return base;
+  if (pl.state === 'added') return `${base} · added to ${pl.name}`;
+  if (pl.state === 'pending') return `${base} · will appear in ${pl.name} once the library has indexed it`;
+  return `${base} · but it could not be added to ${pl.name}`;
+}
+
 export const MIN_CLIP = 10;          // seconds
 export const MAX_CLIP = 20 * 60;
 export const MIN_SPAN = 10;          // detail window, seconds
@@ -378,6 +389,7 @@ export async function openCutter(source, opener) {
         <label>Title<input type="text" data-r="title" maxlength="200"></label>
         <div class="mixcut-err" data-r="titleErr" role="alert"></div>
         <label>Artist<input type="text" data-r="artist" maxlength="200"></label>
+        <label>Add to playlist<select data-r="playlist" disabled><option value="">Loading playlists…</option></select></label>
         <button type="submit" class="mixcut-btn mixcut-btn--primary mixcut-save" data-r="save" disabled>Save as track</button>
       </form>
       <div class="mixcut-clips"><div class="mixcut-label">Clips of this set</div><div data-r="clips"></div></div>
@@ -616,7 +628,7 @@ export async function openCutter(source, opener) {
       : prob === 'short' ? `Too short — a clip must be at least ${MIN_CLIP} s.`
       : prob === 'long' ? `Too long — a clip can be at most ${MAX_CLIP / 60} min.` : '';
     R.hint.classList.toggle('mixcut-hint--bad', !!prob);
-    R.save.disabled = !sel || !!prob || saving;
+    R.save.disabled = !sel || !!prob || saving || R.playlist.disabled;
     if (sel && !titleTouched) R.title.value = defaultTitle(mix.title, sel.start, sel.end);
     R.spanLbl.textContent = `${Math.round(span)} s`;
     R.bpm.textContent = bpmNow ? ` · ${bpmNow} BPM` : '';
@@ -874,6 +886,27 @@ export async function openCutter(source, opener) {
     renderClipList(); dirty = true;
   }
 
+  // ── playlist to file the clip into (remembered: a session of cutting goes to one place) ──
+  const PL_KEY = 'ms_clip_playlist';
+  const savedPlaylist = () => { try { return localStorage.getItem(PL_KEY) || ''; } catch { return ''; } };
+  on(R.playlist, 'change', () => { try { localStorage.setItem(PL_KEY, R.playlist.value); } catch { /* private mode */ } });
+  // Until the list is here the select is disabled: a quick Save must not silently
+  // go out without the playlist the user expects to be remembered.
+  const plReady = () => { R.playlist.options[0].textContent = 'None – just save the track'; R.playlist.disabled = false; syncUi(); };
+  apiJson('/api/library/playlists').then((d) => {
+    if (closed) return;
+    plReady();
+    const want = savedPlaylist();
+    for (const p of (d && d.playlists) || []) {
+      if (p.own === false) continue;        // someone else's shared playlist: Navidrome would refuse the write
+      const o = document.createElement('option');
+      o.value = String(p.id); o.textContent = p.name;
+      R.playlist.appendChild(o);
+    }
+    // A remembered playlist that is gone falls back to "None" by itself.
+    if (want && [...R.playlist.options].some((o) => o.value === want)) R.playlist.value = want;
+  }).catch(() => { if (!closed) plReady(); /* the clip can still be saved without one */ });
+
   // ── save ──
   let saving = false;
   on(R.form, 'submit', async (e) => {
@@ -885,9 +918,10 @@ export async function openCutter(source, opener) {
     try {
       const r = await apiJson('/api/clips', {
         method: 'POST',
-        body: { ...refBody(mix.ref), start: sel.start, end: sel.end, title, artist: R.artist.value.trim() },
+        body: { ...refBody(mix.ref), start: sel.start, end: sel.end, title, artist: R.artist.value.trim(),
+                playlist_id: R.playlist.value || '' },
       });
-      showToast(`Saved – ${(r && r.name) || title}`);
+      showToast(saveMessage(r, title), !!(r && r.playlist && r.playlist.state === 'failed'));
       titleTouched = false;           // the next passage gets a fresh default title
       await loadClips();
       refreshSection();

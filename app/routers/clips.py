@@ -31,6 +31,7 @@ class ClipRequest(BaseModel):
     end: float
     title: str
     artist: str = ""
+    playlist_id: str = ""      # optional: file the new clip into this playlist
 
 
 class ClipDeleteRequest(BaseModel):
@@ -98,6 +99,25 @@ async def create_clip(req: ClipRequest, user: dict = Depends(auth.get_current_us
     # The same gate a download passes; it walks the user's folder, so off the loop.
     if not await asyncio.to_thread(downloader._check_quota, user["username"]):
         raise HTTPException(507, "Disk quota exceeded")
+    playlist = None
+    if req.playlist_id:
+        # Asked BEFORE the cut: a clip saved "into" a playlist that is not there, or is
+        # someone else's, is a surprise. Without their own Navidrome account a user talks
+        # through the service account and would otherwise write into the admin's playlists.
+        import httpx
+        from app.routers.library import _own_playlists_owner
+        from app.services import library
+        try:
+            found = await library.get_playlists()
+        except httpx.HTTPError:
+            raise HTTPException(502, "The library is not answering – the clip was not saved")
+        playlist = next((p for p in found if str(p.get("id")) == req.playlist_id
+                         and not library.is_temp_playlist_name(p.get("name", ""))), None)
+        if not playlist:
+            raise HTTPException(404, "Playlist not found")
+        me = _own_playlists_owner(user)
+        if not me or playlist.get("owner") != me:
+            raise HTTPException(403, "Not your playlist")
     try:
         made = await clips.create_clip(_music_dir(), user["username"], req.dj, req.file,
                                        req.start, req.end, req.title, req.artist,
@@ -108,7 +128,29 @@ async def create_clip(req: ClipRequest, user: dict = Depends(auth.get_current_us
         raise HTTPException(e.status, e.message)
     player.invalidate_cache(made["name"], made["artist"])
     await downloader._trigger_navidrome_scan()
+    if playlist:
+        made["playlist"] = {"id": playlist["id"], "name": playlist["name"],
+                            "state": await _into_playlist(made, playlist["id"], user["username"])}
     return made
+
+
+# A playlist holds Navidrome ids, and the clip gets one only when the scan has seen it —
+# usually seconds. The answer waits that long; a slow scan is finished in the background
+# (the task keeps the request's Navidrome credentials: a task copies the context).
+PLAYLIST_INLINE_WAIT = 15.0
+_playlist_tasks: set = set()
+
+
+async def _into_playlist(made: dict, playlist_id: str, username: str = "") -> str:
+    task = asyncio.create_task(clips.add_when_indexed(made["name"], made["artist"], playlist_id,
+                                                    made["dir"], made["file"], username))
+    _playlist_tasks.add(task)
+    task.add_done_callback(_playlist_tasks.discard)
+    try:
+        ok = await asyncio.wait_for(asyncio.shield(task), PLAYLIST_INLINE_WAIT)
+    except asyncio.TimeoutError:
+        return "pending"
+    return "added" if ok else "failed"
 
 
 @router.get("", dependencies=_bind)

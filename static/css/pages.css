@@ -395,7 +395,7 @@
 .mixcut-hint--bad { color: #ff9f43; }
 .mixcut-form { display: grid; gap: 8px; margin: 8px 0 16px; }
 .mixcut-form label { display: grid; gap: 4px; font-size: 12px; color: var(--text-muted, #999); }
-.mixcut-form input { min-height: 42px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border, #2a2a3a); background: var(--bg-input, #1a1a2a); color: var(--text, #eee); font: inherit; font-size: 16px; }
+.mixcut-form input, .mixcut-form select { min-height: 42px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border, #2a2a3a); background: var(--bg-input, #1a1a2a); color: var(--text, #eee); font: inherit; font-size: 16px; }
 .mixcut-err { color: #ff6b6b; font-size: 13px; min-height: 0; }
 .mixcut-save { justify-self: start; }
 .mixcut-clips { border-top: 1px solid var(--border, #2a2a3a); padding-top: 12px; }

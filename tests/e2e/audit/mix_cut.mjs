@@ -38,6 +38,12 @@ if (!mix) {
 }
 check('setup: the set is in the library', !!mix, mix ? `${mix.artist} – ${mix.title.slice(0, 50)}… (${mix.quality})` : 'download did not finish');
 if (!mix) process.exit(1);
+// A playlist of its own for "Add to playlist" (deleted again at the end).
+const PL_NAME = 'zz-clip-e2e';
+const lists = async () => (await api('/api/library/playlists', { tok })).playlists || [];
+for (const p of (await lists()).filter(p => p.name === PL_NAME)) await api(`/api/library/playlist/${p.id}`, { tok, method: 'DELETE' });
+const pl = await api('/api/library/playlist', { tok, body: { name: PL_NAME } });
+const plTracks = async () => ((await api(`/api/library/playlist/${pl.id}`, { tok })).tracks || []).map(t => t.name);
 // A known first clip, made through the API: the editor must show it and DJ mode needs two.
 const A = { start: 17 * 60 + 45, end: 22 * 60 + 45 };
 const titleA = `${mix.title} (17:45–22:45)`;
@@ -105,8 +111,19 @@ try {
   await page.waitForTimeout(3500);
   const au = await page.evaluate(() => window.__media.filter(m => !m.paused).map(m => ({ t: m.currentTime, src: m.src.replace(/token=[^&]+/, 'token=…') })));
   check('editor: ▶ Start plays the SET FILE from the selection start', au.length === 1 && au[0].t > 1800 && au[0].t < 1806 && au[0].src.includes('/api/clips/audio'), JSON.stringify(au).slice(0, 160));
+  // File it straight into a playlist.
+  await page.waitForFunction((id) => [...(document.querySelector('.mixcut-overlay [data-r="playlist"]')?.options || [])].some(o => o.value === id), String(pl.id), { timeout: 15000 }).catch(() => {});
+  const offered = await page.locator('.mixcut-overlay [data-r="playlist"] option').allTextContents().catch(() => []);
+  check('editor: "Add to playlist" offers the user\'s playlists and no internal ones', offered.includes(PL_NAME) && /^None/.test(offered[0] || '') && !offered.some(o => o.startsWith('__')), offered.slice(0, 6).join(' | '));
+  if (offered.includes(PL_NAME)) await T('playlist').selectOption(String(pl.id));
   await shot('cut-real-2-selected');
   await page.locator('.mixcut-overlay form button[type="submit"], .mixcut-overlay form button').last().click();
+  await page.waitForFunction((n) => (document.querySelector('#toastMsg')?.textContent || '').includes(n), PL_NAME, { timeout: 60000 }).catch(() => {});
+  const toast = (await page.locator('#toastMsg').textContent().catch(() => '')) || '';
+  check('editor: the toast says the clip went into the playlist', /added to zz-clip-e2e|will appear in zz-clip-e2e/.test(toast), toast.slice(-70));
+  let inPl = [];
+  for (let i = 0; i < 40 && !inPl.length; i++) { inPl = await plTracks(); if (!inPl.length) await sleep(3000); }
+  check('editor: the saved clip IS in that playlist on the server', inPl.length === 1 && /\(30:00–33:00\)$/.test(inPl[0]), inPl.join(' | ').slice(-60) || 'playlist is empty');
   await page.waitForFunction(() => document.querySelectorAll('.mixcut-overlay [data-r="clips"] .mixcut-clip').length >= 2, null, { timeout: 60000 }).catch(() => {});
   const inEditor = await page.locator('.mixcut-overlay [data-r="clips"] .mixcut-clip').count();
   check('editor: the saved clip appears in the list without leaving', inEditor >= 2, `${inEditor} clips listed`);
@@ -152,6 +169,8 @@ try {
   await page.waitForSelector('.mixcut-overlay canvas', { timeout: 15000 });
   await page.waitForFunction(() => { const s = document.querySelector('.mixcut-overlay [data-r="status"]'); return !s || !/Analysing/.test(s.textContent) || s.offsetParent === null; }, null, { timeout: 120000 });
   const T2 = (r) => page.locator(`.mixcut-overlay [data-r="${r}"]`);
+  await page.waitForFunction((id) => document.querySelector('.mixcut-overlay [data-r="playlist"]')?.value === id, String(pl.id), { timeout: 10000 }).catch(() => {});
+  check('track: the next editor remembers the playlist chosen last time', (await T2('playlist').inputValue()) === String(pl.id), await T2('playlist').inputValue() || 'None');
   await T2('rStart').fill('40:00'); await T2('rStart').press('Enter');
   await T2('rEnd').fill('41:00'); await T2('rEnd').press('Enter');
   await page.waitForTimeout(500);
@@ -182,6 +201,8 @@ try {
   if (!KEEP) {
     for (const c of (await api('/api/clips', { tok })).clips || []) await api('/api/clips', { tok, method: 'DELETE', body: { dir: c.dir, file: c.file } });
     await api('/api/mixes/library', { tok, method: 'DELETE', body: { dj: mix.dj, file: mix.file } });
+    await api(`/api/library/playlist/${pl.id}`, { tok, method: 'DELETE' });
+    check('cleanup: the test playlist is deleted', !(await lists()).some(p => p.name === PL_NAME));
     const left = ((await api('/api/clips', { tok })).clips || []).length + (((await api('/api/mixes/library', { tok })).count) || 0);
     check('cleanup: claude_test is left without the set and its clips', left === 0, `${left} items left`);
   }

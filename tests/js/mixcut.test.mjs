@@ -261,3 +261,11 @@ test('describeSource: a track the server already resolved carries its key and is
   assert.equal(M.describeSource({ name: 'X', artist: 'Y' }).known, false);   // not yet agreed: no audio request
   assert.equal(M.describeSource({ dj: 'D', file: 'f.m4a' }).known, true);
 });
+
+test('saveMessage: says where the clip went, and never hides that the playlist part failed', () => {
+  assert.equal(M.saveMessage({ name: 'Drop' }, 'x'), 'Saved – Drop');
+  assert.equal(M.saveMessage(null, 'Typed'), 'Saved – Typed');
+  assert.equal(M.saveMessage({ name: 'Drop', playlist: { name: 'Zouk', state: 'added' } }), 'Saved – Drop · added to Zouk');
+  assert.match(M.saveMessage({ name: 'Drop', playlist: { name: 'Zouk', state: 'pending' } }), /will appear in Zouk/);
+  assert.match(M.saveMessage({ name: 'Drop', playlist: { name: 'Zouk', state: 'failed' } }), /could not be added to Zouk/);
+});

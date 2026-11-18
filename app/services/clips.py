@@ -761,6 +761,75 @@ async def create_clip(music_dir: str, username: str, dj: str, file: str,
             "dir": os.path.basename(os.path.dirname(os.path.dirname(final))), "file": fname}
 
 
+INDEX_WAIT = 180.0         # how long a saved clip may take to appear in Navidrome
+INDEX_POLL = 2.0
+INDEX_RESCAN = 20.0        # a scan that was already running when we asked may have missed the file
+
+
+def pick_indexed_clip(songs: list[dict], name: str, artist: str, dir_: str = "", file: str = "",
+                      username: str = "") -> dict | None:
+    """The search hit that IS the new clip. Never the library's fuzzy match: it drops
+    everything in parentheses, so every clip of one set — "Set (17:45–22:45)",
+    "Set (30:00–33:00)" — is the same title to it, and the older one answers first.
+    Title, artist and album must be equal; among those, the one at our path wins
+    (another user's clip can carry the same three tags)."""
+    want_t, want_a = player.nfc(name), player.nfc(artist)
+    tail = f"{dir_}/{CLIPS_ALBUM}/{file}" if dir_ and file else ""
+    exact = [s for s in songs
+             if s.get("id") and player.nfc(s.get("title", "")) == want_t
+             and s.get("album", "") == CLIPS_ALBUM
+             and (not want_a or player.nfc(s.get("artist", "")) == want_a)]
+    # Most specific first: under OUR user's folder, then at least the same folder shape.
+    for t in ([f"{username}/{tail}"] if username and tail else []) + ([tail] if tail else []):
+        for s in exact:
+            if player.nfc(s.get("path", "")).endswith(player.nfc(t)):
+                return s
+    return exact[0] if exact else None
+
+
+async def _search_clip_songs(name: str) -> list[dict]:
+    """EVERY search3 hit for the title, unfiltered (library.find_song stops at its first
+    fuzzy match). Runs as the request's Navidrome user, like the rest of the library."""
+    import httpx
+    from app.services import library
+    async with httpx.AsyncClient(base_url=library.NAVIDROME_URL, timeout=10) as client:
+        resp = await client.get("/rest/search3", params=library._params(
+            query=name, songCount=200, albumCount=0, artistCount=0))
+        resp.raise_for_status()
+        songs = resp.json().get("subsonic-response", {}).get("searchResult3", {}).get("song", [])
+        return [songs] if isinstance(songs, dict) else songs
+
+
+async def add_when_indexed(name: str, artist: str, playlist_id: str, dir_: str = "", file: str = "",
+                           username: str = "") -> bool:
+    """Put a freshly saved clip into a playlist. A playlist holds Navidrome song ids and
+    the clip has none until the scan has seen the file, so this waits for it."""
+    from app.services import downloader, library
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + INDEX_WAIT
+    rescan_at = loop.time() + INDEX_RESCAN        # asked again ONCE: more would only hammer the scanner
+    while True:
+        try:
+            song = pick_indexed_clip(await _search_clip_songs(name), name, artist, dir_, file, username)
+        except Exception as e:
+            logger.warning("clip → playlist: lookup failed: %s", e)
+            song = None
+        if song:
+            try:
+                return bool(await library.update_playlist(playlist_id, song_ids_to_add=[song["id"]]))
+            except Exception as e:
+                logger.warning("clip → playlist: add failed: %s", e)
+                return False
+        now = loop.time()
+        if now >= deadline:
+            logger.warning("clip → playlist: %r never appeared in Navidrome", name)
+            return False
+        if rescan_at is not None and now >= rescan_at:
+            rescan_at = None
+            await downloader._trigger_navidrome_scan()
+        await asyncio.sleep(INDEX_POLL)
+
+
 def _publish(scratch: str, final: str) -> None:
     """Put the finished file at `final` without ever replacing one that is there.
     A hard link fails atomically if the name exists (two cuts of one title race here);
