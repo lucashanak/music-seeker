@@ -48,6 +48,19 @@ function _writeKey(key, val) {
   }, 300));
 }
 
+/** Reflect the stored energy direction in the segmented control. */
+export function syncEnergyDir() {
+  const box = $('#fpDjEnergyDir');
+  if (!box) return;
+  let cur = 'auto';
+  try { cur = localStorage.getItem('ms_dj_energy_dir') || 'auto'; } catch { /* default */ }
+  if (!['auto', 'up', 'hold', 'down'].includes(cur)) cur = 'auto';
+  for (const b of box.querySelectorAll('button[data-v]')) {
+    b.setAttribute('aria-checked', String(b.dataset.v === cur));
+    b.tabIndex = b.dataset.v === cur ? 0 : -1;
+  }
+}
+
 // ── Preload set ─────────────────────────────────────────────────────────────
 // Download the whole forward queue into device memory (pinned) so the deck plays
 // from memory and a flaky venue link can't interrupt the set. Polls preloadStatus()
@@ -115,6 +128,7 @@ export function syncDjPanel() {
   }
   const engEl = $('#fpPlayerEngine');
   if (engEl) engEl.value = getPlayerEngine();
+  syncEnergyDir();
   _applyPanelMode();
 }
 
@@ -276,6 +290,37 @@ export function init() {
   document.addEventListener('visibilitychange', () => {
     if (_isOpen && document.visibilityState === 'visible') syncDjPanel();
   });
+
+  // Energy direction: applies to the very next track, so no debounce and a re-pick.
+  const dirBox = $('#fpDjEnergyDir');
+  if (dirBox) {
+    dirBox.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-v]');
+      if (!btn) return;
+      try { localStorage.setItem('ms_dj_energy_dir', btn.dataset.v); } catch { /* private mode */ }
+      syncEnergyDir();
+      _savedStatus();
+      const smart = (localStorage.getItem('ms_dj_smart_queue') || 'off') !== 'off';
+      if (store.remoteTarget) {
+        // The other device picks its own tracks with its own settings; re-picking here
+        // would only prefetch audio on a device that is not playing.
+        showToast('Applies to playback on this device – the remote device keeps its own setting');
+        return;
+      }
+      if (btn.dataset.v !== 'auto' && !smart) { showToast('Turn Smart Queue on – in playlist order the energy is not steered'); return; }
+      if (btn.dataset.v !== 'auto' && store.shuffleEnabled) { showToast('Shuffle is on – it decides the next track, not the energy'); return; }
+      getPlayerModule().then((m) => { if (m.repickNext?.()) showToast('Next track re-picked'); });
+    });
+    // A radio group: arrows move the choice, one tab stop.
+    dirBox.addEventListener('keydown', (e) => {
+      const step = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : (e.key === 'ArrowLeft' || e.key === 'ArrowUp') ? -1 : 0;
+      if (!step) return;
+      e.preventDefault();
+      const btns = [...dirBox.querySelectorAll('button[data-v]')];
+      const next = btns[(btns.indexOf(document.activeElement) + step + btns.length) % btns.length];
+      next.focus(); next.click();
+    });
+  }
 
   // Wire each control to the shared ms_dj_* key.
   for (const [key, cfg] of Object.entries(PANEL_CONFIG)) {

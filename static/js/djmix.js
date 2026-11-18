@@ -12,7 +12,7 @@
 
 // Single source of truth for BPM/DJ data: bpm.js cache
 // No separate _djCache — getDjData reads from bpm._cache, fetchTrackBpm populates it
-import { getDjData, fetchTrackBpm } from './bpm.js';
+import { getDjData, fetchTrackBpm, displayBpm } from './bpm.js';
 
 /** Re-export fetchTrackBpm as fetchDjData for player_v2.js compatibility */
 export { fetchTrackBpm as fetchDjData };
@@ -641,10 +641,36 @@ export function markPlayed(item) {
 // Energy from before feature version 2 measured mastering loudness, bunched into
 // 0.47–0.71. Next to the new 0–1 values such a track sits "close to" every mid-range
 // target and wins. Treated as unknown: no energy term, tempo and key still decide.
-export const ENERGY_MIN_VERSION = 2;
+export const ENERGY_MIN_VERSION = 3;
 export function usableEnergy(d) {
   return (d && d.feature_version >= ENERGY_MIN_VERSION && d.energy != null && Number.isFinite(Number(d.energy)))
     ? Number(d.energy) : NaN;
+}
+
+export function energyDirection() {
+  const v = _djSetting('energy_dir', 'auto');
+  return (v === 'up' || v === 'hold' || v === 'down') ? v : 'auto';
+}
+/** Where the next track's energy should be, given the playing track's. */
+export function energyTarget(cur, dir, step = 0.12) {
+  const t = dir === 'up' ? cur + step : dir === 'down' ? cur - step : cur;
+  return Math.max(0, Math.min(1, t));
+}
+/** Is a candidate where the listener asked to go? Unknown energy never is. */
+export function onSide(cur, cand, dir) {
+  if (!Number.isFinite(cand)) return false;
+  const SLACK = 0.03, HOLD = 0.15;
+  if (dir === 'up') return cand >= cur + SLACK;
+  if (dir === 'down') return cand <= cur - SLACK;
+  if (dir === 'hold') return Math.abs(cand - cur) <= HOLD;
+  return true;
+}
+/** How far a candidate lies on the wrong side of the current track (0 when it does not). */
+export function wrongWay(cur, cand, dir) {
+  const SLACK = 0.03;                      // the meter is not that exact
+  if (dir === 'up') return Math.max(0, cur - SLACK - cand);
+  if (dir === 'down') return Math.max(0, cand - (cur + SLACK));
+  return 0;
 }
 
 export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', repeatAll = false) {
@@ -726,6 +752,16 @@ export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', 
     : startE + Math.max(0, E_PEAK - (_playedCount - E_PEAKAT) * E_COOL);
   targetEnergy = Math.max(0, Math.min(1, targetEnergy));
 
+  // ---- A3. Energy direction (the listener steers; overrides the arc) ----
+  // `ms_dj_energy_dir`: auto (the arc above) | up | hold | down. Relative to the track
+  // PLAYING NOW, one step at a time, so "up" climbs track by track instead of jumping to
+  // the most energetic one. Needs the current track's energy; without it the arc stands.
+  const E_DIR = energyDirection();
+  const E_STEP = num(_djSetting('dj_energy_step', '0.12'), 0.12);
+  const curEnergy = usableEnergy(currentDjData);
+  const steering = E_DIR !== 'auto' && Number.isFinite(curEnergy);
+  if (steering) targetEnergy = energyTarget(curEnergy, E_DIR, E_STEP);
+
   // Distinct number of track keys in the queue (duplicates collapse).
   const distinctKeys = new Set(queue.map(_trackKey));
   const allPlayed = _playedKeys.size >= distinctKeys.size;
@@ -786,9 +822,27 @@ export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', 
       const key = _trackKey(item);
       if (_playedKeys.has(key) && !(repeatAll && allPlayed)) continue;
       const d = getDjData(_djDecode(item.name), _djDecode(item.artist));
-      if (d && _bandOk(d.bpm)) { anyInBand = true; break; }
+      if (d && _bandOk(displayBpm(d))) { anyInBand = true; break; }
     }
     if (!anyInBand) _bandActive = false; // empty band → graceful unconstrained fallback (silent)
+  }
+
+  // Steering is a FILTER, like the band, not one more term in the sum: as a term it lost
+  // to the key bonus (−6), to a 3 BPM gap and even to the tie-break jitter — "Down" picked
+  // a hotter track in a compatible key (measured). When at least one candidate lies on
+  // the asked side AND within reach in tempo (the dance floor's rule still comes first),
+  // only that side competes. None there → no filter: the distance terms do what they can.
+  let _steerActive = false;
+  if (steering) {
+    for (let i = 0; i < queue.length && !_steerActive; i++) {
+      if (i === currentIndex) continue;
+      const item = queue[i];
+      if (_playedKeys.has(_trackKey(item)) && !(repeatAll && allPlayed)) continue;
+      const d = getDjData(_djDecode(item.name), _djDecode(item.artist));
+      if (!d || (_bandActive && !_bandOk(displayBpm(d)))) continue;
+      const near = !Number.isFinite(d.bpm) || Math.abs(d.bpm - target) <= 2 * BAND;
+      if (near && onSide(curEnergy, usableEnergy(d), E_DIR)) _steerActive = true;
+    }
   }
 
   // ---- Unified, confidence-weighted scoring over ALL eligible unplayed candidates ----
@@ -817,7 +871,10 @@ export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', 
     // Live Tempo preference filter: when a band is active (and non-empty), only tracks whose
     // cached bpm is in the band compete for selection. Pure deterministic skip — no state
     // writes — so prediction==commit holds. BPM-less tracks fail _bandOk → excluded.
-    if (_bandActive && !_bandOk(data.bpm)) continue;
+    // The band is about how fast a track FEELS (what its badge says), not the folded
+    // mixing BPM: a "124 BPM" remix stored as 62 belongs to Fast, not to Slow.
+    if (_bandActive && !_bandOk(displayBpm(data))) continue;
+    if (_steerActive && !onSide(curEnergy, usableEnergy(data), E_DIR)) continue;
 
     // conf drives BPM weighting: high-conf → BPM matters fully; low-conf → BPM barely counts.
     const conf = Number.isFinite(data.confidence) ? data.confidence : 0.3;
@@ -834,7 +891,10 @@ export function pickSmartNext(queue, currentIndex, currentDjData, mode = 'bpm', 
     const tempoContinuity = Math.max(0, bpmDist - BAND) * OOB_PENALTY;
 
     const _e = usableEnergy(data);
-    const eDist = Number.isFinite(_e) ? Math.abs(_e - targetEnergy) * E_WEIGHT : 0;
+    let eDist = Number.isFinite(_e) ? Math.abs(_e - targetEnergy) * E_WEIGHT : 0;
+    // Steering: a track on the WRONG side of the current one costs its distance again —
+    // "up" must not settle for a calmer track just because it is nearer the target.
+    if (steering && Number.isFinite(_e)) eDist += wrongWay(curEnergy, _e, E_DIR) * E_WEIGHT;
 
     // In-band bonus applies ONLY to TRUSTED candidates with a real BPM: keep confident tempo
     // matches preferred among the confident, without hard-filtering (which starved the

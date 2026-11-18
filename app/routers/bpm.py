@@ -89,6 +89,14 @@ async def get_track_bpm(
         # Once backfilled, subsequent requests hit this fast path again.
         if cached and cached.get("feature_version") == bpm.FEATURE_VERSION:
             return cached
+        if cached:
+            # The BPM and the beat grid are there; only the audio features are of an older
+            # version. Never make a listener wait for that: the player asks this before it
+            # starts a track, and refreshing in the request held playback for ~15 s
+            # (measured 2026-11-18: a Navidrome-only track was fetched, transcoded and
+            # re-analysed first). Answer now, refresh behind.
+            bpm.backfill_in_background(name, artist)
+            return cached
 
     # Ownership is decided here, on the server, with the same two sources the
     # analysis itself uses (Navidrome id, local file). A track with neither is

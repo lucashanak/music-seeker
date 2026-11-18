@@ -1440,6 +1440,16 @@
         </select>
       </div>
       <div class="setting-group">
+        <span class="setting-label" id="fpDjEnergyDirLabel">Energy</span>
+        <div class="dj-energy-dir" id="fpDjEnergyDir" role="radiogroup" aria-labelledby="fpDjEnergyDirLabel">
+          <button type="button" role="radio" data-v="auto" aria-checked="true">Auto</button>
+          <button type="button" role="radio" data-v="down" aria-checked="false" aria-label="Calm down">&#8600; Down</button>
+          <button type="button" role="radio" data-v="hold" aria-checked="false" aria-label="Hold the level">&#8594; Hold</button>
+          <button type="button" role="radio" data-v="up" aria-checked="false" aria-label="Build up">&#8599; Up</button>
+        </div>
+        <p style="font-size:11px;color:var(--text-dim);margin-top:4px;" id="fpDjEnergyDirHint">Where Smart Queue takes the energy from the track playing now. Auto builds up over the first tracks and eases off later.</p>
+      </div>
+      <div class="setting-group">
         <label class="setting-label" for="fpDjCrossfadeBeats">Crossfade Length</label>
         <select class="setting-select" id="fpDjCrossfadeBeats">
           <option value="8">8 beats — tight, punchy</option>

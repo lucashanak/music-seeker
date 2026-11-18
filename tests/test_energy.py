@@ -191,3 +191,97 @@ def test_the_sweep_works_several_tracks_at_once_on_its_own_workers(sweep):
     assert 1 < sweep["peak"] <= bpm._sweep_executor._max_workers
     assert set(sweep["executors"]) == {bpm._sweep_executor}       # never the pool listeners wait on
     assert st["done"] == 14 and st["left"] == 0
+
+
+# -- felt tempo, and a little of it in the energy (feature version 3) --
+
+def test_the_felt_tempo_changes_octave_only_when_the_rhythm_leaves_no_doubt():
+    assert bpm.tempo_feel(62, 62 / 60 * 3.6) == 124.0            # a dense "62" is a 124 BPM track
+    assert bpm.tempo_feel(110, 110 / 60 * 1.7) == 55.0           # one event per beat at 110 feels half
+    assert bpm.tempo_feel(62, 62 / 60 * 3.0) == 62.0             # not dense enough: left alone
+    assert bpm.tempo_feel(72, 72 / 60 * 4.0) == 72.0             # 144 would be a guess; outside the rule
+    assert bpm.tempo_feel(88, 88 / 60 * 1.5) == 88.0
+    assert bpm.tempo_feel(None, 3.0) is None and bpm.tempo_feel(0, 3.0) is None
+    assert bpm.tempo_feel(80, None) == 80.0
+    # density is not speed: a calm, finger-picked "68" stays 68; a driving one doubles
+    assert bpm.tempo_feel(68, 68 / 60 * 4.0, score=-0.4) == 68.0
+    assert bpm.tempo_feel(68, 68 / 60 * 4.0, score=0.6) == 136.0
+    assert bpm.tempo_feel(110, 110 / 60 * 1.7, score=0.6) == 110.0   # sparse but driving: not halved
+    assert bpm.tempo_feel(110, 110 / 60 * 1.7, score=-0.6) == 55.0
+
+
+def test_a_faster_felt_tempo_raises_the_energy_a_little_and_no_tempo_is_neutral():
+    slow, mid, fast = bpm.energy_value(0.0, 60), bpm.energy_value(0.0, 82), bpm.energy_value(0.0, 124)
+    assert slow < mid < fast
+    assert fast - slow < 0.35                                    # "a little": rhythm still decides
+    assert bpm.energy_value(0.0) == pytest.approx(mid, abs=0.01)   # unknown tempo sits at the centre
+
+
+def test_features_carry_the_felt_tempo_through_the_production_path(tmp_path):
+    busy = _flac(tmp_path, "busy.flac", _track(6, seconds=60))
+    drone = (0.3 * np.sin(2 * np.pi * 220 * np.arange(60 * SR) / SR)).astype(np.float32)
+    calm = _flac(tmp_path, "calm.flac", drone)
+    f = bpm.compute_features_only(busy, 62.0)
+    assert f["onset_rate"] > 62 / 60 * 3.5 and f["tempo_feel"] == 124.0      # dense and driving: doubled
+    assert bpm.compute_features_only(busy, 90.0)["tempo_feel"] == 90.0       # nothing to fold at 90
+    nobpm = bpm.compute_features_only(busy)
+    assert nobpm["energy"] is not None and "tempo_feel" not in nobpm         # no BPM: still an energy
+    # the tempo reaches the energy: the same audio "at 124" does not rank below itself "at 90"
+    assert f["energy"] >= bpm.compute_features_only(busy, 90.0)["energy"]
+    assert bpm.compute_features_only(calm, 62.0)["tempo_feel"] == 62.0       # a drone is not a fast track
+    assert "bpm" not in f
+
+
+def test_the_sweep_hands_each_tracks_own_bpm_to_the_analysis(sweep):
+    seen = []
+
+    async def pool(fn, *a, executor=None):
+        seen.append(a)
+        return {"energy": 0.5, "danceability": 0.5, "brightness": 0.5, "key_confidence": 0.5,
+                "feature_version": bpm.FEATURE_VERSION}
+    bpm._run_in_pool = pool
+    asyncio.run(bpm.backfill_stale_features(pause=0))
+    assert sorted(a[1] for a in seen) == [81.0, 88.0]             # Nav and Old, each with its BPM
+
+
+def test_a_file_tagged_current_is_still_measured_for_the_felt_tempo(tmp_path, monkeypatch):
+    # The tags hold four features; the onset rate is not one of them.
+    monkeypatch.setattr(bpm, "read_bpm_tag", lambda p: 62)
+    monkeypatch.setattr(bpm, "read_key_tag", lambda p: "A minor")
+    for fn in ("read_anchor_tag", "read_intro_tag", "read_outro_tag"):
+        monkeypatch.setattr(bpm, fn, lambda p: 1.0)
+    monkeypatch.setattr(bpm, "read_algover_tag", lambda p: bpm.BPM_ALGO_VERSION)
+    monkeypatch.setattr(bpm, "_reconstruct_beat_grid", lambda b, a, p: ([1.0, 2.0], 60.0))
+    monkeypatch.setattr(bpm, "write_tags", lambda *a, **k: None)
+    asked = []
+    monkeypatch.setattr(bpm, "compute_features_only",
+                        lambda p, b=None: (asked.append(b), {"energy": 0.9, "tempo_feel": 124.0, "feature_version": bpm.FEATURE_VERSION})[1])
+    r = bpm._analyze_or_read_tag(str(tmp_path / "x.flac"))
+    assert asked == [62.0] and r["bpm"] == 62.0 and r["tempo_feel"] == 124.0
+
+
+def test_the_stored_bpm_is_never_changed_by_the_felt_tempo(sweep):
+    cache = sweep["cache"]
+
+    async def pool(fn, *a, executor=None):
+        return {"energy": 0.9, "tempo_feel": 176.0, "onset_rate": 6.0, "danceability": 0.5, "brightness": 0.5,
+                "key_confidence": 0.5, "feature_version": bpm.FEATURE_VERSION}
+    bpm._run_in_pool = pool                                       # restored by the fixture's monkeypatch
+    asyncio.run(bpm.backfill_stale_features(pause=0))
+    assert cache["a::old"]["bpm"] == 88.0 and cache["a::old"]["tempo_feel"] == 176.0
+
+
+def test_a_background_refresh_runs_once_per_track_and_marks_missing_audio(sweep):
+    cache = sweep["cache"]
+
+    async def run():
+        assert bpm.backfill_in_background("Old", "A") is True
+        assert bpm.backfill_in_background("Old", "A") is False          # already under way
+        assert bpm.backfill_in_background("New", "A") is False          # current: nothing to do
+        assert bpm.backfill_in_background("Nobody", "A") is False       # not analysed at all
+        assert bpm.backfill_in_background("Gone", "A") is True
+        await asyncio.gather(*list(bpm._bg_tasks))
+    asyncio.run(run())
+    assert cache["a::old"]["energy"] == 0.33 and cache["a::old"]["bpm"] == 88.0
+    assert cache["a::gone"]["features_unavailable"] == bpm.FEATURE_VERSION and not bpm._bg_backfills
+    assert set(sweep["executors"]) == {bpm._sweep_executor}             # never the listeners' pool

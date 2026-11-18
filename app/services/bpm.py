@@ -29,7 +29,7 @@ BPM_CACHE_FILE = DATA_DIR / "bpm_analysis.json"
 ZOUK_MIN_BPM = 60       # fold window spans exactly one octave (60–120 = 2×) → no dead zone
 ZOUK_MAX_BPM = 120
 BPM_ALGO_VERSION = 5    # bump to invalidate cached/tagged BPM when the algorithm changes
-FEATURE_VERSION = 2     # bump to lazily backfill audio features (energy/danceability/…) — NEVER triggers a BPM re-scan
+FEATURE_VERSION = 3     # bump to lazily backfill audio features (energy/danceability/…) — NEVER triggers a BPM re-scan
 
 # ── Audio-feature normalization anchors (fixed references → reproducible 0..1, NOT dataset-relative) ──
 # All calibratable later; chosen to map typical music into a useful 0..1 spread.
@@ -292,7 +292,16 @@ ENERGY_FEATURES = {            # name: (weight, centre, spread, take log)
     "lowflux":    (0.15, 0.6352, 0.2898, False),
     "high":       (0.10, -4.3783, 0.7042, True),
 }
-ENERGY_MU, ENERGY_SIGMA = -0.0207, 0.7769
+ENERGY_MU, ENERGY_SIGMA = -0.0337, 0.8523
+# Version 3 adds a little of the FELT tempo (weight 0.20; centre 82 BPM, spread 0.30 octave).
+# The stored BPM is folded into 60–120, which is right for mixing but says nothing about
+# how fast a track feels: a 124 BPM remix is stored as 62 next to a real 62 BPM ballad,
+# and a 110 BPM ballad with one event per beat reads as fast. `tempo_feel` picks the
+# octave from how many onsets fall on a stored beat — and only when it is unmistakable
+# (3 of 67 doubled, 1 halved on the reference playlist). It never changes `bpm`.
+TEMPO_WEIGHT, TEMPO_CENTRE, TEMPO_SPREAD = 0.20, 82.0, 0.30
+FEEL_DOUBLE = (70.0, 3.5)      # stored bpm at most this AND at least this many onsets per beat
+FEEL_HALVE = (100.0, 1.8)      # stored bpm at least this AND at most this many onsets per beat
 ENERGY_SR = 22050
 
 
@@ -321,9 +330,35 @@ def energy_window_raw(mono_22k) -> dict:
     }
 
 
-def energy_from_raw(windows: list) -> float | None:
-    """0–1 energy from the per-window raw features (median over windows). None when no
-    window carries them — the caller then has nothing better than neutral."""
+def tempo_feel(bpm, onset_rate, score=None) -> float | None:
+    """The tempo a listener taps: the stored BPM, doubled or halved when the rhythm's
+    density leaves no doubt. None without a BPM.
+
+    Density alone is not enough: a finger-picked acoustic ballad has four onsets to the
+    beat and is not a 136 BPM track (measured: "Halo – Acoustic", 68 → 136). So a track is
+    doubled only when it also drives (`score` ≥ 0 = above the library's median before the
+    tempo term) and halved only when it does not."""
+    try:
+        bpm = float(bpm)
+    except (TypeError, ValueError):
+        return None
+    if not (bpm > 0):
+        return None
+    try:
+        per_beat = float(onset_rate) / (bpm / 60.0)
+    except (TypeError, ValueError):
+        return round(bpm, 1)
+    drives = None if score is None else score >= 0.0
+    if bpm <= FEEL_DOUBLE[0] and per_beat >= FEEL_DOUBLE[1] and drives is not False:
+        return round(bpm * 2, 1)
+    if bpm >= FEEL_HALVE[0] and per_beat <= FEEL_HALVE[1] and drives is not True:
+        return round(bpm / 2, 1)
+    return round(bpm, 1)
+
+
+def energy_parts(windows: list) -> tuple[float, float] | None:
+    """(weighted score before the tempo term, median onsets per second) over the windows
+    that carry the level-independent features; None when none does."""
     import math
     rows = [w for w in windows if w and all(k in w for k in ENERGY_FEATURES)]
     if not rows:
@@ -334,7 +369,23 @@ def energy_from_raw(windows: list) -> float | None:
         if log:
             v = math.log(max(v, 1e-9))
         score += weight * (v - centre) / spread
+    return score, float(np.median([r["onset_rate"] for r in rows]))
+
+
+def energy_value(score: float, felt_bpm=None) -> float:
+    """0–1 energy from the score; the felt tempo nudges it when known."""
+    import math
+    if felt_bpm:
+        score += TEMPO_WEIGHT * (math.log2(float(felt_bpm)) - math.log2(TEMPO_CENTRE)) / TEMPO_SPREAD
     return clamp01(0.5 * (1.0 + math.erf((score - ENERGY_MU) / ENERGY_SIGMA / math.sqrt(2.0))))
+
+
+def energy_from_raw(windows: list, bpm=None) -> float | None:
+    """0–1 energy of these windows (median over them), None when unmeasurable."""
+    parts = energy_parts(windows)
+    if parts is None:
+        return None
+    return energy_value(parts[0], tempo_feel(bpm, parts[1], parts[0]))
 
 
 def _window_features(mono_44k_seg, onset_env, sr: int = 44100, mono_22k=None) -> dict:
@@ -733,7 +784,7 @@ def analyze_bpm(file_path: str) -> dict:
     # any failure degrades to neutral 0.5 and never affects BPM/key/camelot/beat_grid.
     # key_confidence is now the multi-window vote (above), not the single-strength path; pass
     # [] for keys so _aggregate_features computes only energy/danceability/brightness.
-    features = _aggregate_features(per_window_features, None, [])
+    features = _aggregate_features(per_window_features, None, [], bpm=final_bpm)
 
     return {
         "bpm": round(final_bpm, 1), "confidence": confidence,
@@ -754,12 +805,14 @@ def analyze_bpm(file_path: str) -> dict:
         "brightness": features["brightness"],
         "key_confidence": round(float(key_confidence_value), 4),
         "feature_version": FEATURE_VERSION,
+        **{k: features[k] for k in ("onset_rate", "tempo_feel") if k in features},
     }
 
 
 # ── Audio features: median-aggregate across windows + reproducible normalization ──
 
-def _aggregate_features(per_window_features: list, key_strength, per_window_keys: list) -> dict:
+def _aggregate_features(per_window_features: list, key_strength, per_window_keys: list,
+                        bpm=None) -> dict:
     """Median-aggregate raw per-window features (mirrors the weighted-median BPM approach)
     and map to reproducible 0..1 scalars via fixed anchors. Returns
     {energy, danceability, brightness, key_confidence, feature_version}.
@@ -777,9 +830,18 @@ def _aggregate_features(per_window_features: list, key_strength, per_window_keys
             # None when the level-independent features could not be computed. NOT the old
             # loudness composite: under this version number it would be shown and compared
             # as if it were the real thing.
-            energy = energy_from_raw(per_window_features)
+            parts = energy_parts(per_window_features)
         else:
-            energy, danceability, brightness = None, 0.5, 0.5
+            parts, danceability, brightness = None, 0.5, 0.5
+        extra = {}
+        if parts is None:
+            energy = None
+        else:
+            felt = tempo_feel(bpm, parts[1], parts[0])
+            energy = energy_value(parts[0], felt)
+            extra["onset_rate"] = round(parts[1], 3)
+            if felt:
+                extra["tempo_feel"] = felt
 
         # Key confidence: prefer essentia strength; else cross-window key agreement; else neutral.
         if key_strength is not None and 0.0 < float(key_strength) <= 1.0:
@@ -796,6 +858,7 @@ def _aggregate_features(per_window_features: list, key_strength, per_window_keys
             "brightness": round(float(brightness), 4),
             "key_confidence": round(float(key_confidence), 4),
             "feature_version": FEATURE_VERSION,
+            **extra,
         }
     except Exception as e:
         logger.warning("Feature aggregation failed: %s", e)
@@ -805,7 +868,7 @@ def _aggregate_features(per_window_features: list, key_strength, per_window_keys
         }
 
 
-def compute_features_only(file_path: str) -> dict:
+def compute_features_only(file_path: str, bpm=None) -> dict:
     """Lazy-backfill features WITHOUT touching BPM. Reads ONE cheap mid-window and computes
     only the audio features + essentia key strength. Never computes the BPM ensemble, beat
     tracking, or beat grid, and never returns bpm/key/camelot/beat_grid. Returns
@@ -852,7 +915,7 @@ def compute_features_only(file_path: str) -> dict:
         except Exception:
             key_strength = None
 
-        return _aggregate_features(feats, key_strength, [])
+        return _aggregate_features(feats, key_strength, [], bpm=bpm)
     except Exception as e:
         logger.warning("compute_features_only failed for %s: %s", file_path, e)
         return {
@@ -1263,20 +1326,21 @@ def _analyze_or_read_tag(file_path: str) -> dict:
             "algo_version": BPM_ALGO_VERSION,
         }
         # Lazy feature backfill — never blocks/breaks the BPM fast path.
-        feats = read_feature_tags(file_path)
-        if feats is None:
-            feats = compute_features_only(file_path)
-            try:
-                write_tags(file_path,
-                           energy=feats.get("energy"),
-                           danceability=feats.get("danceability"),
-                           brightness=feats.get("brightness"),
-                           key_confidence=feats.get("key_confidence"),
-                           # an unmeasured energy must not get the new version stamped
-                           # over the file's old ENERGY tag
-                           feature_ver=FEATURE_VERSION if feats.get("energy") is not None else None)
-            except Exception as e:
-                logger.warning("Feature tag write failed for %s: %s", file_path, e)
+        # The tags hold the four classic features only. The felt tempo needs the onset
+        # rate, which is not a tag: a file whose tags say "version 3" still has to be
+        # measured once per cache entry, or its badge falls back to the folded BPM for good.
+        feats = compute_features_only(file_path, bpm)
+        try:
+            write_tags(file_path,
+                       energy=feats.get("energy"),
+                       danceability=feats.get("danceability"),
+                       brightness=feats.get("brightness"),
+                       key_confidence=feats.get("key_confidence"),
+                       # an unmeasured energy must not get the new version stamped
+                       # over the file's old ENERGY tag
+                       feature_ver=FEATURE_VERSION if feats.get("energy") is not None else None)
+        except Exception as e:
+            logger.warning("Feature tag write failed for %s: %s", file_path, e)
         result.update(feats)
         return result
 
@@ -1374,7 +1438,7 @@ async def _backfill_features(entry: dict, song_id: str, name: str, artist: str,
     file_path = await _get_audio_file(song_id, name, artist)
     if not file_path:
         return entry  # can't backfill without audio — leave BPM data intact
-    feats = await _run_in_pool(compute_features_only, file_path, executor=executor)
+    feats = await _run_in_pool(compute_features_only, file_path, entry.get("bpm"), executor=executor)
     # The analysis took seconds. A forced re-analysis or a re-download may have stored a
     # NEW entry meanwhile; putting the captured object back would resurrect the old BPM
     # and beat grid (reproduced). Merge into whatever the cache holds now.
@@ -1393,6 +1457,39 @@ _sweep_state = {"running": False, "done": 0, "left": 0}
 
 
 SWEEP_SAVE_EVERY = 50
+
+_bg_backfills: set[str] = set()
+_bg_tasks: set = set()
+
+
+def backfill_in_background(name: str, artist: str) -> bool:
+    """Refresh one cached track's audio features without anybody waiting for it.
+    One task per track at a time; a track whose audio is gone is marked like in the sweep."""
+    key = _cache_key(name, artist)
+    entry = _bpm_cache.get(key)
+    if (entry is None or not _needs_features(entry) or key in _bg_backfills
+            or entry.get("features_unavailable") == FEATURE_VERSION):
+        return False
+    _bg_backfills.add(key)
+
+    async def run():
+        try:
+            try:
+                song_id = await library.find_song_id(name, artist) or ""
+            except Exception:
+                song_id = ""
+            cur = await _backfill_features(entry, song_id, name, artist, executor=_sweep_executor)
+            if _needs_features(cur):
+                cur["features_unavailable"] = FEATURE_VERSION
+        except Exception as e:
+            logger.warning("background feature refresh failed for %s – %s: %s", artist, name, e)
+        finally:
+            _bg_backfills.discard(key)
+
+    task = asyncio.create_task(run())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return True
 
 
 async def backfill_stale_features(pause: float = 0.3) -> dict:

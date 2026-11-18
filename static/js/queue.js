@@ -2,7 +2,7 @@
 
 import { store } from './store.js';
 import { $, $$, esc, historyBack, showToast, showInputModal } from './utils.js';
-import { getCachedBpm, isBpmUnavailable } from './bpm.js';
+import { getCachedBpm, isBpmUnavailable, energyBadgeFor, displayBpm } from './bpm.js';
 import { attachContextMenu, wasLongPress, makeKebabButton } from './contextmenu.js';
 import { makeHeartButton } from './likes.js';
 import { getPlayerModule } from './player_active.js';
@@ -204,8 +204,24 @@ const _bpmLoadState = new WeakMap();
 function _badgeAnchor(qi) {
   return qi.querySelector('.like-btn') || qi.querySelector('.kebab-btn') || qi.querySelector('.qi-remove');
 }
+// The energy meter sits just before the BPM number. Added after render (not in the row
+// template) so a row drawn before its analysis arrived gets it too.
+function _addEnergy(qi, item) {
+  if (!qi || qi.querySelector('.energy-badge')) return;
+  const meter = energyBadgeFor(item.name, item.artist);
+  if (!meter) return;
+  const anchor = qi.querySelector('.qi-bpm') || _badgeAnchor(qi);
+  if (anchor) anchor.before(meter);
+}
+
 /** Lazy-load BPM badges — limited to nearby tracks, with delays between requests. */
 async function _loadMissingBpm(el) {
+  // Every row whose analysis is already in memory gets its meter at once, not only
+  // the handful near the playing track that the loop below asks the server about.
+  for (const qi of el.querySelectorAll('[data-qi]')) {
+    const item = store.playerQueue[+qi.dataset.qi];
+    if (item) _addEnergy(qi, item);
+  }
   const prev = _bpmLoadState.get(el);
   if (prev) {
     clearTimeout(prev.timer);
@@ -228,7 +244,7 @@ async function _loadMissingBpm(el) {
       let bpm = getCachedBpm(item.name, item.artist);
       if (!bpm) {
         const data = await fetchTrackBpm(item.name, item.artist).catch(() => null);
-        if (data) bpm = data.bpm;
+        if (data) bpm = displayBpm(data);   // the same number the row template shows
         if (abort.aborted) return;
         if (!bpm && isBpmUnavailable(item.name, item.artist) && !qi.querySelector('.qi-bpm')) {
           const anchor = _badgeAnchor(qi);
@@ -247,6 +263,7 @@ async function _loadMissingBpm(el) {
           anchor.before(badge);
         }
       }
+      _addEnergy(qi, item);
     }
   }, 1000);
 }

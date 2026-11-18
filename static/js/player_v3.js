@@ -197,6 +197,37 @@ function _levelGainFor(lufs) {
  * Selection knobs (tempo/key/energy/etc.) are read fresh on the next advance, so
  * they need no action here. No-op safe when no AudioContext/deck exists yet.
  */
+/**
+ * Throw away the bound "next track" and pick again — for a knob that must take effect
+ * on the very next track (the energy direction). Without it the change would be heard
+ * one track late: the pick is made, and its audio prefetched, when the current track
+ * starts. Not while a transition is under way: that track is already playing in.
+ */
+export function repickNext() {
+  if (!_smartOn() || _crossfading || _crossfadeTriggered || _advanceInFlight) return false;
+  // Pick and bind in the SAME tick (as the `playing` handler does). Clearing first and
+  // letting _preAnalyzeUpcoming pick later left seconds with no bound track: the auto-
+  // trigger then timed the transition for queue[i+1] and the commit chose another,
+  // un-prefetched one.
+  const data = _outDjData || (() => {
+    const cur = store.playerQueue[store.playerIndex];
+    return cur ? getDjData(_decodeEntities(cur.name || ''), _decodeEntities(cur.artist || '')) : null;
+  })();
+  if (!data) return false;                       // nothing to steer from yet; the next pick reads the knob
+  const idx = pickSmartNext(store.playerQueue, store.playerIndex, data, _djSetting('smart_queue', 'off'), store.repeatMode === 'all');
+  if (idx == null || idx === _predictedNextIdx) return idx != null;
+  const item = store.playerQueue[idx];
+  const name = _decodeEntities(item.name || ''), artist = _decodeEntities(item.artist || '');
+  _predictedNextIdx = idx;
+  _predictedNextKey = _smartKey(item);
+  _inDjData = getDjData(name, artist);
+  resumePrefetch();
+  prefetchTrack(name, artist, item.id);
+  _preAnalyzeUpcoming();                         // takes its "already bound" branch
+  try { renderQueue(); } catch { /* panel closed */ }
+  return true;
+}
+
 export function applyDjSettings() {
   if (!_ctx || !_activeLevel()) return;
   _activeLevel().gain.value = _levelGainFor(_outDjData?.lufs);

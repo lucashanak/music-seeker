@@ -168,12 +168,24 @@ test('lazy path: a panel re-rendered while the request is in flight gets no stal
 
 test('energyLevel: five steps over 0–1, and nothing for the old loudness-based version', async () => {
   const { energyLevel } = await import('../../static/js/bpm.js');
-  assert.equal(energyLevel({ energy: 0, feature_version: 2 }), 1);
-  assert.equal(energyLevel({ energy: 0.19, feature_version: 2 }), 1);
-  assert.equal(energyLevel({ energy: 0.5, feature_version: 2 }), 3);
-  assert.equal(energyLevel({ energy: 1, feature_version: 2 }), 5);
-  assert.equal(energyLevel({ energy: 0.9, feature_version: 1 }), null);   // version 1 followed mastering loudness
+  assert.equal(energyLevel({ energy: 0, feature_version: 3 }), 1);
+  assert.equal(energyLevel({ energy: 0.19, feature_version: 3 }), 1);
+  assert.equal(energyLevel({ energy: 0.5, feature_version: 3 }), 3);
+  assert.equal(energyLevel({ energy: 1, feature_version: 3 }), 5);
+  assert.equal(energyLevel({ energy: 0.9, feature_version: 2 }), null);   // older versions are not comparable
   assert.equal(energyLevel({ energy: 0.9 }), null);
-  assert.equal(energyLevel({ feature_version: 2 }), null);
+  assert.equal(energyLevel({ feature_version: 3 }), null);
+  assert.equal(energyLevel({ energy: null, feature_version: 3 }), null);
   assert.equal(energyLevel(null), null);
+});
+
+test('displayBpm: the felt tempo is what is shown; the mixing BPM stays in the entry', async () => {
+  const { displayBpm, getCachedBpm, getDjData, primeBpmCache } = await import('../../static/js/bpm.js');
+  assert.equal(displayBpm({ bpm: 62, tempo_feel: 124 }), 124);
+  assert.equal(displayBpm({ bpm: 88 }), 88);
+  assert.equal(displayBpm({ bpm: 88, tempo_feel: null }), 88);
+  assert.equal(displayBpm(null), null);
+  primeBpmCache([{ name: 'Jackpot', artist: 'M', bpm: 62, tempo_feel: 124 }]);
+  assert.equal(getCachedBpm('Jackpot', 'M'), 124);
+  assert.equal(getDjData('Jackpot', 'M').bpm, 62);          // what the decks sync to
 });

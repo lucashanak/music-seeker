@@ -142,6 +142,18 @@ def test_stale_cached_entry_without_audio_is_returned_not_owned_false(env, monke
     assert bpm_router._not_owned == {}
 
 
+def test_a_stale_entry_is_answered_at_once_and_refreshed_behind(env, monkeypatch):
+    # The player asks this before it starts a track: a feature refresh must not hold it.
+    client, calls, _ = env
+    stale = {"name": "Stara", "artist": "Skladba", "bpm": 88.0, "energy": 0.6, "feature_version": bpm.FEATURE_VERSION - 1}
+    monkeypatch.setattr(bpm, "get_cached_bpm", lambda n, a: stale)
+    kicked = []
+    monkeypatch.setattr(bpm, "backfill_in_background", lambda n, a: kicked.append((n, a)))
+    r = client.get("/api/bpm/track", params={"name": "Stara", "artist": "Skladba"})
+    assert r.status_code == 200 and r.json() == stale
+    assert kicked == [("Stara", "Skladba")] and calls["analyze"] == [] and calls["find_song_id"] == 0
+
+
 def test_force_bypasses_negative_cache(env):
     client, calls, state = env
     p = {"name": "N", "artist": "A"}

@@ -1,5 +1,6 @@
 // A playlist row shows the track's energy (five bars) once the server has analysed it
-// with the level-independent formula (feature_version >= 2).
+// with the level-independent formula (feature_version >= 3). Also: the queue
+// panel's rows carry the meter, and the DJ panel's energy direction is stored and re-picks.
 //
 // Oracle: production, account claude_test, fixture playlist zz-audit-fixture (READ only).
 //   node tests/e2e/audit/energy_badge.mjs [--tree]
@@ -21,9 +22,10 @@ const fixture = ((await api('/api/library/playlists', { tok })).playlists || [])
 const tracks = (await api(`/api/library/playlist/${fixture.id}`, { tok })).tracks || [];
 const got = [];
 for (const t of tracks) got.push(await api(`/api/bpm/track?name=${encodeURIComponent(t.name)}&artist=${encodeURIComponent(t.artist)}`, { tok }));
-const fresh = got.filter(g => g.feature_version >= 2 && Number.isFinite(g.energy));
-check('server: the fixture tracks carry version-2 energy', fresh.length >= 2, got.map(g => `${g.name || '?'}: v${g.feature_version ?? '-'} e=${g.energy ?? '-'}`).join(' | ').slice(0, 220));
+const fresh = got.filter(g => g.feature_version >= 3 && Number.isFinite(g.energy));
+check('server: the fixture tracks carry current-version energy', fresh.length >= 2, got.map(g => `${g.name || '?'}: v${g.feature_version ?? '-'} e=${g.energy ?? '-'}`).join(' | ').slice(0, 220));
 check('server: the values are not all the same', new Set(fresh.map(g => g.energy)).size > 1);
+check('server: each carries a felt tempo and the mixing BPM is untouched', fresh.length > 0 && fresh.every(g => g.tempo_feel > 0 && g.bpm > 40 && g.bpm <= 121 && [0.5, 1, 2].some(k => Math.abs(g.tempo_feel / g.bpm - k) < 0.01)), fresh.map(g => `${g.bpm}/${g.tempo_feel}`).join(' '));
 
 const browser = await pw.chromium.launch();
 try {
@@ -55,6 +57,23 @@ try {
     check(`${vp}: the level matches the server's energy`, withBadge.length > 0 && withBadge.every(s => want[s.title] === s.level), JSON.stringify(want).slice(0, 160));
     check(`${vp}: no horizontal scroll, no page errors`, errors.length === 0 && await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), errors.join(' | ').slice(0, 160));
     if (process.env.MS_SHOT) await page.screenshot({ path: `${process.env.MS_SHOT}/energy-${vp}.png` });
+    if (vp === 'desktop') {
+      // The queue panel: play the fixture, its rows get the meter too.
+      await page.locator('#libraryDetail button:has-text("Play All"), #libraryDetail button:has-text("Play")').first().click();
+      await page.waitForFunction(() => document.querySelectorAll('.queue-item .energy-badge').length > 0, null, { timeout: 25000 }).catch(() => {});
+      const q = await page.evaluate(() => { const panel = [...document.querySelectorAll('.queue-item')].map(r => r.closest('[id]')?.id); const rows = [...document.querySelectorAll('.queue-item')].filter(r => r.closest('[id]')?.id === panel[0]); return { rows: rows.length, meters: rows.filter(r => r.querySelector('.energy-badge')).length }; });
+      check('queue: rows of analysed tracks carry the meter', q.meters >= fresh.length && q.meters > 0, JSON.stringify(q));
+      // The DJ panel's energy direction.
+      const dir = await page.evaluate(async () => {
+        const box = document.querySelector('#fpDjEnergyDir'); if (!box) return null;
+        const press = async (v) => { box.querySelector(`button[data-v="${v}"]`).click(); await new Promise(r => setTimeout(r, 400)); return { stored: localStorage.getItem('ms_dj_energy_dir'), checked: [...box.querySelectorAll('[aria-checked="true"]')].map(b => b.dataset.v).join(',') }; };
+        const up = await press('up'); const auto = await press('auto');
+        return { up, auto, options: [...box.querySelectorAll('button')].map(b => b.dataset.v).join(',') };
+      });
+      check('DJ panel: the energy direction offers auto/down/hold/up', !!dir && dir.options === 'auto,down,hold,up', JSON.stringify(dir));
+      check('DJ panel: a press is stored for the engine and shown as chosen', !!dir && dir.up.stored === 'up' && dir.up.checked === 'up' && dir.auto.stored === 'auto' && dir.auto.checked === 'auto');
+      await page.evaluate(() => { for (const m of document.querySelectorAll('audio')) m.pause(); });
+    }
     await context.close();
   }
 } catch (e) {

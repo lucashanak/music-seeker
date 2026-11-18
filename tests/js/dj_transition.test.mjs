@@ -378,9 +378,120 @@ test('cleanup under shuffle keeps the upcoming permutation, not the storage neig
 
 test('usableEnergy: a version-1 (loudness) energy is unknown to Smart Queue', async () => {
   const { usableEnergy } = await import('../../static/js/djmix.js');
-  assert.equal(usableEnergy({ energy: 0.4, feature_version: 2 }), 0.4);
-  assert.ok(Number.isNaN(usableEnergy({ energy: 0.6, feature_version: 1 })));
-  assert.ok(Number.isNaN(usableEnergy({ energy: null, feature_version: 2 })));   // analysed, not measurable
-  assert.ok(Number.isNaN(usableEnergy({ feature_version: 2 })));
+  assert.equal(usableEnergy({ energy: 0.4, feature_version: 3 }), 0.4);
+  assert.ok(Number.isNaN(usableEnergy({ energy: 0.6, feature_version: 2 })));
+  assert.ok(Number.isNaN(usableEnergy({ energy: null, feature_version: 3 })));   // analysed, not measurable
+  assert.ok(Number.isNaN(usableEnergy({ feature_version: 3 })));
   assert.ok(Number.isNaN(usableEnergy(null)));
+});
+
+// ── Energy direction ──
+test('energyTarget / wrongWay: one step from the playing track, and the wrong side costs', async () => {
+  const { energyTarget, wrongWay } = await import('../../static/js/djmix.js');
+  assert.ok(Math.abs(energyTarget(0.5, 'up', 0.12) - 0.62) < 1e-9);
+  assert.ok(Math.abs(energyTarget(0.5, 'down', 0.12) - 0.38) < 1e-9);
+  assert.equal(energyTarget(0.5, 'hold'), 0.5);
+  assert.equal(energyTarget(0.95, 'up'), 1);                 // nothing above the top: stays there
+  assert.equal(energyTarget(0.05, 'down'), 0);
+  assert.equal(wrongWay(0.5, 0.6, 'up'), 0);
+  assert.ok(wrongWay(0.5, 0.3, 'up') > 0.15);
+  assert.equal(wrongWay(0.5, 0.48, 'up'), 0);                // within the slack: not "down"
+  assert.ok(wrongWay(0.5, 0.7, 'down') > 0.15);
+  assert.equal(wrongWay(0.5, 0.9, 'hold'), 0);
+});
+
+test('Smart Queue follows the chosen energy direction from the playing track', async () => {
+  const dj = await import('../../static/js/djmix.js');
+  const { primeBpmCache } = await import('../../static/js/bpm.js');
+  const T = (name, energy, extra = {}) => ({ name, artist: 'A' + name, bpm: 84, confidence: 1, camelot: '8A',
+    energy, feature_version: 3, beat_grid: [0.5], outro_start: 200, ...extra });
+  const tracks = [T('Now', 0.5), T('Calm', 0.2), T('Bit calmer', 0.4), T('Same', 0.5), T('Bit hotter', 0.62), T('Hot', 0.95)];
+  primeBpmCache(tracks);
+  const queue = tracks.map(t => ({ name: t.name, artist: t.artist, type: 'track' }));
+  const store = {};
+  const saved = globalThis.localStorage;
+  globalThis.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } };
+  try {
+    const pick = (dir) => {
+      store.ms_dj_energy_dir = dir;
+      dj.resetSmartQueuePlayed();
+      dj.markPlayed(queue[0]);
+      const i = dj.pickSmartNext(queue, 0, tracks[0], 'bpm', false);
+      return i == null ? null : queue[i].name;
+    };
+    assert.equal(pick('up'), 'Bit hotter');     // one step up, not straight to the hottest
+    assert.equal(pick('down'), 'Bit calmer');
+    assert.equal(pick('hold'), 'Same');
+    // A version-2 energy is unknown: it neither attracts nor repels, so steering ignores it.
+    primeBpmCache([T('Bit hotter', 0.62, { feature_version: 2 })]);
+    assert.notEqual(pick('up'), 'Calm');
+    primeBpmCache([T('Bit hotter', 0.62)]);
+    // Without the playing track's energy the direction cannot be applied: no crash, a pick is made.
+    store.ms_dj_energy_dir = 'up';
+    dj.resetSmartQueuePlayed(); dj.markPlayed(queue[0]);
+    assert.notEqual(dj.pickSmartNext(queue, 0, { ...tracks[0], energy: null }, 'bpm', false), null);
+  } finally { globalThis.localStorage = saved; }
+});
+
+test('steering outranks the key bonus, a small tempo gap and the tie-break', async () => {
+  const dj = await import('../../static/js/djmix.js');
+  const { primeBpmCache } = await import('../../static/js/bpm.js');
+  const T = (name, energy, extra = {}) => ({ name, artist: 'K' + name, bpm: 84, confidence: 1, camelot: '8A',
+    energy, feature_version: 3, beat_grid: [0.5], outro_start: 200, ...extra });
+  // The only calmer tracks clash in key and sit 3 BPM away; a hotter one matches both.
+  const tracks = [T('Now', 0.5), T('Hot match', 0.68), T('Calm clash', 0.38, { camelot: '2B', bpm: 87 }),
+                  T('Calmer clash', 0.2, { camelot: '2B', bpm: 87 }), T('Far calm', 0.3, { bpm: 118 })];
+  primeBpmCache(tracks);
+  const queue = tracks.map(t => ({ name: t.name, artist: t.artist, type: 'track' }));
+  const store = { ms_dj_energy_dir: 'down' };
+  const saved = globalThis.localStorage;
+  globalThis.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } };
+  try {
+    for (let run = 0; run < 25; run++) {                      // a new set each time: another jitter salt
+      dj.resetSmartQueuePlayed(); dj.markPlayed(queue[0]);
+      const i = dj.pickSmartNext(queue, 0, tracks[0], 'bpm_key', false);
+      assert.equal(queue[i].name, 'Calm clash', `run ${run}`);
+    }
+    // Nothing reachable on the asked side → no dead end, the filter steps aside.
+    store.ms_dj_energy_dir = 'up';
+    primeBpmCache([T('Hot match', 0.45)]);
+    dj.resetSmartQueuePlayed(); dj.markPlayed(queue[0]);
+    assert.notEqual(dj.pickSmartNext(queue, 0, tracks[0], 'bpm_key', false), null);
+    // A candidate on the right side but a tempo jump away does not switch the filter on by itself.
+    store.ms_dj_energy_dir = 'down';
+    primeBpmCache([T('Calm clash', 0.6, { camelot: '2B', bpm: 87 }), T('Calmer clash', 0.7, { camelot: '2B', bpm: 87 })]);
+    dj.resetSmartQueuePlayed(); dj.markPlayed(queue[0]);
+    assert.notEqual(queue[dj.pickSmartNext(queue, 0, tracks[0], 'bpm_key', false)].name, 'Far calm');
+  } finally { globalThis.localStorage = saved; }
+});
+
+test('onSide: where the listener asked to go; unknown energy never qualifies', async () => {
+  const { onSide } = await import('../../static/js/djmix.js');
+  assert.equal(onSide(0.5, 0.6, 'up'), true);
+  assert.equal(onSide(0.5, 0.5, 'up'), false);                // the same level is not "up"
+  assert.equal(onSide(0.5, 0.4, 'down'), true);
+  assert.equal(onSide(0.5, 0.52, 'down'), false);
+  assert.equal(onSide(0.5, 0.6, 'hold'), true);
+  assert.equal(onSide(0.5, 0.9, 'hold'), false);
+  assert.equal(onSide(0.5, NaN, 'up'), false);
+});
+
+test('the Tempo preference goes by the felt tempo, like the badge', async () => {
+  const dj = await import('../../static/js/djmix.js');
+  const { primeBpmCache } = await import('../../static/js/bpm.js');
+  const T = (name, bpm, tempo_feel) => ({ name, artist: 'F' + name, bpm, tempo_feel, confidence: 1, camelot: '8A',
+    energy: 0.5, feature_version: 3, beat_grid: [0.5], outro_start: 200 });
+  const tracks = [T('Now', 62, 124), T('Remix stored 62', 62, 124), T('Ballad 64', 64, 64)];
+  primeBpmCache(tracks);
+  const queue = tracks.map(t => ({ name: t.name, artist: t.artist, type: 'track' }));
+  const store = { ms_dj_tempo_pref: 'fast' };
+  const saved = globalThis.localStorage;
+  globalThis.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem() {}, removeItem() {} };
+  try {
+    dj.resetSmartQueuePlayed(); dj.markPlayed(queue[0]);
+    assert.equal(queue[dj.pickSmartNext(queue, 0, tracks[0], 'bpm', false)].name, 'Remix stored 62');
+    store.ms_dj_tempo_pref = 'slow';
+    dj.resetSmartQueuePlayed(); dj.markPlayed(queue[0]);
+    assert.equal(queue[dj.pickSmartNext(queue, 0, tracks[0], 'bpm', false)].name, 'Ballad 64');
+  } finally { globalThis.localStorage = saved; }
 });

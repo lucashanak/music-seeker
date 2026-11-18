@@ -50,10 +50,14 @@ export async function hydrateBpmByName(tracks) {
   } catch { return null; }
 }
 
+/** Put analysis entries straight into the in-memory cache (node tests of Smart Queue). */
+export function primeBpmCache(entries) {
+  for (const t of entries || []) _cache[_key(t.name, t.artist)] = t;
+}
+
 /** Get cached BPM for a track. Returns number or null. */
 export function getCachedBpm(name, artist) {
-  const entry = _cache[_key(name, artist)];
-  return entry ? entry.bpm : null;
+  return displayBpm(_cache[_key(name, artist)]);
 }
 
 /**
@@ -67,7 +71,7 @@ function _effectiveBpm(name, artist, includeLowConf) {
   if (!entry || entry.bpm == null) return null;
   const conf = entry.confidence == null ? 0 : entry.confidence;
   if (!includeLowConf && conf < CONF_FLOOR) return null;
-  return entry.bpm;
+  return displayBpm(entry);
 }
 
 /**
@@ -140,7 +144,16 @@ export async function fetchTrackBpm(name, artist) {
 // Energy is shown only from feature version 2 on: version 1 measured mastering
 // loudness, and a meter that mixes the two would rank a loud ballad over a track
 // that drives. The server re-analyses old entries in the background.
-export const ENERGY_MIN_VERSION = 2;
+export const ENERGY_MIN_VERSION = 3;   // 3 = with the felt tempo; 2 and 3 are not comparable
+
+/** The tempo to SHOW and filter by: the felt tempo when the server found the stored
+ *  (folded, 60–120) BPM an octave away from what a listener taps. The DJ engine keeps
+ *  mixing on `entry.bpm` — never use this for beat grids or tempo matching. */
+export function displayBpm(entry) {
+  if (!entry) return null;
+  const felt = Number(entry.tempo_feel);
+  return (Number.isFinite(felt) && felt > 0) ? felt : (entry.bpm ?? null);
+}
 
 /** 1..5 for a cached entry's energy, or null when there is none worth showing. */
 export function energyLevel(entry) {
@@ -168,6 +181,11 @@ function _energyBadge(entry) {
   return el;
 }
 
+/** The energy meter of a track as an element, or null (used by the queue panel). */
+export function energyBadgeFor(name, artist) {
+  return _energyBadge(_cache[_key(name, artist)]);
+}
+
 export function addBpmBadges(container) {
   const cards = $$(`.card`, typeof container === 'string' ? $(container) : container);
   for (const card of cards) {
@@ -189,6 +207,8 @@ export function addBpmBadges(container) {
       const badge = document.createElement('span');
       badge.className = 'bpm-badge';
       badge.textContent = `${Math.round(bpm)} BPM`;
+      const _e = getDjData(item.name, item.artist);
+      if (_e && _e.bpm && Math.abs(_e.bpm - bpm) > 1) badge.title = `Feels like ${Math.round(bpm)} BPM · mixed at ${Math.round(_e.bpm)}`;
       const meta = card.querySelector('.card-meta');
       if (meta) {
         meta.prepend(badge);
@@ -216,7 +236,7 @@ export function createBpmFilter(tracksContainerId, opts = {}) {
   el.className = 'bpm-filter';
   el.innerHTML = `
     <button class="bpm-preset active" data-min="0" data-max="999">All</button>
-    <button class="bpm-preset" data-min="60" data-max="90">Slow &lt;90</button>
+    <button class="bpm-preset" data-min="0" data-max="90">Slow &lt;90</button>
     <button class="bpm-preset" data-min="90" data-max="110">Mid 90-110</button>
     <button class="bpm-preset" data-min="110" data-max="150">Fast 110+</button>
     <span class="bpm-filter-sep">|</span>
