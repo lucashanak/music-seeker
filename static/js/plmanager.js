@@ -22,7 +22,7 @@ const PANES_KEY = 'ms_plm_panes';
 const MODE_KEY = 'ms_plm_mode';
 
 let _built = false;
-let _playlists = [];               // [{id, name, songCount, ...}] — the user's playlists
+let _playlists = [];               // [{id, name, songCount, ...}] — the user's OWN playlists
 const _tracks = new Map();         // playlist id -> [track] (both panes share one copy)
 const _loadGen = new Map();        // playlist id -> generation of the last fetch
 const _serverIds = new Map();      // playlist id -> song ids as the server last answered
@@ -160,9 +160,16 @@ function _setPane(i, id) {
 
 // ── Data ──
 
+function _writeError(e) {
+  if (e.status === 409) return 'The playlist changed elsewhere — reloaded';
+  if (e.status === 403) return 'That playlist is not yours';
+  return 'Failed: ' + (e.message || '');
+}
+
 async function _loadPlaylists() {
   const d = await apiJson('/api/library/playlists');
-  _playlists = (d.playlists || []).slice().sort((a, b) =>
+  // Only the user's own playlists: Navidrome also lists other users' public ones.
+  _playlists = (d.playlists || []).filter(p => p.own).sort((a, b) =>
     (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
 }
 
@@ -492,7 +499,7 @@ function _transfer(fromId, fromIdx, songId, toId, toIdx, mode) {
         showToast(`Added to the end of ${toName}`);
       }
     } catch (e) {
-      showToast((e.status === 409 ? 'The playlist changed elsewhere — reloaded' : 'Failed: ' + (e.message || '')), true);
+      showToast(_writeError(e), true);
       _refetch.add(fromId);
       if (!same) _refetch.add(toId);
     }
@@ -525,7 +532,7 @@ async function _remove(id, idx, songId) {
       if (_pending === 1) _takeServer(id, r.tracks); else _refetch.add(id);
       _markLibraryStale();
     } catch (e) {
-      showToast((e.status === 409 ? 'The playlist changed elsewhere — reloaded' : 'Failed: ' + (e.message || '')), true);
+      showToast(_writeError(e), true);
       _refetch.add(id);
     }
   });

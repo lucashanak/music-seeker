@@ -26,6 +26,7 @@ class FakeNavidrome:
         self.lose_strip_reply = False  # a removal applied, but its answer never arrives
         self.writes = []
         self.params = []             # (playlistId, n_add, n_remove) per write
+        self.owner = {}              # playlist id -> Navidrome owner (default "alice")
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
         # Yield first, as a network round trip would: concurrent writers can
@@ -39,7 +40,12 @@ class FakeNavidrome:
                 return httpx.Response(200, json={"subsonic-response": {"status": "failed"}})
             entries = [{"id": s, "title": f"T{s}", "artist": "A"} for s in self.pl[pid]]
             return httpx.Response(200, json={"subsonic-response": {"status": "ok", "playlist": {
-                "id": pid, "name": pid, "songCount": len(entries), "entry": entries}}})
+                "id": pid, "name": pid, "songCount": len(entries), "entry": entries,
+                "owner": self.owner.get(pid, "alice")}}})
+        if path == "/rest/getPlaylists":
+            return httpx.Response(200, json={"subsonic-response": {"status": "ok", "playlists": {
+                "playlist": [{"id": pid, "name": pid, "songCount": len(rows),
+                              "owner": self.owner.get(pid, "alice")} for pid, rows in self.pl.items()]}}})
         if path == "/rest/updatePlaylist":
             pid = q.get("playlistId")
             self.writes.append(pid)
@@ -73,9 +79,13 @@ def env(monkeypatch):
     who = {"username": "alice"}
     app.dependency_overrides[auth.get_current_user] = lambda: who
 
-    async def _no_bind():
+    async def _bind():
+        # As bind_navidrome_creds does for a provisioned user; with who["creds"]
+        # None the request talks through the shared service account.
+        library.set_request_creds(who.get("creds", {"username": who["username"], "password": "x"}))
         return who
-    app.dependency_overrides[bind_navidrome_creds] = _no_bind
+    app.dependency_overrides[bind_navidrome_creds] = _bind
+    fake.who = who
     return fake, TestClient(app)
 
 
@@ -288,3 +298,58 @@ def test_a_task_started_inside_a_locked_region_does_not_inherit_the_lock(env):
         await child
     asyncio.run(scenario())
     assert order == ["parent-done", "child"]
+
+
+# ── Only the user's own playlists ──
+
+def test_playlists_mark_the_users_own(env):
+    fake, c = env
+    fake.owner["B"] = "bob"
+    own = {p["id"]: p["own"] for p in c.get("/api/library/playlists").json()["playlists"]}
+    assert own == {"A": True, "B": False, "R": True}
+
+
+def test_no_transfer_into_or_out_of_someone_elses_playlist(env):
+    fake, c = env
+    fake.owner["B"] = "bob"
+    assert _post(c, from_id="A", from_index=0, song_id="1", to_id="B").status_code == 403
+    assert _post(c, from_id="B", from_index=0, song_id="7", to_id="A").status_code == 403
+    assert _post(c, from_id="B", from_index=0, song_id="7", to_id="B", to_index=2).status_code == 403
+    assert _post(c, from_id="A", from_index=0, song_id="1", to_id="B", mode="copy").status_code == 403
+    assert fake.writes == []
+    assert fake.pl["A"] == ["1", "2", "3", "4"] and fake.pl["B"] == ["7", "8", "9"]
+
+
+def test_no_remove_from_someone_elses_playlist(env):
+    fake, c = env
+    fake.owner["B"] = "bob"
+    r = c.post("/api/library/playlist-remove", json={"playlist_id": "B", "index": 0, "song_id": "7"})
+    assert r.status_code == 403
+    assert fake.writes == [] and fake.pl["B"] == ["7", "8", "9"]
+
+
+def test_a_user_on_the_shared_account_owns_none_of_its_playlists(env, monkeypatch):
+    # Provisioning failed: the request runs as the service account, which can
+    # write the admin's playlists. They are still not this user's.
+    fake, c = env
+    monkeypatch.setattr(library, "NAVIDROME_USER", "lucas")
+    fake.who["creds"] = None
+    fake.owner.update({"A": "lucas", "B": "lucas"})
+    assert not any(p["own"] for p in c.get("/api/library/playlists").json()["playlists"])
+    assert _post(c, from_id="A", from_index=0, song_id="1", to_id="B").status_code == 403
+    fake.owner["A"] = ""   # no owner reported must not match "owns nothing"
+    assert _post(c, from_id="A", from_index=0, song_id="1", to_id="A", to_index=2).status_code == 403
+    assert fake.writes == []
+
+
+def test_the_admin_owns_the_service_accounts_playlists(env, monkeypatch):
+    from app.services import navidrome_admin
+    fake, c = env
+    monkeypatch.setattr(library, "NAVIDROME_USER", "lucas")
+    monkeypatch.setattr(navidrome_admin, "NAVIDROME_ADMIN_USER", "lucas")
+    fake.who.update({"username": "lucas", "creds": None})
+    fake.owner.update({"A": "lucas", "B": "lucas", "R": "bob"})
+    own = {p["id"]: p["own"] for p in c.get("/api/library/playlists").json()["playlists"]}
+    assert own == {"A": True, "B": True, "R": False}
+    assert _post(c, from_id="A", from_index=0, song_id="1", to_id="B").status_code == 200
+    assert fake.pl["B"] == ["7", "8", "9", "1"]

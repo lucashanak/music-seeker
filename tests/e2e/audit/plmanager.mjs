@@ -117,6 +117,15 @@ async function run(vpName) {
     check(tag('two panes, no horizontal scroll'), layout.n === 2 && !layout.overflow, JSON.stringify(layout));
     check(tag(vpName === 'phone' ? 'phone: panes stacked' : 'panes side by side'), vpName === 'phone' ? !layout.side : layout.side);
     check(tag('pane rows = server'), JSON.stringify(await paneIds(page, 0)) === JSON.stringify(S.slice(0, 4)));
+    {
+      const all = (await api(page, '/api/library/playlists')).body.playlists;
+      const own = all.filter(p => p.own).map(p => String(p.id)).sort();
+      const opts = await page.$$eval('#plmPanes .plm-pane[data-pane="0"] .plm-select option',
+        os => os.map(o => o.value).filter(v => v && !v.startsWith('__')).sort());
+      check(tag('only own playlists offered'), JSON.stringify(opts) === JSON.stringify(own)
+        && all.filter(p => p.own).every(p => p.owner === 'claude_test'),
+        `opts=${opts.length} own=${own.length} all=${all.length}`);
+    }
 
     const touch = vpName === 'phone';
     const drag = async (from, to) => (touch ? touchDrag(context, page, from, to) : mouseDrag(page, from, to));

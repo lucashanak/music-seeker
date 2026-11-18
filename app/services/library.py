@@ -29,6 +29,12 @@ def set_request_creds(creds: dict | None) -> None:
     _req_creds.set(creds or None)
 
 
+def bound_navidrome_user() -> str | None:
+    """The Navidrome account bound to this request, or None when the request
+    talks to Navidrome through the shared service account."""
+    return (_req_creds.get() or {}).get("username") or None
+
+
 def _params(**extra) -> dict:
     """Use Subsonic token auth (salt + md5) instead of plaintext password.
     Authenticates as the per-request user when bound, else the service account."""
@@ -393,6 +399,7 @@ async def get_playlist(playlist_id: str) -> dict | None:
             "name": pl.get("name", ""),
             "description": pl.get("comment", ""),
             "songCount": pl.get("songCount", 0),
+            "owner": pl.get("owner", ""),
             "image": f"/api/library/cover/{pl['coverArt']}" if pl.get("coverArt") else "",
             "tracks": tracks,
         }
@@ -578,6 +585,16 @@ class TransferMissing(Exception):
     """A playlist that does not exist (or this user cannot see)."""
 
 
+class TransferForbidden(Exception):
+    """A playlist that belongs to someone else."""
+
+
+def _check_owner(pl: dict, owner: str | None) -> None:
+    # owner None = no check (internal callers); "" = the caller owns nothing.
+    if owner is not None and (not owner or pl.get("owner") != owner):
+        raise TransferForbidden(pl.get("id", ""))
+
+
 _pl_locks: dict[str, "asyncio.Lock"] = {}
 # Which task holds each playlist's lock: a locked write may call another locked
 # write on the same playlist (asyncio.Lock is not re-entrant). Keyed by the
@@ -632,7 +649,8 @@ def _insert_at(ids: list[str], song_id: str, index: int | None) -> list[str]:
 
 
 async def transfer_track(from_id: str, from_index: int, song_id: str, to_id: str,
-                         to_index: int | None = None, copy: bool = False) -> dict:
+                         to_index: int | None = None, copy: bool = False,
+                         owner: str | None = None) -> dict:
     """Move (or copy) the track at `from_index` of `from_id` to position `to_index`
     of `to_id` (None = the end). Same playlist on both sides = a reorder.
 
@@ -640,14 +658,17 @@ async def transfer_track(from_id: str, from_index: int, song_id: str, to_id: str
              "placed": bool, "removed": bool, "from": [tracks], "to": [tracks]}.
     `placed` is False when the track landed at the end because the reorder that
     puts it at `to_index` failed; `removed` is False when a move added the track
-    but could not take it out of the source (it is then in both)."""
+    but could not take it out of the source (it is then in both).
+    With `owner`, both playlists must belong to that Navidrome account
+    (TransferForbidden otherwise) — checked before anything is written."""
     if from_index < 0:
         raise TransferStale("bad index")
     async with playlist_lock(from_id, to_id):
-        return await _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy)
+        return await _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy, owner)
 
 
-async def remove_at(playlist_id: str, index: int, song_id: str) -> list[dict]:
+async def remove_at(playlist_id: str, index: int, song_id: str,
+                    owner: str | None = None) -> list[dict]:
     """Remove the row at `index` if it still holds `song_id` (TransferStale
     otherwise — never a name match, which can pick another track). Returns the
     playlist's tracks afterwards."""
@@ -655,6 +676,7 @@ async def remove_at(playlist_id: str, index: int, song_id: str) -> list[dict]:
         pl = await get_playlist(playlist_id)
         if not pl:
             raise TransferMissing(playlist_id)
+        _check_owner(pl, owner)
         if not _row_holds(pl["tracks"], index, song_id):
             raise TransferStale("row changed")
         if not await update_playlist(playlist_id, song_indices_to_remove=[index]):
@@ -667,10 +689,11 @@ def _row_holds(tracks: list[dict], index: int, song_id: str) -> bool:
     return 0 <= index < len(tracks) and tracks[index].get("id") == song_id
 
 
-async def _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy) -> dict:
+async def _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy, owner=None) -> dict:
     src = await get_playlist(from_id)
     if not src:
         raise TransferMissing(from_id)
+    _check_owner(src, owner)
     if not _row_holds(src["tracks"], from_index, song_id):
         raise TransferStale("source changed")
 
@@ -690,6 +713,7 @@ async def _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy) 
     dst = await get_playlist(to_id)
     if not dst:
         raise TransferMissing(to_id)
+    _check_owner(dst, owner)
     dst_ids = [t.get("id") for t in dst["tracks"]]
     already = song_id in dst_ids
     placed = True

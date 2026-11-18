@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from app.models import CreatePlaylistRequest, PlaylistDetailsRequest, PlaylistCoverRequest, AddTracksByIdRequest, RemoveTracksRequest, AddTrackByNameRequest, DeleteAlbumRequest, LikeRequest
-from app.services import auth, library, downloader, player
+from app.services import auth, library, downloader, player, navidrome_admin
 from app.services.jobs import create_job
 from app.dependencies import _get_device_id, bind_navidrome_creds
 from fastapi.responses import Response
@@ -134,9 +134,25 @@ async def get_cover_art(cover_id: str):
     return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
 
 
+def _own_playlists_owner(user: dict) -> str:
+    """The Navidrome account whose playlists are this user's own. The admin talks
+    through the service account and owns its playlists; anyone else on the
+    service account (their own account could not be provisioned) owns none of
+    them — "" matches no playlist."""
+    bound = library.bound_navidrome_user()
+    if bound:
+        return bound
+    if user.get("username") == navidrome_admin.NAVIDROME_ADMIN_USER:
+        return library.NAVIDROME_USER
+    return ""
+
+
 @router.get("/playlists")
 async def get_playlists(user: dict = Depends(bind_navidrome_creds)):
     playlists = await library.get_playlists()
+    me = _own_playlists_owner(user)
+    for p in playlists:
+        p["own"] = bool(me) and p.get("owner") == me
     # Hide internal temp playlists (Up Next + Radio) from the library UI
     playlists = [p for p in playlists if not library.is_temp_playlist_name(p.get("name", ""))]
     # Apply app-side cover overrides (override wins over track-derived art)
@@ -295,7 +311,10 @@ async def transfer_track(req: TransferRequest, user: dict = Depends(bind_navidro
     one. The row is named by (from_index, song_id); 409 when it no longer matches."""
     try:
         return await library.transfer_track(req.from_id, req.from_index, req.song_id,
-                                            req.to_id, req.to_index, req.mode == "copy")
+                                            req.to_id, req.to_index, req.mode == "copy",
+                                            owner=_own_playlists_owner(user))
+    except library.TransferForbidden:
+        raise HTTPException(403, "Not your playlist")
     except library.TransferMissing:
         raise HTTPException(404, "Playlist not found")
     except library.TransferStale:
@@ -314,7 +333,10 @@ class RemoveAtRequest(BaseModel):
 async def remove_at(req: RemoveAtRequest, user: dict = Depends(bind_navidrome_creds)):
     """Playlist manager: remove the row at `index`, only if it still holds `song_id`."""
     try:
-        return {"tracks": await library.remove_at(req.playlist_id, req.index, req.song_id)}
+        return {"tracks": await library.remove_at(req.playlist_id, req.index, req.song_id,
+                                                  owner=_own_playlists_owner(user))}
+    except library.TransferForbidden:
+        raise HTTPException(403, "Not your playlist")
     except library.TransferMissing:
         raise HTTPException(404, "Playlist not found")
     except library.TransferStale:
