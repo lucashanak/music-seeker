@@ -589,9 +589,51 @@ class TransferForbidden(Exception):
     """A playlist that belongs to someone else."""
 
 
-def _check_owner(pl: dict, owner: str | None) -> None:
+def _known_usernames() -> list[str]:
+    from app.services import auth  # lazy: auth is not needed on the hot path
+    try:
+        return list(auth._load_users().keys())
+    except Exception:
+        return []
+
+
+def temp_queue_user(name: str, usernames=None) -> str | None:
+    """Whose per-device temp queue (`__upnext_<user>_<dev>`, `__radio_<user>_<dev>`)
+    this name is, or None. Usernames and device ids may both contain "_", so
+    `__upnext_claude_test_x` starts with the prefix of user "claude" as well as
+    of "claude_test": the LONGEST known username that matches wins."""
+    name = name or ""
+    prefix = next((p for p in TEMP_PREFIXES if name.startswith(p)), None)
+    if prefix is None:
+        return None
+    rest = name[len(prefix):]
+    users = _known_usernames() if usernames is None else usernames
+    hits = [u for u in users if u and rest.startswith(f"{u}_")]
+    return max(hits, key=len) if hits else None
+
+
+def owns_playlist(pl: dict, owner: str | None, username: str = "") -> bool:
+    """May the caller write this playlist? `owner` is the Navidrome account whose
+    playlists are the caller's own (routers: `_own_playlists_owner`): None = no
+    check (internal callers), "" = the caller owns nothing.
+
+    One exception to "owns nothing": a user on the shared service account still
+    owns the per-device temp queues the app made for them (`__upnext_<user>_<dev>`,
+    `__radio_<user>_<dev>`, created by that account). With `username` given, those
+    pass; a bound user's temp queues are theirs by owner anyway."""
+    if owner is None:
+        return True
+    if owner and pl.get("owner") == owner:
+        return True
+    if username and not owner and pl.get("owner") == NAVIDROME_USER:
+        known = set(_known_usernames()) | {username}
+        return temp_queue_user(pl.get("name"), known) == username
+    return False
+
+
+def _check_owner(pl: dict, owner: str | None, username: str = "") -> None:
     # owner None = no check (internal callers); "" = the caller owns nothing.
-    if owner is not None and (not owner or pl.get("owner") != owner):
+    if not owns_playlist(pl, owner, username):
         raise TransferForbidden(pl.get("id", ""))
 
 
@@ -650,7 +692,7 @@ def _insert_at(ids: list[str], song_id: str, index: int | None) -> list[str]:
 
 async def transfer_track(from_id: str, from_index: int, song_id: str, to_id: str,
                          to_index: int | None = None, copy: bool = False,
-                         owner: str | None = None) -> dict:
+                         owner: str | None = None, username: str = "") -> dict:
     """Move (or copy) the track at `from_index` of `from_id` to position `to_index`
     of `to_id` (None = the end). Same playlist on both sides = a reorder.
 
@@ -664,11 +706,12 @@ async def transfer_track(from_id: str, from_index: int, song_id: str, to_id: str
     if from_index < 0:
         raise TransferStale("bad index")
     async with playlist_lock(from_id, to_id):
-        return await _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy, owner)
+        return await _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy, owner,
+                                      username)
 
 
 async def remove_at(playlist_id: str, index: int, song_id: str,
-                    owner: str | None = None) -> list[dict]:
+                    owner: str | None = None, username: str = "") -> list[dict]:
     """Remove the row at `index` if it still holds `song_id` (TransferStale
     otherwise — never a name match, which can pick another track). Returns the
     playlist's tracks afterwards."""
@@ -676,7 +719,7 @@ async def remove_at(playlist_id: str, index: int, song_id: str,
         pl = await get_playlist(playlist_id)
         if not pl:
             raise TransferMissing(playlist_id)
-        _check_owner(pl, owner)
+        _check_owner(pl, owner, username)
         if not _row_holds(pl["tracks"], index, song_id):
             raise TransferStale("row changed")
         if not await update_playlist(playlist_id, song_indices_to_remove=[index]):
@@ -689,11 +732,12 @@ def _row_holds(tracks: list[dict], index: int, song_id: str) -> bool:
     return 0 <= index < len(tracks) and tracks[index].get("id") == song_id
 
 
-async def _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy, owner=None) -> dict:
+async def _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy, owner=None,
+                          username="") -> dict:
     src = await get_playlist(from_id)
     if not src:
         raise TransferMissing(from_id)
-    _check_owner(src, owner)
+    _check_owner(src, owner, username)
     if not _row_holds(src["tracks"], from_index, song_id):
         raise TransferStale("source changed")
 
@@ -713,7 +757,7 @@ async def _transfer_locked(from_id, from_index, song_id, to_id, to_index, copy, 
     dst = await get_playlist(to_id)
     if not dst:
         raise TransferMissing(to_id)
-    _check_owner(dst, owner)
+    _check_owner(dst, owner, username)
     dst_ids = [t.get("id") for t in dst["tracks"]]
     already = song_id in dst_ids
     placed = True
@@ -833,7 +877,11 @@ async def gc_temp_playlists(username: str, prefix: str, keep: int = TEMP_PLAYLIS
     try:
         scope = f"{prefix}{username}_"
         playlists = await get_playlists()
-        mine = [p for p in playlists if (p.get("name") or "").startswith(scope)]
+        known = set(_known_usernames()) | {username}
+        # By the longest matching username, not by prefix: "__upnext_bob_x_<dev>"
+        # starts with bob's scope but is the queue of user "bob_x".
+        mine = [p for p in playlists if (p.get("name") or "").startswith(scope)
+                and temp_queue_user(p.get("name"), known) == username]
         # Newest first; missing/empty `changed` sorts as oldest.
         mine.sort(key=lambda p: p.get("changed") or "", reverse=True)
         stale = mine[keep:]
