@@ -1,0 +1,105 @@
+/* cue.css — headphone cue entry points (cuemini.js). */
+
+/* ── Queue row button ── */
+.cue-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 50%; flex-shrink: 0; transition: color .15s, background .15s, opacity .15s; }
+.cue-btn:hover, .cue-btn:focus-visible { color: var(--accent); background: rgba(255,255,255,.06); }
+.cue-btn.is-next { color: var(--text-muted); }
+.cue-btn.active { color: var(--bg, #000); background: var(--accent); }
+/* Hover-capable desktops: only the next-up row and an active row show it at rest. */
+@media (hover: hover) and (pointer: fine) {
+  .queue-item .cue-btn:not(.is-next):not(.active) { opacity: 0; }
+  .queue-item:hover .cue-btn, .queue-item .cue-btn:focus-visible { opacity: 1; }
+}
+/* Touch (tablet has no hover): non-next rows keep the button out of the way; it is
+   in the row's ⋯ menu ("Preview in headphones"). Phones lack the width for a sixth control. */
+@media (hover: none), (pointer: coarse) {
+  .queue-item .cue-btn:not(.is-next):not(.active) { display: none; }
+}
+
+/* ── Mini preview bar ── */
+#cueMini {
+  position: fixed; left: 8px; right: 72px; z-index: 98;
+  bottom: 8px; height: 52px; box-sizing: border-box;
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.4); color: var(--text);
+}
+#cueMini[hidden] { display: none; }
+body.player-active #cueMini { bottom: calc(68px + 8px + env(safe-area-inset-bottom, 0)); }
+@media (max-width: 640px) {
+  #cueMini { bottom: calc(var(--bottom-nav-height) + 8px); }
+  body.player-active #cueMini { bottom: calc(var(--bottom-nav-height) + 68px + 8px + env(safe-area-inset-bottom, 0)); }
+  #cueMini .cm-desk { display: none; }
+  #cueMini .cm-time { display: none; }
+}
+#cueMini .cm-img { width: 36px; height: 36px; border-radius: 6px; object-fit: cover; flex-shrink: 0; background: var(--bg-card); }
+#cueMini .cm-info { min-width: 0; flex: 0 1 160px; }
+#cueMini .cm-title, #cueMini .cm-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#cueMini .cm-title { font-size: 13px; font-weight: 500; }
+#cueMini .cm-artist { font-size: 11px; color: var(--text-muted); }
+#cueMini .cm-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text); border-radius: 8px; min-width: 32px; height: 32px; padding: 0 8px; cursor: pointer; font-size: 13px; flex-shrink: 0; }
+#cueMini .cm-btn:hover, #cueMini .cm-btn:focus-visible { border-color: var(--accent); color: var(--accent); }
+#cueMini .cm-time { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+#cueMini .cm-seek { flex: 1 1 60px; min-width: 40px; accent-color: var(--accent); }
+body.keyboard-open #cueMini { display: none; }
+
+/* ── cuesetup ── */
+/* Headphone cue settings dialog (static/js/cuesetup.js). z-index 900: above the queue panels (250)
+   and the DJ desk (260), which open it, and below the toast (999), which reports its errors. */
+.cuesetup-ov {
+  position: fixed; inset: 0; z-index: 900; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.6); backdrop-filter: blur(8px); padding: 16px;
+}
+.cuesetup {
+  background: var(--bg-card); color: var(--text); border-radius: 16px; padding: 18px 20px;
+  width: 100%; max-width: 440px; max-height: calc(100vh - 32px); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px; box-shadow: 0 16px 48px rgba(0,0,0,.5);
+}
+.cuesetup-head { display: flex; align-items: center; justify-content: space-between; }
+.cuesetup-title { font-size: 15px; font-weight: 600; }
+.cuesetup-x {
+  width: 40px; height: 40px; border: none; background: none; color: var(--text-muted);
+  font-size: 24px; border-radius: 10px; cursor: pointer;
+}
+.cuesetup-x:hover { background: rgba(255,255,255,.06); color: var(--text); }
+.cuesetup-body { display: flex; flex-direction: column; gap: 8px; }
+.cuesetup-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.cuesetup-modes { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cuesetup-modes legend { padding: 0; margin-bottom: 4px; }
+.cuesetup-mode {
+  display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; min-height: 44px;
+  border: 1px solid var(--border); border-radius: 10px; cursor: pointer;
+}
+.cuesetup-mode:has(input:checked) { border-color: var(--accent); background: var(--accent-dim); }
+.cuesetup-mode input { accent-color: var(--accent); margin-top: 2px; flex-shrink: 0; }
+.cuesetup-mode b { display: block; font-size: 13px; font-weight: 500; }
+.cuesetup-mode small { display: block; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+.cuesetup-dev { display: flex; flex-direction: column; gap: 6px; }
+.cuesetup-dev[hidden] { display: none; }
+.cuesetup-dev select {
+  width: 100%; min-height: 40px; padding: 8px 10px; background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px; font-size: 13px;
+}
+.cuesetup-link {
+  align-self: flex-start; border: none; background: none; color: var(--accent); padding: 6px 0;
+  font-size: 12px; cursor: pointer; min-height: 32px;
+}
+.cuesetup-link[hidden], .cuesetup-bt[hidden], .cuesetup-err[hidden] { display: none; }
+.cuesetup-bt { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-muted); }
+.cuesetup-err { margin: 0; font-size: 12px; line-height: 1.45; color: var(--red); }
+.cuesetup-note { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
+.cuesetup input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 28px; }
+.cuesetup-mixrow { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-muted); }
+.cuesetup-mixrow input { flex: 1; }
+.cuesetup-foot { display: flex; gap: 8px; margin-top: 6px; }
+.cuesetup-btn {
+  flex: 1; padding: 10px; min-height: 44px; border: 1px solid var(--border); background: none;
+  color: var(--text-muted); border-radius: 10px; cursor: pointer; font-size: 13px;
+}
+.cuesetup-btn[hidden] { display: none; }
+.cuesetup-primary { border: none; background: var(--accent); color: #000; font-weight: 600; }
+@media (max-width: 640px) {
+  .cuesetup-ov { align-items: flex-end; padding: 0; }
+  .cuesetup { max-width: none; border-radius: 16px 16px 0 0; max-height: 90vh; }
+}
+/* ── /cuesetup ── */

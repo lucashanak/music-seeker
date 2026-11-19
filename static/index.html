@@ -23,6 +23,8 @@
 <link rel="stylesheet" href="/static/css/contextmenu.css?v=__CACHE_BUST__">
 <link rel="stylesheet" href="/static/css/feedback.css?v=__CACHE_BUST__">
 <link rel="stylesheet" href="/static/css/toast.css?v=__CACHE_BUST__">
+<link rel="stylesheet" href="/static/css/djdesk.css?v=__CACHE_BUST__">
+<link rel="stylesheet" href="/static/css/cue.css?v=__CACHE_BUST__">
 <style>
   /* ── Visible kebab (⋯) button: opens the context menu (mobile-friendly) ── */
   .kebab-btn {
@@ -1379,6 +1381,7 @@
       <span class="fp-actions-group" id="fpActionsGroupDj">
         <button class="fp-mode-btn" id="fpDjMode" title="DJ Mode" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/></svg></button>
         <button class="fp-mode-btn" id="fpDjPanelBtn" title="DJ controls" aria-haspopup="dialog" aria-expanded="false" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
+        <button class="fp-mode-btn" id="fpDeskBtn" title="DJ desk" aria-label="Open the DJ desk" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="7.5" cy="12" r="3"/><circle cx="16.5" cy="12" r="3"/><line x1="12" y1="8" x2="12" y2="16"/></svg></button>
       </span>
       <span class="fp-actions-divider"></span>
       <span class="fp-actions-group">
@@ -1421,6 +1424,10 @@
         </select>
       </div>
       <div id="fpDjOnlyRows">
+      <div class="setting-group">
+        <button class="fp-dj-preload-btn" id="fpDjDeskOpen" type="button">Open DJ desk</button>
+        <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Two decks, headphone cue, crossfader and manual transitions.</p>
+      </div>
       <div class="setting-group">
         <label class="setting-label" for="fpDjSmartQueue">Smart Queue</label>
         <select class="setting-select" id="fpDjSmartQueue">
@@ -1512,6 +1519,128 @@
   <div class="queue-drag-handle"></div>
 </div>
 
+<!-- ── DJ desk (static/js/djdesk.js, static/css/djdesk.css) ── -->
+<div class="dj-desk" id="djDesk" role="dialog" aria-modal="true" aria-label="DJ desk" aria-hidden="true">
+  <header class="dd-head">
+    <button class="dd-icon" id="ddClose" type="button" title="Close the DJ desk (Esc)" aria-label="Close the DJ desk"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+    <span class="dd-title">DJ desk</span>
+    <div class="dd-mode" id="ddMode" role="radiogroup" aria-label="Who starts the next transition">
+      <button type="button" role="radio" data-v="auto" aria-checked="true" title="The player mixes into the next track by itself">Auto</button>
+      <button type="button" role="radio" data-v="manual" aria-checked="false" title="Only you start a transition; a track that ends on its own still goes on to the next one">Manual</button>
+    </div>
+    <span class="dd-status" id="ddStatus" aria-live="polite"></span>
+    <button class="dd-icon" id="ddHelpBtn" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="ddHelp"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="10" x2="6.01" y2="10"/><line x1="10" y1="10" x2="10.01" y2="10"/><line x1="14" y1="10" x2="14.01" y2="10"/><line x1="18" y1="10" x2="18.01" y2="10"/><line x1="7" y1="14" x2="17" y2="14"/></svg></button>
+    <button class="dd-icon" id="ddCueSetupBtn" type="button" title="Headphone (cue) output" aria-label="Headphone output settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 18v-6a9 9 0 0118 0v6"/><path d="M21 19a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h3zM3 19a2 2 0 002 2h1a2 2 0 002-2v-3a2 2 0 00-2-2H3z"/></svg></button>
+  </header>
+
+  <div class="dd-blocked" id="ddBlocked" hidden>
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="4.9" y1="4.9" x2="19.1" y2="19.1"/></svg>
+    <p class="dd-blocked-title" id="ddBlockedTitle">The DJ desk is not available</p>
+    <p class="dd-blocked-msg" id="ddBlockedMsg"></p>
+  </div>
+
+  <div class="dd-main" id="ddMain">
+    <div class="dd-board">
+      <section class="dd-deck" id="ddDeckA" data-deck="A" aria-label="Deck A"></section>
+
+      <div class="dd-mixer" aria-label="Mixer">
+        <div class="dd-transport">
+          <button class="dd-btn dd-primary" id="ddMixNow" type="button" title="Mix into the next track now (Enter)">Mix now</button>
+          <button class="dd-btn" id="ddMixPhrase" type="button" title="Mix when the live track reaches its next 8-bar phrase (N)">Mix on phrase</button>
+        </div>
+        <div class="dd-next" id="ddNext"></div>
+        <div class="dd-xfader">
+          <span class="dd-xf-label">A</span>
+          <input type="range" id="ddXfader" min="0" max="1000" step="1" value="0" aria-label="Crossfader, deck A to deck B">
+          <span class="dd-xf-label">B</span>
+        </div>
+        <div class="dd-xf-gains" id="ddXfGains" aria-hidden="true"><i data-k="A"></i><i data-k="B"></i></div>
+        <div class="dd-cue" id="ddCue">
+          <div class="dd-cue-row">
+            <label for="ddCueVol">Phones</label>
+            <input type="range" id="ddCueVol" min="0" max="100" step="1" value="80" aria-label="Headphone volume">
+          </div>
+          <div class="dd-cue-row">
+            <label for="ddCueMix">Cue/Mst</label>
+            <input type="range" id="ddCueMix" min="0" max="100" step="1" value="0" aria-label="Headphone mix: cue only to master only">
+          </div>
+          <div class="dd-meters" aria-hidden="true">
+            <span>M</span><div class="dd-meter"><i id="ddMeterMaster"></i></div>
+            <span>C</span><div class="dd-meter"><i id="ddMeterCue"></i></div>
+          </div>
+          <p class="dd-cue-note" id="ddCueNote"></p>
+        </div>
+      </div>
+
+      <section class="dd-deck" id="ddDeckB" data-deck="B" aria-label="Deck B"></section>
+    </div>
+
+    <div class="dd-lists">
+      <section class="dd-list">
+        <h3 class="dd-list-head">Queue <span class="dd-list-sub" id="ddQueueSub"></span></h3>
+        <div class="dd-rows" id="ddQueue" role="list"></div>
+      </section>
+      <section class="dd-list">
+        <h3 class="dd-list-head">Smart Queue suggestions <span class="dd-list-sub" id="ddSuggestSub"></span></h3>
+        <div class="dd-rows" id="ddSuggest" role="list"></div>
+      </section>
+    </div>
+  </div>
+
+  <div class="dd-help" id="ddHelp" role="dialog" aria-label="Keyboard shortcuts" hidden>
+    <div class="dd-help-head">Keyboard shortcuts <button class="dd-icon" id="ddHelpClose" type="button" aria-label="Close shortcuts">&times;</button></div>
+    <table>
+      <tr><th>Enter</th><td>Mix now</td></tr>
+      <tr><th>N or Shift+Enter</th><td>Mix on the next phrase (again: cancel)</td></tr>
+      <tr><th>M</th><td>Auto / Manual</td></tr>
+      <tr><th>C / V</th><td>Crossfader towards A / B</td></tr>
+      <tr><th>Q / P</th><td>Headphones (PFL) deck A / B</td></tr>
+      <tr><th>W / O</th><td>Jump to cue point A / B (Shift: set it)</td></tr>
+      <tr><th>E / I</th><td>Sync deck A / B to the other deck</td></tr>
+      <tr><th>A S / K L</th><td>Nudge deck A / B slower, faster (hold)</td></tr>
+      <tr><th>D F / H J</th><td>Pitch deck A / B −0.1 % / +0.1 %</td></tr>
+      <tr><th>Space</th><td>Play / pause the live deck</td></tr>
+      <tr><th>?</th><td>This list</td></tr>
+      <tr><th>Esc</th><td>Close the desk</td></tr>
+    </table>
+    <p>Letters are by key position, so they stay put on any keyboard layout.</p>
+  </div>
+</div>
+
+<template id="ddDeckTpl">
+  <div class="dd-deck-top">
+    <span class="dd-letter"></span>
+    <img class="dd-art" alt="">
+    <div class="dd-info"><div class="dd-name">No track</div><div class="dd-artist"></div></div>
+    <span class="dd-badge"></span>
+  </div>
+  <div class="dd-meta">
+    <span class="dd-bpm" title="Tempo at the current pitch"></span>
+    <span class="dd-key"></span>
+    <span class="dd-energy"></span>
+    <span class="dd-pitch-read" title="Pitch">0.0%</span>
+  </div>
+  <div class="dd-wave">
+    <canvas class="dd-zoom" aria-hidden="true"></canvas>
+    <canvas class="dd-over" title="Click to move the playhead" aria-label="Track overview; click to seek"></canvas>
+  </div>
+  <div class="dd-times"><span class="dd-elapsed">0:00.0</span><span class="dd-remain">-0:00</span></div>
+  <div class="dd-ctrls">
+    <button class="dd-btn dd-play" type="button" data-act="play" title="Play / pause" aria-label="Play or pause"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+    <button class="dd-btn" type="button" data-act="cue" title="Jump to the cue point">CUE</button>
+    <button class="dd-btn" type="button" data-act="setcue" title="Set the cue point here">SET</button>
+    <button class="dd-btn dd-pfl" type="button" data-act="pfl" aria-pressed="false" title="Listen in the headphones (PFL)">PFL</button>
+    <button class="dd-btn" type="button" data-act="sync" title="Match tempo and beat to the other deck">SYNC</button>
+    <button class="dd-btn dd-nudge" type="button" data-act="nudge-" title="Hold: slow down a little" aria-label="Nudge slower">&lsaquo;&lsaquo;</button>
+    <button class="dd-btn dd-nudge" type="button" data-act="nudge+" title="Hold: speed up a little" aria-label="Nudge faster">&rsaquo;&rsaquo;</button>
+  </div>
+  <div class="dd-pitch">
+    <span class="dd-pitch-label">Pitch</span>
+    <input type="range" class="dd-pitch-range" min="-8" max="8" step="0.05" value="0" aria-label="Pitch">
+    <button class="dd-btn dd-mini" type="button" data-act="pitch0" title="Back to the original tempo">0</button>
+    <button class="dd-btn dd-mini" type="button" data-act="range" title="Pitch range">&plusmn;8</button>
+  </div>
+</template>
 <!-- ── Big Player Queue Panel (slides from bottom) ── -->
 <div class="fp-queue-panel" id="fpQueuePanel">
   <div class="queue-drag-handle"></div>

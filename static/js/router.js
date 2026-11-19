@@ -7,6 +7,7 @@ import { closeFullPlayer } from './fullplayer.js';
 import { closeQueuePanel, closeFpQueuePanel } from './queue.js';
 import { doSearch } from './search.js';
 import { closeParty } from './party.js';
+import { closeDesk } from './djdesk.js';
 
 // ── Page Loader Registry ──
 const pageLoaders = {};
@@ -159,6 +160,8 @@ function handlePopstate(e) {
   // settles the Promise its caller is awaiting.
   const dialogs = store.dialogStack;
   if (dialogs && dialogs.length) { dialogs[dialogs.length - 1].cancel(true); return; }
+  // The DJ desk covers the full player and both queue panels (z-index 260).
+  if (store.deskOpen) { closeDesk(true); return; }
   // Close overlays next
   if (store.fpQueuePanelOpen) { closeFpQueuePanel(true); return; }
   if (store.queuePanelOpen) { closeQueuePanel(true); return; }
@@ -222,6 +225,8 @@ function handleKeydown(e) {
     // this the clip editor opened from the queue / full player closed that layer too, and
     // Escape in its time field — which only leaves the field — closed the panel underneath.
     if (store.dialogStack && store.dialogStack.length) return;
+    // The desk sits over the full player; its help popover handles its own Escape first.
+    if (store.deskOpen) { closeDesk(); return; }
     if (store.queuePanelOpen) { closeQueuePanel(); return; }
     if (store.fullPlayerOpen) {
       // Synchronous flag check — decided before any microtask can flip it.

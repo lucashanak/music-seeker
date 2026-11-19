@@ -15,6 +15,7 @@ import { openModal } from './downloads.js';
 import { store } from './store.js';
 import { getPlayerModule } from './player_active.js';
 import { isLiked, toggleLike } from './likes.js';
+import { cueAvailable, previewFromUi } from './cuemini.js';
 
 const LONG_PRESS_MS = 480;
 const MOVE_THRESHOLD = 10; // px
@@ -373,6 +374,14 @@ export function buildActionsFor(item, type, context = {}) {
     actions.push({
       label: 'Add to other playlist…', icon: '&#9776;',
       onClick: () => _addToNavidromePlaylist(it),
+    });
+  }
+
+  // ── Preview in headphones (any track; hidden when the cue is unsupported / cast / remote) ──
+  if (isTracklike && it.type !== 'episode' && type !== 'episode' && it.name && cueAvailable()) {
+    actions.push({
+      label: 'Preview in headphones', icon: '&#127911;',
+      onClick: () => previewFromUi(it, type === 'queue-track' ? context.queueIndex : undefined),
     });
   }
 

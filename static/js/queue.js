@@ -6,6 +6,7 @@ import { getCachedBpm, isBpmUnavailable, energyBadgeFor, displayBpm } from './bp
 import { attachContextMenu, wasLongPress, makeKebabButton } from './contextmenu.js';
 import { makeHeartButton } from './likes.js';
 import { getPlayerModule } from './player_active.js';
+import { decorateQueueRows } from './cuemini.js';
 
 // Forward references set during init to avoid circular imports
 let loadAndPlay, hidePlayerBar, saveQueueDebounced;
@@ -66,6 +67,24 @@ function _syncShuffleOrder() {
   const fresh = [];
   for (const it of q) if (!seen.has(it)) { seen.add(it); fresh.push(it); }
   if (fresh.length) _shufTail = _shufTail.concat(_shuffleInPlace(fresh));
+}
+
+/** A jump that did not go through shuffleNext() (the DJ desk binding or mixing in a
+ *  track by hand): the track left behind joins the played stack and the one jumped to
+ *  leaves the tail — otherwise the left track is dealt in again as unplayed and comes
+ *  round a second time, and Previous skips it. Call BEFORE store.playerIndex changes. */
+export function noteShuffleJump(fromItem, toItem) {
+  if (!store.shuffleEnabled) return;
+  _syncShuffleOrder();
+  if (fromItem && _shufPlayed[_shufPlayed.length - 1] !== fromItem) _shufPlayed.push(fromItem);
+  const i = _shufTail.indexOf(toItem);
+  if (i >= 0) _shufTail.splice(i, 1);
+}
+/** Undo of noteShuffleJump: a hand mix taken back. */
+export function undoShuffleJump(backItem, leftItem) {
+  if (!store.shuffleEnabled) return;
+  if (_shufPlayed[_shufPlayed.length - 1] === backItem) _shufPlayed.pop();
+  if (leftItem && !_shufTail.includes(leftItem)) _shufTail.unshift(leftItem);
 }
 
 function _idx(item) {
@@ -300,7 +319,7 @@ export function renderQueueInto(el) {
   $$('.queue-item', el).forEach(qi => {
     qi.addEventListener('click', (e) => {
       if (wasLongPress()) return;
-      if (e.target.closest('.qi-remove') || e.target.closest('.qi-drag')) return;
+      if (e.target.closest('.qi-remove') || e.target.closest('.qi-drag') || e.target.closest('.cue-btn')) return;
       const idx = parseInt(qi.dataset.qi);
       if (idx !== store.playerIndex) { store.playerIndex = idx; loadAndPlay(); }
     });
@@ -330,6 +349,8 @@ export function renderQueueInto(el) {
       qi.insertBefore(makeHeartButton(() => store.playerQueue[idx]), kebab);
     }
   });
+  // Headphone buttons are an extra: a failure there must never cost the rows their handlers below.
+  try { decorateQueueRows(el); } catch { /* cue unavailable */ }
   $$('.qi-remove', el).forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();

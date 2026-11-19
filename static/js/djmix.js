@@ -1194,7 +1194,8 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   if (introSkip === 'auto' && Number.isFinite(inData?.intro_end)) {
     skipTo = Math.max(0, Math.min(inData.intro_end, AUTO_INTRO_MAX));
   } else if (introSkip !== '0' && introSkip !== 'auto') {
-    skipTo = parseInt(introSkip) || 0;
+    // Float: a DJ-desk cue point is a fraction of a second; a typed setting is whole.
+    skipTo = Math.max(0, parseFloat(introSkip) || 0);
   }
   let inStartTime = skipTo;
   if (Number.isFinite(outBpm) && outBpm > 0 && inData?.beat_grid && inData.beat_grid.length > 0) {

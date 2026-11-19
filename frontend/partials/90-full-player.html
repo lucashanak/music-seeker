@@ -34,6 +34,7 @@
       <span class="fp-actions-group" id="fpActionsGroupDj">
         <button class="fp-mode-btn" id="fpDjMode" title="DJ Mode" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/></svg></button>
         <button class="fp-mode-btn" id="fpDjPanelBtn" title="DJ controls" aria-haspopup="dialog" aria-expanded="false" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
+        <button class="fp-mode-btn" id="fpDeskBtn" title="DJ desk" aria-label="Open the DJ desk" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="7.5" cy="12" r="3"/><circle cx="16.5" cy="12" r="3"/><line x1="12" y1="8" x2="12" y2="16"/></svg></button>
       </span>
       <span class="fp-actions-divider"></span>
       <span class="fp-actions-group">
@@ -76,6 +77,10 @@
         </select>
       </div>
       <div id="fpDjOnlyRows">
+      <div class="setting-group">
+        <button class="fp-dj-preload-btn" id="fpDjDeskOpen" type="button">Open DJ desk</button>
+        <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">Two decks, headphone cue, crossfader and manual transitions.</p>
+      </div>
       <div class="setting-group">
         <label class="setting-label" for="fpDjSmartQueue">Smart Queue</label>
         <select class="setting-select" id="fpDjSmartQueue">

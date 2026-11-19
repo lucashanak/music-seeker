@@ -1,0 +1,237 @@
+/* ── DJ desk (djdesk.js, partial 91-dj-desk.html) ──
+   A fixed overlay over the full player (201) and both queue panels (250), under the
+   dialogs (999+, cue setup 1050) and the context menu (10000). Every control is
+   visible without hover: the tablet in landscape has no hover at all. */
+
+.dj-desk {
+  position: fixed; inset: 0; z-index: 260;
+  display: none; flex-direction: column;
+  background-color: var(--bg);
+  background-image: linear-gradient(180deg, rgb(28,28,40) 0%, rgb(10,10,16) 100%);
+  color: var(--text);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.dj-desk.open { display: flex; }
+
+/* ── header ── */
+.dd-head {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px; border-bottom: 1px solid var(--border); min-width: 0;
+}
+.dd-title { font-weight: 700; font-size: 15px; white-space: nowrap; }
+.dd-status { flex: 1; min-width: 0; font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dd-icon {
+  flex: none; background: none; border: none; color: var(--text-muted); cursor: pointer;
+  width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+  font: inherit; font-size: 20px; transition: background var(--transition), color var(--transition);
+}
+.dd-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (hover: hover) { .dd-icon:hover { color: var(--text); background: rgba(255,255,255,.06); } }
+
+.dd-mode { display: inline-flex; flex: none; border: 1px solid var(--border); border-radius: 999px; padding: 2px; }
+.dd-mode button {
+  background: none; border: none; color: var(--text-muted); cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 700; padding: 6px 14px; min-height: 32px; border-radius: 999px;
+}
+.dd-mode button[aria-checked="true"] { background: var(--accent); color: #0a0a0f; }
+.dd-mode button[data-v="manual"][aria-checked="true"] { background: #ffd24d; }
+.dd-mode button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ── blocked state ── */
+.dd-blocked {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 24px; text-align: center; color: var(--text-muted);
+}
+.dd-blocked[hidden], .dd-main[hidden] { display: none; }
+.dd-blocked-title { font-size: 18px; font-weight: 700; color: var(--text); }
+.dd-blocked-msg { max-width: 440px; font-size: 14px; line-height: 1.45; }
+
+/* ── main ── */
+.dd-main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 12px 16px; overflow: hidden; }
+.dd-board {
+  flex: none; display: grid; gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 220px minmax(0, 1fr);
+}
+
+/* ── deck ── */
+.dd-deck {
+  min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.dd-deck.is-live { border-color: var(--accent); box-shadow: 0 0 24px rgba(162,230,64,.08); }
+.dd-deck-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dd-letter {
+  flex: none; width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center;
+  background: var(--bg-elevated); color: var(--text-muted); font-weight: 800; font-size: 13px;
+}
+.dd-art { flex: none; width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: var(--bg-elevated); }
+.dd-info { flex: 1; min-width: 0; }
+.dd-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dd-artist { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 15px; }
+.dd-deck.is-empty .dd-name { color: var(--text-dim); font-weight: 500; }
+.dd-deck.is-empty .dd-art { visibility: hidden; }
+.dd-badge { flex: none; font-size: 10px; font-weight: 800; letter-spacing: 1px; padding: 3px 7px; border-radius: 4px; }
+.dd-badge-live { background: var(--accent); color: #0a0a0f; }
+.dd-badge-cue { background: #ff9f43; color: #111; }
+.dd-badge-out { background: var(--border-hover); color: var(--text); }
+.dd-badge-free, .dd-badge-next { border: 1px solid var(--border); color: var(--text-dim); }
+
+.dd-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; min-height: 20px; font-size: 12px; color: var(--text-muted); }
+.dd-bpm { font-variant-numeric: tabular-nums; }
+.dd-bpm b { color: var(--text); font-size: 15px; }
+.dd-bpm small { color: var(--text-dim); margin-left: 4px; font-size: 11px; }
+.dd-key { font-weight: 700; color: var(--text); }
+.dd-key.rel-same, .dd-key.rel-relative, .dd-key.rel-adjacent { color: var(--accent); }
+.dd-key.rel-energy { color: #d0b23c; }
+.dd-key.rel-clash { color: var(--red); }
+.dd-energy { display: inline-flex; align-items: center; }
+.dd-pitch-read { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); }
+.dd-dim { color: var(--text-dim); }
+
+/* The zoomed lane takes whatever height the row has left (the mixer may be taller than
+   the deck). Basis 0 + an explicit min-height: the canvas's own pixel height (×dpr)
+   must never feed back into its CSS size. */
+.dd-wave { flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+.dd-zoom { display: block; width: 100%; flex: 1 1 0; height: 0; min-height: 72px; border-radius: 6px; }
+.dd-over { display: block; width: 100%; height: 22px; border-radius: 4px; cursor: pointer; }
+.dd-times { display: flex; justify-content: space-between; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+
+.dd-ctrls { display: flex; flex-wrap: wrap; gap: 6px; }
+.dd-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  min-height: 36px; padding: 7px 10px; border-radius: var(--radius-xs);
+  background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text);
+  font: inherit; font-size: 12px; font-weight: 700; letter-spacing: .4px; cursor: pointer;
+  touch-action: manipulation; user-select: none; -webkit-user-select: none;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+.dd-btn:disabled { opacity: .4; cursor: default; }
+.dd-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (hover: hover) { .dd-btn:hover:not(:disabled) { border-color: var(--border-hover); } }
+.dd-btn:active:not(:disabled) { background: var(--border); }
+.dd-primary { background: var(--accent); border-color: var(--accent); color: #0a0a0f; }
+.dd-primary:active:not(:disabled) { background: #8fcc35; }
+.dd-pfl.on { background: #ff9f43; border-color: #ff9f43; color: #111; }
+.dd-nudge { touch-action: none; -webkit-touch-callout: none; min-width: 40px; }
+.dd-mini { min-height: 30px; padding: 4px 8px; font-size: 11px; }
+.dd-ic { padding: 4px 7px; }
+#ddMixPhrase.armed { background: #ffd24d; border-color: #ffd24d; color: #111; }
+
+.dd-pitch { display: flex; align-items: center; gap: 8px; }
+.dd-pitch-label { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-dim); }
+.dd-pitch-range { flex: 1; min-width: 0; height: 28px; accent-color: var(--accent); }
+
+/* ── mixer ── */
+.dd-mixer {
+  min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.dd-transport { display: flex; flex-direction: column; gap: 8px; }
+.dd-transport .dd-btn { min-height: 44px; font-size: 13px; }
+.dd-next {
+  font-size: 12px; line-height: 1.35; color: var(--text-muted); min-height: 32px;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.dd-xfader { display: flex; align-items: center; gap: 8px; }
+.dd-xfader input { flex: 1; min-width: 0; height: 32px; accent-color: var(--accent); }
+.dd-xf-label { font-weight: 800; font-size: 12px; color: var(--text-muted); }
+.dd-xf-gains { display: flex; justify-content: space-between; height: 4px; margin: -4px 22px 0; }
+.dd-xf-gains i { display: block; height: 4px; width: 0; background: var(--accent); border-radius: 2px; transition: width .06s linear; }
+.dd-cue { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.dd-cue-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-muted); }
+.dd-cue-row label { flex: none; width: 52px; }
+.dd-cue-row input { flex: 1; min-width: 0; height: 26px; accent-color: #ff9f43; }
+.dd-meters { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 6px; font-size: 10px; color: var(--text-dim); }
+.dd-meter { height: 5px; border-radius: 3px; overflow: hidden; background: var(--bg-elevated); }
+.dd-meter i { display: block; height: 100%; width: 0; background: var(--accent); }
+.dd-meter #ddMeterCue { background: #ff9f43; }
+.dd-cue-note { font-size: 11px; line-height: 1.35; color: var(--text-dim); }
+.dd-cue.dd-cue-na .dd-cue-row, .dd-cue.dd-cue-na .dd-meters { display: none; }
+
+/* ── lists ── */
+.dd-lists { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.dd-list {
+  min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.dd-list-head {
+  flex: none; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border);
+  font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-muted);
+}
+.dd-list-sub { margin-left: 6px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-dim); }
+.dd-rows { flex: 1; min-height: 0; overflow-y: auto; padding: 4px; }
+.dd-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; }
+.dd-row.is-now { background: var(--accent-dim); }
+.dd-row.is-next { box-shadow: inset 3px 0 0 var(--accent); }
+.dd-row.is-loaded { box-shadow: inset 3px 0 0 #ff9f43; }
+.dd-row-pos { flex: none; width: 22px; text-align: right; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.dd-row-main { flex: 1; min-width: 0; }
+.dd-row-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dd-row-sub { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dd-row-meta { flex: none; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
+.dd-row-bpm { width: 26px; text-align: right; font-variant-numeric: tabular-nums; }
+.dd-row-key { width: 28px; font-weight: 600; }
+.dd-row-acts { flex: none; display: flex; gap: 4px; }
+.dd-chip {
+  display: inline-block; margin-left: 4px; padding: 1px 5px; border-radius: 4px; vertical-align: 1px;
+  font-size: 9.5px; font-weight: 700; background: var(--bg-elevated); color: var(--text-muted);
+}
+.dd-chip-live { background: var(--accent); color: #0a0a0f; }
+.dd-chip-next { border: 1px solid var(--accent); color: var(--accent); background: none; }
+.dd-chip-cue { background: #ff9f43; color: #111; }
+.dd-chip-smart { background: var(--blue); color: #fff; }
+.dd-chip.rel-same, .dd-chip.rel-relative, .dd-chip.rel-adjacent { color: var(--accent); }
+.dd-chip.rel-energy { color: #d0b23c; }
+.dd-chip.rel-clash { color: var(--red); }
+.dd-empty { padding: 16px; font-size: 13px; color: var(--text-dim); }
+
+/* ── shortcuts popover ── */
+.dd-help {
+  position: absolute; z-index: 2; right: 16px; top: calc(56px + env(safe-area-inset-top, 0px));
+  width: min(400px, calc(100vw - 32px)); padding: 12px 14px; font-size: 12px;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-card);
+}
+.dd-help[hidden] { display: none; }
+.dd-help-head { display: flex; align-items: center; justify-content: space-between; font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+.dd-help table { width: 100%; border-collapse: collapse; }
+.dd-help th { text-align: left; white-space: nowrap; padding: 3px 12px 3px 0; font-weight: 700; color: var(--text); }
+.dd-help td { padding: 3px 0; color: var(--text-muted); }
+.dd-help p { margin-top: 8px; color: var(--text-dim); }
+
+/* Touch screens get no keyboard help. */
+@media (hover: none) and (pointer: coarse) { #ddHelpBtn { display: none; } }
+
+/* ── tablet landscape and small laptops ── */
+@media (max-width: 1100px) {
+  .dd-board { grid-template-columns: minmax(0, 1fr) 190px minmax(0, 1fr); }
+  .dd-zoom { min-height: 60px; }
+  .dd-btn { padding: 7px 8px; }
+  .dd-row-meta .energy-badge { display: none; }
+}
+
+/* ── phone: one column, the page scrolls ── */
+@media (max-width: 640px) {
+  .dd-head { padding: 6px 10px; gap: 6px; }
+  .dd-title { display: none; }
+  .dd-main { overflow-y: auto; padding: 10px 12px 24px; gap: 10px; -webkit-overflow-scrolling: touch; }
+  .dd-board { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .dd-deck { padding: 10px; gap: 6px; }
+  .dd-art { width: 36px; height: 36px; }
+  .dd-zoom { min-height: 46px; }
+  .dd-over { height: 16px; }
+  .dd-nudge { display: none; }
+  .dd-ctrls { gap: 5px; }
+  .dd-ctrls .dd-btn { flex: 1 1 0; min-width: 0; padding: 6px 4px; min-height: 38px; }
+  .dd-mixer { padding: 10px; gap: 8px; }
+  .dd-transport { flex-direction: row; }
+  .dd-transport .dd-btn { flex: 1; }
+  .dd-next { min-height: 0; }
+  .dd-lists { grid-template-columns: minmax(0, 1fr); flex: none; }
+  .dd-list { overflow: visible; }
+  .dd-rows { overflow: visible; flex: none; }
+  .dd-row { gap: 8px; padding: 6px 4px; }
+  .dd-row-meta .dd-row-key, .dd-row-meta .energy-badge { display: none; }
+  .dd-row-pos { width: 16px; }
+}

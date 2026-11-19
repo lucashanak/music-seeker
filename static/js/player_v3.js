@@ -5,7 +5,7 @@ import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
 import { apiJson, refreshStreamToken, streamToken, freshStreamToken } from './api.js';
 import { openModal } from './downloads.js';
-import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, playOrder, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
+import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, playOrder, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex, moveInPlayOrder, noteShuffleJump, undoShuffleJump } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, abortStale, keyFor as prefetchKey, resumePrefetch, streamQuality, setUpcomingProvider } from './prefetch.js';
 import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration, resolveTransitionStyle, dropCutLead, clearPendingSeek, fadeBeatsFor } from './djmix.js';
@@ -100,6 +100,8 @@ function _smartOn() { return _djSetting('smart_queue', 'off') !== 'off' && !stor
 function _upcomingIdx() {
   const q = store.playerQueue, i = store.playerIndex;
   if (!q.length || i < 0) return null;
+  // The DJ desk picked the next track by hand — the commit honours it first.
+  { const f = _deskForcedIdx(); if (f != null) return f; }
   if (store.shuffleEnabled && q.length > 1) {
     // Exhausted + repeat-all deals a fresh permutation at commit — not predictable.
     return peekShuffleNext();
@@ -123,11 +125,16 @@ function _itemKey(it) { return prefetchKey(_decodeEntities(it.name || ''), _deco
 /** Cache keys cleanup() must spare regardless of queue position. */
 function _upcomingKeep() {
   const up = _upcomingItem();
-  return up ? [_itemKey(up)] : [];
+  const keep = up ? [_itemKey(up)] : [];
+  // A track playing in the DJ desk's headphones may sit anywhere (or nowhere) in the
+  // queue; evicting its blob would pull the audio out from under the cue deck.
+  if (_deskLoan && _deskLoan.item) keep.push(_itemKey(_deskLoan.item));
+  return keep;
 }
 /** Can an auto/ended advance produce a track from the queue itself? */
 function _canAdvance() {
   if (store.repeatMode === 'all') return true;
+  if (_deskForcedIdx() != null) return true;
   if (store.shuffleEnabled && store.playerQueue.length > 1) return peekShuffleNext() != null;
   if (_djSetting('smart_queue', 'off') !== 'off') return true; // may pick an unplayed earlier track
   return store.playerIndex < store.playerQueue.length - 1;
@@ -303,6 +310,8 @@ function _absUrl(src) {
 let _restorePos = 0;     // position_seconds of the queue state loaded last
 let _restoreSeek = null; // loadQueueState's pending "seek to the saved position"
 function _setDeckSrc(deck, src) {
+  // Safety net: the engine is loading this deck — if the desk holds it, it comes back first.
+  if (_deskLoan && _deskLoan.el === deck) _deskRevoke('advance', { handover: true });
   if (_restoreSeek) { _deckA.removeEventListener('loadedmetadata', _restoreSeek); _deckB.removeEventListener('loadedmetadata', _restoreSeek); _restoreSeek = null; }
   const abs = _absUrl(src);
   if (deck === _deckA) _expectedSrcA = abs;
@@ -344,6 +353,9 @@ function _deckDesc(deckEl) {
 // Returns the active deck so the caller can pause it. Safe to call when not crossfading.
 function _finalizeCrossfadeOnPause() {
   if (!_crossfading) return _activeDeckEl();
+  // A manual crossfader mix is settled by where the fader stands: past half the new
+  // track stays, before it the old one is live again (and the new goes back to the desk).
+  if (_deskMix) { _deskSettleMix(); if (!_crossfading) return _activeDeckEl(); }
   _teardownCrossfade();
   // The active deck was already swapped to the incoming track in _startCrossfade.
   if (_fadingOutDeck) {
@@ -449,6 +461,8 @@ function _rearmDeck(deck) {
   });
 }
 function _stallWatchdog() {
+  // The desk is a local feature: casting or controlling another device takes its deck back.
+  if (_deskLoan && (store.castDevice || store.remoteTarget)) _deskRevoke(store.castDevice ? 'cast' : 'remote');
   if (store.castDevice || store.remoteTarget) { _lastProgressAt = 0; _refusedTicks = 0; return; }
   const deck = _activeDeckEl();
   if (!deck || !deck.src) { _lastProgressAt = 0; _refusedTicks = 0; return; }
@@ -530,6 +544,9 @@ function _stallWatchdog() {
 
 function _startCrossfade(seekable = true) {
   if (!_ctx) return;
+  // The incoming deck is the engine's from here on, never the desk's. A hand-over only:
+  // on the live-stream path the engine has already loaded that deck itself.
+  if (_deskLoan) _deskRevoke('advance', { handover: true });
 
   // Bug #4: a still-running rate-return from the PREVIOUS fade would otherwise keep
   // writing to the now-outgoing (audible) deck for up to 500ms into this new fade,
@@ -580,7 +597,12 @@ function _startCrossfade(seekable = true) {
   const tr = _djSetting('tempo_range', '8');
   const tempoRange = tr === '0' ? 0 : (parseInt(tr) || 8);
   const transStyle = _djSetting('transition_style', 'auto');
-  const introSkip = _djSetting('intro_skip', 'auto');
+  // A transition started from the DJ desk may name where the incoming track starts
+  // (its cue point). One-shot, and only for the load the desk itself started.
+  const _inItem = store.playerQueue[store.playerIndex];
+  const _deskAt = (_deskStartAt && _inItem && _smartKey(_inItem) === _deskStartAt.key) ? _deskStartAt.t : null;
+  _deskStartAt = null;
+  const introSkip = _deskAt != null ? String(_deskAt) : _djSetting('intro_skip', 'auto');
 
   // Use seekable flag passed from loadAndPlay (cached blob = seekable)
   const inSeekable = seekable;
@@ -756,6 +778,7 @@ function _startCrossfade(seekable = true) {
     }
   }, timerDur);
 
+  _deskEmit('swap', { active: _activeDeck });
   return result;
 }
 
@@ -905,8 +928,11 @@ export function getAudio() { return _activeDeckEl(); }
  *  other at the old level, and the next transition fades into that level. */
 export function setVolume(v) {
   const vol = Math.max(0, Math.min(1, Number(v) || 0));
-  _deckA.volume = vol;
-  _deckB.volume = vol;
+  // A deck lent to the desk plays only into the headphones, at its own level (the cue
+  // bus sets it); the master fader must not reach it. It gets the master level back
+  // the moment the engine takes it back or it goes live.
+  if (!_deskLoan || _deskLoan.el !== _deckA) _deckA.volume = vol;
+  if (!_deskLoan || _deskLoan.el !== _deckB) _deckB.volume = vol;
 }
 
 
@@ -1045,8 +1071,7 @@ export function applyRemoteCommand(action, value) {
       const el = document.getElementById('playerVolume'); if (el) el.value = Math.round(v * 100);
       const fp = document.getElementById('fpVolume'); if (fp) fp.value = Math.round(v * 100);
       // DJ engine sets volume on BOTH decks (matches the #playerVolume handler).
-      _deckA.volume = v;
-      _deckB.volume = v;
+      setVolume(v);
       break;
     }
     case 'enqueue': addToQueue(Array.isArray(value) ? value : [value], false); break;
@@ -1240,9 +1265,11 @@ export async function loadAndPlay() {
   // is void; left armed it would hold the advance latch over the new track and then
   // skip it. The latch itself is not touched: the caller may hold it, finally frees it.
   if (_errRetryTimer) { clearTimeout(_errRetryTimer); _errRetryTimer = null; }
+  _loadsPending++; // the decks are spoken for until this load has swapped (see deskLend)
   try {
     return await _loadAndPlayImpl(keepRec);
   } finally {
+    _loadsPending--;
     // An error backoff that started inside the impl owns the latch until its timer
     // fires — releasing it here would let the auto-trigger race the backoff.
     if (!_errRetryTimer) _advanceInFlight = false;
@@ -1315,12 +1342,18 @@ function _noNextTrack() {
 // tear down ITS crossfade and swap back to a deck it had emptied: silence under a
 // "playing" icon, on a paused deck the watchdog did not look at.
 let _loadGen = 0;
+// Loads still resolving. A queue row or a new playlist starts one WITHOUT the advance
+// latch, and it waits (cache, canplay) with the inactive deck already loaded — the
+// desk must not borrow that deck meanwhile.
+let _loadsPending = 0;
 
 async function _loadAndPlayImpl(keepRec) {
   if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) {
     return;
   }
   const myLoad = ++_loadGen;
+  { const it = store.playerQueue[store.playerIndex]; if (_deskStartAt && !(it && _smartKey(it) === _deskStartAt.key)) _deskStartAt = null; } // not the desk's track
+  _deskOnLoad(); // the decks are the engine's again: a lent deck comes back, a manual mix ends
   _rearmedSrc = ''; // a new load: its stream may be re-armed once again
   // Any pre-analysis still running was started for the previous track; after this
   // point its writes to _inDjData / the prediction would describe the wrong one.
@@ -1348,6 +1381,7 @@ async function _loadAndPlayImpl(keepRec) {
   if (!keepRec) import('./recommendations.js').then(m => m.stopRecPlayback());
   _currentRecItem = null; // clear stale rec so "Add to playlist" targets the queue track
   const item = store.playerQueue[store.playerIndex];
+  _deskTrackItem(item);
   setArt($('#playerImg'), item.image);
   $('#playerTitle').textContent = item.name || '';
   $('#playerArtist').textContent = item.artist || '';
@@ -1767,6 +1801,20 @@ export function nextTrack(opts = {}) {
 }
 
 function _nextTrackInQueue() {
+  // A next track picked by hand on the DJ desk outranks shuffle and Smart Queue alike.
+  // Consumed here, whether or not it is still valid.
+  {
+    const forced = _deskForcedIdx();
+    _deskNext = null;
+    if (forced != null) {
+      if (_djSetting('smart_queue', 'off') !== 'off') markPlayed(store.playerQueue[store.playerIndex]);
+      _predictedNextIdx = null; _predictedNextKey = null;
+      noteShuffleJump(store.playerQueue[store.playerIndex], store.playerQueue[forced]);
+      store.playerIndex = forced;
+      loadAndPlay();
+      return;
+    }
+  }
   // Shuffle still takes precedence over Smart Queue — the user asked for random order
   // explicitly, and the two cannot both pick the next track.
   if (store.shuffleEnabled && store.playerQueue.length > 1) {
@@ -1999,6 +2047,7 @@ export async function playRecTrack(item) {
   }
   _currentRecItem = item;
   _loadGen++; // a queue load still waiting on cache/canplay must not fade this track out
+  _deskOnLoad();
   _rearmedSrc = '';
   _cancelErrorBackoff(); // this track supersedes whatever the backoff was waiting to skip
   _crossfadeTriggered = false; // fresh track — re-arm the auto-crossfade trigger
@@ -2232,8 +2281,7 @@ export async function loadQueueState() {
       // After the queue, never before: the saved order is positions into it.
       restoreShuffleOrder(data.shuffle_order);
       store.playerVolume = data.volume ?? 1.0;
-      _deckA.volume = store.playerVolume;
-      _deckB.volume = store.playerVolume;
+      setVolume(store.playerVolume);
       $('#playerVolume').value = Math.round(store.playerVolume * 100);
       const item = store.playerQueue[store.playerIndex];
       if (item) {
@@ -2413,6 +2461,13 @@ export function init() {
   // Both decks need ended/error handlers
   [_deckA, _deckB].forEach(deck => {
     deck.addEventListener('ended', () => {
+      // The new track of a manual crossfader mix played to its end with the fader still
+      // in the middle: the mix is over, and this end is an ordinary one.
+      // The OUTGOING deck of a hand mix played out: nothing is left to go back to.
+      if (_deskMix && deck === _deskMix.outEl) { _deskEndMixImpl(true, { fromLoad: true }); return; }
+      // The new track ended with the fader still mid-way: commit the mix, then this end is
+      // an ordinary one — handled below, once (deskEndMix must not advance as well).
+      if (_deskMix && deck === _activeDeckEl()) _deskEndMixImpl(true, { fromLoad: true });
       // Existing double-advance guard: an in-progress crossfade (_crossfading) or an
       // already-fired auto trigger (_crossfadeTriggered) is ALREADY handling the advance —
       // don't fire a second one. _advanceInFlight is covered by nextTrack's own latch.
@@ -2434,6 +2489,12 @@ export function init() {
     });
     deck.addEventListener('error', () => {
       if (!_isExpectedSrc(deck)) return; // ignore deferred errors from previous sources
+      // A hand mix decides by which deck failed: the new one failing keeps the old track
+      // live (it is still what the audience hears), the old one failing commits the new.
+      if (_deskMix && _deskMixValid()) {
+        if (deck === _deskMix.inEl) { _deskEndMixImpl(false, { fromLoad: true }); _deskRevoke('error'); return; }
+        if (deck === _deskMix.outEl) { _deskEndMixImpl(true, { fromLoad: true }); return; }
+      }
       if (deck !== _activeDeckEl() && !_crossfading) return;
       if (_advanceInFlight) return; // an advance is already resolving — don't double-fire
       // #14: a benign error on the FADING-OUT (outgoing) deck must NOT abort the
@@ -2609,6 +2670,7 @@ export function init() {
           }
         }
         if (remaining <= triggerAt && remaining > -5 && !_crossfadeTriggered && !_noNextLatch
+            && !_deskManual // DJ desk in manual mode: the DJ mixes; a track left alone ends and continues via `ended`
             && !_advanceInFlight && store.repeatMode !== 'one' && !store.castDevice
             && deck.currentTime > 10) { // don't trigger in first 10s
           // Radio refills at the end of the queue; without it here the last track of
@@ -2666,8 +2728,7 @@ export function init() {
     if (store.castDevice) {
       apiJson('/api/dlna/volume', { method: 'POST', body: { volume: parseInt(e.target.value) } }).catch(() => {});
     } else {
-      _deckA.volume = store.playerVolume;
-      _deckB.volume = store.playerVolume;
+      setVolume(store.playerVolume);
     }
   });
   async function _seekFromEvent(bar, e) {
@@ -2836,7 +2897,7 @@ export function init() {
         $('#playerVolume').value = Math.round(store.playerVolume * 100);
         if ($('#fpVolume')) $('#fpVolume').value = Math.round(store.playerVolume * 100);
         if (store.castDevice) apiJson('/api/dlna/volume', { method: 'POST', body: { volume: Math.round(store.playerVolume * 100) } }).catch(() => {});
-        else { _deckA.volume = store.playerVolume; _deckB.volume = store.playerVolume; }
+        else setVolume(store.playerVolume);
         break;
       case 'ArrowDown':
         e.preventDefault();
@@ -2844,7 +2905,7 @@ export function init() {
         $('#playerVolume').value = Math.round(store.playerVolume * 100);
         if ($('#fpVolume')) $('#fpVolume').value = Math.round(store.playerVolume * 100);
         if (store.castDevice) apiJson('/api/dlna/volume', { method: 'POST', body: { volume: Math.round(store.playerVolume * 100) } }).catch(() => {});
-        else { _deckA.volume = store.playerVolume; _deckB.volume = store.playerVolume; }
+        else setVolume(store.playerVolume);
         break;
     }
   });
@@ -2895,4 +2956,446 @@ export function init() {
     playerBar.addEventListener('touchend', () => { tracking = false; }, { passive: true });
     playerBar.addEventListener('touchcancel', () => { tracking = false; }, { passive: true });
   }
+}
+
+
+// ══ DJ desk hooks (dj-pult, 2026-11-19) ══
+// The DJ desk (djdesk.js) and the headphone cue (cuebus.js) reach the engine ONLY through
+// the desk* exports below; nothing else in the engine knows the desk exists. The model:
+//  - The desk BORROWS the inactive deck (deskLend). A lent deck keeps its crossfade gain
+//    at 0, so it is silent in the master; the cue bus taps it before that gain. Every
+//    event handler and watchdog above already ignores the inactive deck outside a
+//    transition, so a lent deck cannot trigger a skip, a stall rescue, a saved position,
+//    the media session or the Android bridge.
+//  - Any load (_loadAndPlayImpl, playRecTrack) takes the deck back FIRST (_deskOnLoad):
+//    the engine never has a second idea of which deck is its own.
+//  - "What plays next" stays ONE answer: a hand-picked next track is an input to
+//    _upcomingIdx() (and to the commit), not a parallel notion.
+//  - A manual crossfader mix (deskBeginMix) makes the lent deck the active deck at once
+//    and runs as a crossfade the user drives (_crossfading true, _fadingOutDeck set), so
+//    every existing guard treats it as a transition in progress.
+let _deskLoan = null;     // { key, el, item, index, gen } — the inactive deck, lent to the desk
+let _deskManual = false;  // desk in manual mode: the auto-trigger never fires
+let _deskNext = null;     // { idx, key } — the next track picked on the desk
+let _deskStartAt = null;  // { t, key } — one-shot start position, only for the track the desk mixes in
+let _deskMix = null;      // manual crossfader mix in progress
+let _deskCurItem = null, _deskPrevItem = null; // what the active deck holds / held before it
+
+function _deskEmit(type, detail = {}) {
+  try { document.dispatchEvent(new CustomEvent('desk:engine', { detail: { type, ...detail } })); } catch {}
+}
+function _deskKeyOf(el) { return el === _deckA ? 'A' : 'B'; }
+function _deskEl(key) { return key === 'A' ? _deckA : (key === 'B' ? _deckB : null); }
+function _deskNodes(key) { return key === 'A' ? _nodesA : _nodesB; }
+function _deskBlocked() {
+  if (store.castDevice) return 'cast';
+  if (store.remoteTarget) return 'remote';
+  if (_currentRecItem) return 'rec';
+  return null;
+}
+function _deskTrackItem(item) {
+  // The hand-picked next track is playing now (it came up by any route — a queue row
+  // too): it has been served, or it would come round a second time after this one.
+  if (_deskNext && item && _smartKey(item) === _deskNext.key) _deskNext = null;
+  if (item === _deskCurItem) return;
+  _deskPrevItem = _deskCurItem;
+  _deskCurItem = item;
+}
+function _deskData(item) {
+  return item ? getDjData(_decodeEntities(item.name || ''), _decodeEntities(item.artist || '')) || null : null;
+}
+function _deskQueueIndex(item, hint) {
+  const q = store.playerQueue;
+  if (!item) return null;
+  if (Number.isInteger(hint) && hint >= 0 && hint < q.length && q[hint] === item) return hint;
+  const i = q.indexOf(item);
+  if (i >= 0) return i;
+  const k = _smartKey(item);
+  const j = q.findIndex(it => it && _smartKey(it) === k);
+  return j >= 0 ? j : null;
+}
+/** The hand-picked next track, re-found by identity if a queue edit moved it. */
+function _deskForcedIdx() {
+  const f = _deskNext;
+  if (!f) return null;
+  const q = store.playerQueue;
+  if (!(f.idx >= 0 && f.idx < q.length && q[f.idx] && _smartKey(q[f.idx]) === f.key)) {
+    const j = q.findIndex(it => it && _smartKey(it) === f.key);
+    if (j < 0) { _deskNext = null; return null; }
+    f.idx = j;
+  }
+  return f.idx === store.playerIndex ? null : f.idx;
+}
+/** A deck the engine is about to use again. The lent one comes back clean. */
+function _deskRevoke(reason, { handover = false } = {}) {
+  const loan = _deskLoan;
+  if (!loan) return;
+  _deskLoan = null;
+  const el = loan.el;
+  if (handover) {
+    // The engine is loading this very deck right now: its source and gains are the
+    // load's business — clearing them would empty the deck it is about to swap to.
+    el.volume = _activeDeckEl().volume;
+    _deskEmit('revoked', { reason, key: loan.key });
+    return;
+  }
+  try { el.pause(); } catch {}
+  clearPendingSeek(el);
+  if (el === _deckA) _expectedSrcA = ''; else _expectedSrcB = '';
+  try { el.src = ''; } catch {}
+  el._msLearned = null;
+  if (_ctx) {
+    resetDeckAfterTransitionV3(_deckDesc(el)); // rate 1, EQ open, crossfade gain 0
+    const n = _deskNodes(loan.key);
+    if (n) n.levelGain.gain.value = 1;
+  }
+  el.volume = _activeDeckEl().volume; // the master level, as setVolume would have set it
+  _deskEmit('revoked', { reason, key: loan.key });
+}
+/** Called by every load: the decks are the engine's again. */
+function _deskOnLoad() {
+  // Settle a hand mix by the fader before the load touches the decks: killing the deck
+  // the audience mostly hears and fading out of one at 16 % was a cut to near-silence.
+  _deskSettleMix({ fromLoad: true, keepIndex: true });
+  _deskRevoke('advance');
+}
+function _deskSettleMix(opts = {}) {
+  if (!_deskMixValid()) return;
+  _deskEndMixImpl(_deskMix.level >= 0.5, opts);
+}
+function _deskMixValid() {
+  const m = _deskMix;
+  if (!m) return false;
+  if (_crossfading && _fadingOutDeck === m.outEl && _activeDeckEl() === m.inEl) return true;
+  // Something else (a load error, a teardown) ended it under the desk's feet.
+  _deskMix = null;
+  _deskEmit('mixend', { commit: _activeDeckEl() === m.inEl, superseded: true });
+  return false;
+}
+function _deskAnnounce(item) {
+  if (!item) return;
+  setArt($('#playerImg'), item.image);
+  $('#playerTitle').textContent = item.name || '';
+  $('#playerArtist').textContent = item.artist || '';
+  showPlayerBar();
+  updatePlayPauseIcon(!_activeDeckEl().paused);
+  syncFullPlayer();
+  updateDownloadButtons(item);
+  renderQueue();
+  saveQueueDebounced();
+  updateMediaSession();
+  resolveSource(item);
+  updatePlaylistBadge();
+  if (!_activeDeckEl().paused) abPlay(item.name, item.artist);
+}
+/** The new "next" is what prefetch and pre-analysis warm — as repickNext does. */
+function _deskWarmNext() {
+  const up = _upcomingItem();
+  if (up) {
+    const n = _decodeEntities(up.name || ''), a = _decodeEntities(up.artist || '');
+    if (!_crossfading) _inDjData = getDjData(n, a) || null;
+    resumePrefetch();
+    prefetchTrack(n, a, up.id);
+  }
+  try { renderQueue(); } catch { /* panel closed */ }
+}
+
+/** The audio graph, for the cue bus. Creates the context (call it from a gesture). */
+export function deskGraph() {
+  if (store.castDevice || store.remoteTarget) return null;
+  _ensureAudioContext();
+  if (!_ctx) return null;
+  return { ctx: _ctx, master: _master, nodes: { A: _nodesA, B: _nodesB }, els: { A: _deckA, B: _deckB } };
+}
+
+/** Everything the desk draws, in one read. Keys are PHYSICAL decks (A = #audioElement). */
+export function deskInfo() {
+  _deskMixValid();
+  const active = _activeDeck;
+  const fading = _fadingOutDeck ? _deskKeyOf(_fadingOutDeck) : null;
+  const items = { A: null, B: null }, data = { A: null, B: null };
+  const cur = _currentRecItem || store.playerQueue[store.playerIndex] || null;
+  items[active] = cur;
+  data[active] = (cur && cur === _deskCurItem && _outDjData) ? _outDjData : _deskData(cur);
+  if (_deskLoan) {
+    items[_deskLoan.key] = _deskLoan.item;
+    data[_deskLoan.key] = _deskData(_deskLoan.item);
+  } else if (_deskMix) {
+    const k = _deskKeyOf(_deskMix.outEl);
+    items[k] = _deskMix.prevItem;
+    data[k] = _deskMix.prevOut || _deskData(_deskMix.prevItem);
+  } else if (fading) {
+    items[fading] = _deskPrevItem;
+    data[fading] = _deskData(_deskPrevItem);
+  }
+  return {
+    ready: !!_ctx,
+    active, fading,
+    crossfading: _crossfading,
+    mixing: !!_deskMix,
+    mixLevel: _deskMix ? _deskMix.level : null,
+    loan: _deskLoan ? _deskLoan.key : null,
+    loanIndex: _deskLoan ? (_deskLoan.index = _deskQueueIndex(_deskLoan.item, _deskLoan.index)) : null,
+    manual: _deskManual,
+    busy: _advanceInFlight || !!_errRetryTimer,
+    blocked: _deskBlocked(),
+    volume: _activeDeckEl().volume,
+    index: store.playerIndex,
+    next: _upcomingIdx(),
+    deskNext: _deskForcedIdx(),
+    playing: !_activeDeckEl().paused,
+    items, data,
+  };
+}
+
+/** Lend the inactive deck to the desk. null when the engine needs it or cannot lend. */
+export function deskLend() {
+  if (_deskLoan) return _deskLoan.key;
+  if (_deskBlocked() || _crossfading || _advanceInFlight || _errRetryTimer || _loadsPending > 0) return null;
+  if (!deskGraph()) return null;
+  const el = _inactiveDeckEl();
+  try { el.pause(); } catch {}
+  clearPendingSeek(el);
+  resetDeckAfterTransitionV3(_deckDesc(el)); // crossfade gain 0 = nothing of it in the master
+  _inactiveLevel().gain.value = 1;
+  el.volume = 1;            // its level is the cue bus's business, not the master fader's
+  el.preservesPitch = true; // pitch changes on the desk are tempo changes (key lock)
+  _deskLoan = { key: _deskKeyOf(el), el, item: null, index: null, gen: 0 };
+  return _deskLoan.key;
+}
+
+/** Load a track onto the lent deck. Resolves true when it can play. Never touches the
+ *  saved-position restore (_restoreSeek) the way _setDeckSrc would. */
+export async function deskLoad(item, { startAt = 0, play = true, index = null, warm = true } = {}) {
+  const loan = _deskLoan;
+  if (!loan || !item) return false;
+  const gen = ++loan.gen;
+  const el = loan.el;
+  const name = _decodeEntities(item.name || ''), artist = _decodeEntities(item.artist || '');
+  loan.item = item;
+  loan.index = _deskQueueIndex(item, index);
+  // The finished file, not a progressive body: the desk scrubs and sets cue points in it.
+  // The blob is warmed alongside so a later transition can start at the cue point — but
+  // only for a track loaded to be MIXED (warm): a quick listen must not jump the queue of
+  // the engine's own next-track download (3 at a time, newest first), nor cost a second
+  // YouTube fetch of a track nobody owns.
+  if (warm) { resumePrefetch(); prefetchTrack(name, artist, item.id); }
+  const cached = getCachedUrl(name, artist, item.id);
+  const src = cached || `/api/player/stream?${new URLSearchParams({ name, artist, token: streamToken() })}&quality=${streamQuality()}`;
+  clearPendingSeek(el);
+  try { el.pause(); } catch {}
+  el.playbackRate = 1;
+  el._msLearned = null;
+  if (el === _deckA) _expectedSrcA = _absUrl(src); else _expectedSrcB = _absUrl(src);
+  el.src = src;
+  el.load();
+  const at = Number(startAt) || 0;
+  if (at > 0) {
+    const onMeta = () => {
+      el.removeEventListener('loadedmetadata', onMeta);
+      if (el._msSeekOnMeta === onMeta) el._msSeekOnMeta = null;
+      if (_deskLoan !== loan || loan.gen !== gen) return;
+      try { el.currentTime = at; } catch {}
+    };
+    el._msSeekOnMeta = onMeta; // clearPendingSeek drops it if the deck is reused first
+    el.addEventListener('loadedmetadata', onMeta);
+  }
+  if (play) el.play().catch(() => {});
+  await _waitForCanPlay(el, 4000);
+  if (_deskLoan !== loan || loan.gen !== gen) return false;
+  return !el.error;
+}
+
+/** Give the lent deck back. */
+export function deskRelease() { _deskRevoke('release'); }
+
+/** Length of what a deck holds (learned lengths included); 0 when unknown. */
+export function deskDur(key) {
+  const el = _deskEl(key);
+  if (!el) return 0;
+  const d = el === _activeDeckEl() ? _getDuration() : _deckDur(el);
+  return d && isFinite(d) && d > 0 ? d : 0;
+}
+
+/** Bind queue[idx] as what plays next (null clears). Under shuffle it is moved to the
+ *  head of the shuffle order (as a drag in the queue panel would), so the permutation
+ *  carries on after it instead of playing it twice. */
+export function deskSetNext(idx) {
+  if (idx == null) { _deskNext = null; _deskWarmNext(); return true; }
+  const q = store.playerQueue;
+  if (!Number.isInteger(idx) || idx < 0 || idx >= q.length || idx === store.playerIndex) return false;
+  _deskNext = null;
+  if (store.shuffleEnabled && q.length > 1) {
+    const order = playOrder();
+    const from = order.indexOf(idx), to = order.indexOf(store.playerIndex) + 1;
+    if (from > to) moveInPlayOrder(from, to);
+    if (peekShuffleNext() === idx) { _deskWarmNext(); return true; }
+  }
+  _deskNext = { idx, key: _smartKey(q[idx]) };
+  _deskWarmNext();
+  return true;
+}
+
+/** An ordinary engine transition, started now, into the next track (deskSetNext first).
+ *  startAt = where the incoming track starts — honoured when its audio is cached, as the
+ *  intro skip is; the beat alignment may move it by less than a beat. */
+export function deskMixNow({ startAt = null } = {}) {
+  if (_deskBlocked() || _crossfading || _advanceInFlight || _errRetryTimer) return false;
+  if (_upcomingIdx() == null) return false;
+  const deck = _activeDeckEl();
+  if (deck.paused || !deck.src) return false;
+  _deskRevoke('mixnow');
+  const t = Number(startAt);
+  // Keyed by the TRACK, not by a load counter: nextTrack reaches the load only after an
+  // import(), and a queue-row load started in between would have taken a counter value.
+  const target = _upcomingItem();
+  _deskStartAt = Number.isFinite(t) && t > 0 && target ? { t, key: _smartKey(target) } : null;
+  nextTrack({ reason: 'desk' });
+  return true;
+}
+
+/** Manual mode: no automatic transition. A track left alone still continues into the next
+ *  one when it ends (the `ended` path), so the music never stops. */
+export function deskSetManual(on) { _deskManual = !!on; }
+
+/** Start a crossfader mix: the lent deck (holding a queue track, playing) is the live
+ *  track from this moment; the previous one keeps playing as the outgoing deck. */
+export function deskBeginMix() {
+  const loan = _deskLoan;
+  if (!loan || _deskMix || _deskBlocked() || _crossfading || _advanceInFlight || _errRetryTimer) return false;
+  const idx = _deskQueueIndex(loan.item, loan.index);
+  if (idx == null || idx === store.playerIndex) return false;
+  const inEl = loan.el, outEl = _activeDeckEl();
+  if (inEl.paused || inEl.error || !inEl.src) return false;
+  _teardownCrossfade();
+  clearInterval(_rateReturnTimer);
+  _loadGen++;    // a load still waiting must not tear this down afterwards
+  _analyzeGen++; // nor may a pre-analysis for the previous track bind its prediction
+  const prevIdx = store.playerIndex;
+  const prevItem = store.playerQueue[prevIdx] || null;
+  const prevOut = _outDjData;
+  _deskLoan = null; // not a revoke: the desk keeps showing this deck, now as the live one
+  _fadingOutDeck = outEl;
+  _activeDeck = _deskKeyOf(inEl);
+  _crossfading = true;
+  _deskMix = { outEl, inEl, prevIdx, prevItem, prevOut, item: loan.item, index: idx, level: 0 };
+  inEl.volume = outEl.volume; // the master fader applies to it from now on
+  _outDjData = _deskData(loan.item);
+  _inDjData = null;
+  _activeLevel().gain.value = _levelGainFor(_outDjData?.lufs);
+  if (_djSetting('smart_queue', 'off') !== 'off' && prevItem) markPlayed(prevItem);
+  _predictedNextIdx = null; _predictedNextKey = null;
+  if (_deskNext && _deskForcedIdx() === idx) _deskNext = null;
+  noteShuffleJump(prevItem, store.playerQueue[idx]);
+  store.playerIndex = idx;
+  _crossfadeTriggered = false; _noNextLatch = false;
+  _deskTrackItem(loan.item);
+  _deskMixApply(0);
+  _deskAnnounce(loan.item);
+  resumePrefetch();
+  { const up = _upcomingItem(); if (up) prefetchTrack(_decodeEntities(up.name || ''), _decodeEntities(up.artist || ''), up.id); }
+  _preAnalyzeUpcoming();
+  _deskEmit('mixstart', { active: _activeDeck });
+  return true;
+}
+function _deskMixApply(t) {
+  const m = _deskMix;
+  if (!m || !_ctx) return;
+  const x = Math.max(0, Math.min(1, Number(t) || 0));
+  m.level = x;
+  const now = _ctx.currentTime;
+  const gIn = _deskNodes(_deskKeyOf(m.inEl)).gain.gain;
+  const gOut = _deskNodes(_deskKeyOf(m.outEl)).gain.gain;
+  // Equal power, smoothed so a dragged fader does not zipper.
+  for (const [g, v] of [[gIn, Math.sin(x * Math.PI / 2)], [gOut, Math.cos(x * Math.PI / 2)]]) {
+    g.cancelScheduledValues(now);
+    g.setTargetAtTime(v, now, 0.015);
+  }
+}
+/** Crossfader position during a mix: 0 = only the outgoing deck, 1 = only the new one. */
+export function deskMixLevel(t) {
+  if (!_deskMixValid()) return false;
+  _deskMixApply(t);
+  return true;
+}
+/** End the mix. commit: the outgoing deck stops. Otherwise the previous track is the live
+ *  one again and the new deck goes back to the desk, still playing in the headphones. */
+export function deskEndMix(commit) { return _deskEndMixImpl(commit); }
+function _deskEndMixImpl(commit, { fromLoad = false, keepIndex = false } = {}) {
+  if (!_deskMixValid()) return false;
+  const m = _deskMix;
+  // Going back to a deck that already ended or failed would leave the master silent
+  // with nothing to advance it: the new track stays instead.
+  if (!commit && (m.outEl.ended || m.outEl.error || !m.outEl.src)) commit = true;
+  _deskMix = null;
+  const gIn = _deskNodes(_deskKeyOf(m.inEl)).gain.gain;
+  const gOut = _deskNodes(_deskKeyOf(m.outEl)).gain.gain;
+  if (commit) {
+    try { m.outEl.pause(); } catch {}
+    m.outEl.src = '';
+    resetDeckAfterTransitionV3(_deckDesc(m.outEl));
+    gIn.cancelScheduledValues(0); gIn.value = 1;
+    _fadingOutDeck = null;
+    _crossfading = false;
+    prefetchCleanup(store.playerQueue, store.playerIndex, _upcomingKeep());
+    resumePrefetch();
+    _deskEmit('mixend', { commit: true, active: _activeDeck });
+    // A new track that ended while the fader sat in the middle advances now (its own
+    // `ended` was swallowed by the transition guard), as the crossfade timer does.
+    if (!fromLoad && _activeDeckEl().ended && !_advanceInFlight && store.repeatMode !== 'one') nextTrack({ reason: 'ended' });
+    return true;
+  }
+  _activeDeck = _deskKeyOf(m.outEl);
+  _fadingOutDeck = null;
+  _crossfading = false;
+  _loadGen++; _analyzeGen++;
+  gOut.cancelScheduledValues(0); gOut.value = 1;
+  gIn.cancelScheduledValues(0); gIn.value = 0;
+  const back = _deskQueueIndex(m.prevItem, m.prevIdx);
+  // Inside a load the caller has already chosen the index it is about to play; the
+  // decks are put back, the queue position is the load's.
+  if (!keepIndex) { undoShuffleJump(m.prevItem, m.item); if (back != null) store.playerIndex = back; }
+  _outDjData = m.prevOut || _deskData(m.prevItem);
+  _inDjData = null;
+  _predictedNextIdx = null; _predictedNextKey = null;
+  m.inEl.volume = 1;
+  _deskLoan = { key: _deskKeyOf(m.inEl), el: m.inEl, item: m.item, index: _deskQueueIndex(m.item, m.index), gen: 0 };
+  if (!keepIndex) {
+    _deskTrackItem(m.prevItem);
+    _deskAnnounce(m.prevItem);
+    _preAnalyzeUpcoming();
+  }
+  _deskEmit('mixend', { commit: false, active: _activeDeck });
+  return true;
+}
+
+/** Tempo of one deck. On the live deck it stops the post-transition return to 1.0 and
+ *  the beat-sync PLL, which would otherwise overwrite the DJ's setting. Refused while an
+ *  engine transition runs — the transition owns both rates then. */
+export function deskSetRate(key, rate) {
+  const el = _deskEl(key);
+  if (!el) return false;
+  if (_crossfading && !_deskMixValid()) return false;
+  const r = Math.max(0.5, Math.min(2, Number(rate) || 1));
+  const live = el === _activeDeckEl() || (_deskMix && el === _deskMix.outEl);
+  if (live) {
+    clearInterval(_rateReturnTimer);
+    _cancelTempoRamp();
+    clearTimeout(_beatSyncStartTimer); _beatSyncStartTimer = null;
+    if (_beatSync) { _beatSync.stop(); _beatSync = null; }
+  } else if (!(_deskLoan && el === _deskLoan.el)) return false;
+  el.preservesPitch = true;
+  el.playbackRate = r;
+  return true;
+}
+
+/** Seek a deck: the live one through seekLocal (it handles progressive streams). */
+export function deskSeek(key, t) {
+  const el = _deskEl(key);
+  const to = Math.max(0, Number(t) || 0);
+  if (!el) return false;
+  if (_deskLoan && el === _deskLoan.el) { try { el.currentTime = to; } catch {} return true; }
+  if (_deskMix && (el === _deskMix.inEl || el === _deskMix.outEl)) { try { el.currentTime = to; } catch {} return true; }
+  if (el === _activeDeckEl() && !_crossfading) { seekLocal(to); return true; }
+  return false;
 }

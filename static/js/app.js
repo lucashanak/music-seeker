@@ -25,6 +25,8 @@ import { init as initRecommendations } from './recommendations.js';
 import { init as initFeedback } from './feedback.js';
 import { init as initPlaylistImport } from './playlistimport.js';
 import { initVirtualKeyboard } from './utils.js';
+import { init as initDesk } from './djdesk.js';
+import { init as initCueMini } from './cuemini.js';
 
 // ── Wire up cross-module references ──
 
@@ -63,6 +65,8 @@ initDownloads();
 initPlayer();
 initQueue();
 initFullPlayer();
+initDesk();
+initCueMini();
 initRadio();
 initFavorites();
 initPodcasts();

@@ -142,4 +142,7 @@ export const store = {
   shuffleEnabled: false,
   repeatMode: 'off', // 'off' | 'all' | 'one'
   fpQueuePanelOpen: false,
+
+  // ── DJ desk (djdesk.js) ── a fixed overlay: offsetParent cannot tell, so the flag does.
+  deskOpen: false,
 };
