@@ -112,3 +112,20 @@ test('dragging a row with shuffle off still moves the queue itself', () => {
   Q.moveInPlayOrder(1, 3);
   assert.deepEqual(store.playerQueue.map(t => t.name), ['t0', 't2', 't3', 't1', 't4']);
 });
+
+// The server's cast follower played the next shuffled track while the page slept;
+// the page adopts it. The order must then read as if the page had advanced itself:
+// the old track in the history, the adopted one out of the tail, the rest unchanged.
+test('adopting the track the cast server moved on to keeps the order', () => {
+  store.shuffleEnabled = true;
+  store.playerQueue = tracks(6);
+  store.playerIndex = 0;
+  const before = Q.serializeShuffleOrder();
+  const next = before.tail[0];
+  Q.adoptShuffleIndex(next);
+  store.playerIndex = next;
+  const after = Q.serializeShuffleOrder();
+  assert.deepEqual(after.played, [0]);
+  assert.deepEqual(after.tail, before.tail.slice(1));
+  assert.equal(Q.shufflePrev(), 0, 'Previous goes back to the track that played before');
+});

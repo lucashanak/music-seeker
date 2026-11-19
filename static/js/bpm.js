@@ -120,10 +120,23 @@ export function isBpmUnavailable(name, artist) {
 export function forgetBpmUnavailable() { _notOwned.clear(); }
 
 /** Fetch and cache BPM/DJ data for a single track. Triggers server analysis if needed. */
+// One request per track at a time. The queue row, the engine's pre-analysis, Smart
+// Queue and the badges all ask for the same uncached track at once; each used to open
+// its own request, and an analysis takes seconds — five of them held five of the six
+// HTTP/1.1 connections a browser allows per host, and every other request waited.
+const _inflight = new Map();
+
 export async function fetchTrackBpm(name, artist) {
   const key = _key(name, artist);
   if (_cache[key]) return _cache[key];
   if (isBpmUnavailable(name, artist)) return null;
+  if (_inflight.has(key)) return _inflight.get(key);
+  const p = _fetchTrackBpm(name, artist, key).finally(() => _inflight.delete(key));
+  _inflight.set(key, p);
+  return p;
+}
+
+async function _fetchTrackBpm(name, artist, key) {
   try {
     const data = await apiJson(`/api/bpm/track?name=${encodeURIComponent(name)}&artist=${encodeURIComponent(artist)}`);
     // owned:false = no audio to open; analysable:false = owned, but never analysed

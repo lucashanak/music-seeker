@@ -6,6 +6,11 @@
 // via _djSetting(), so the panel and Settings stay perfectly consistent.
 //
 // Only visible when the active engine is 'dj' (ms_player_engine === 'dj').
+//
+// Under remote control (store.remoteTarget) the panel is a READ-ONLY mirror of the
+// target's DJ profile as it reports it (`dev.engine`, `dev.dj`): DJ settings belong to
+// the device that plays, so knobs here would only change this device's profile. The
+// one live control is the energy direction, sent as a playback command.
 
 import { $, showToast } from './utils.js';
 import { store } from './store.js';
@@ -26,8 +31,24 @@ const PANEL_CONFIG = {
   dj_energy_weight: { sel: '#fpDjEnergyWeight',    def: '10', badge: '#fpValDjEnergyWeight' },
 };
 
+// The target's report keys → the panel's keys (the report names them for what they
+// mean, the panel for the localStorage suffix the engine reads).
+const REMOTE_KEYS = {
+  smart_queue: 'smart_queue',
+  tempo_pref: 'tempo_pref',
+  crossfade_beats: 'fade_beats',
+  transition_style: 'transition_style',
+  dj_energy_weight: 'energy_weight',
+};
+const ENERGY_DIRS = ['auto', 'up', 'hold', 'down'];
+
+function _remoteDev() {
+  return store.remoteTarget ? (store.remoteDevices[store.remoteTarget] || null) : null;
+}
+
 let _savedTimer = null;
 function _savedStatus() {
+  if (store.remoteTarget) return; // nothing here was saved — the knobs belong to the target
   const el = $('#fpDjSavedStatus');
   if (!el) return;
   el.textContent = 'saved ✓';
@@ -39,6 +60,7 @@ function _savedStatus() {
 // to different knobs never coalesce and no write is silently dropped.
 const _keyTimers = new Map();
 function _writeKey(key, val) {
+  if (store.remoteTarget) return; // read-only mirror; the controls are disabled anyway
   clearTimeout(_keyTimers.get(key));
   _keyTimers.set(key, setTimeout(() => {
     _keyTimers.delete(key);
@@ -48,13 +70,29 @@ function _writeKey(key, val) {
   }, 300));
 }
 
-/** Reflect the stored energy direction in the segmented control. */
+// A direction just sent to the target shows at once; the target's report confirms it
+// within a few seconds. Until then a report still carrying the old value must not
+// flip the control back.
+let _pendingDir = null; // { v, until }
+
+/** Reflect the energy direction in the segmented control — this device's stored
+ *  value, or under remote control the target's reported one. */
 export function syncEnergyDir() {
   const box = $('#fpDjEnergyDir');
   if (!box) return;
   let cur = 'auto';
-  try { cur = localStorage.getItem('ms_dj_energy_dir') || 'auto'; } catch { /* default */ }
-  if (!['auto', 'up', 'hold', 'down'].includes(cur)) cur = 'auto';
+  if (store.remoteTarget) {
+    const dj = _remoteDev()?.dj;
+    cur = (dj && dj.energy_dir) || 'auto';
+    if (_pendingDir) {
+      if (_pendingDir.v === cur || Date.now() > _pendingDir.until) _pendingDir = null;
+      else cur = _pendingDir.v;
+    }
+  } else {
+    _pendingDir = null;
+    try { cur = localStorage.getItem('ms_dj_energy_dir') || 'auto'; } catch { /* default */ }
+  }
+  if (!ENERGY_DIRS.includes(cur)) cur = 'auto';
   for (const b of box.querySelectorAll('button[data-v]')) {
     b.setAttribute('aria-checked', String(b.dataset.v === cur));
     b.tabIndex = b.dataset.v === cur ? 0 : -1;
@@ -112,18 +150,68 @@ function _stopPreload() {
 }
 
 function _togglePreload() {
+  if (store.remoteTarget) return; // hidden under remote control: it would load THIS device's queue
   _preloadActive ? _stopPreload() : _startPreload();
 }
 
-// Pull current values from localStorage into the panel controls. Called on every
-// open so the panel reflects any change made in Settings since last time.
+/** Target side of an `energy_dir` command: what a press on the control here does,
+ *  without the toasts (nobody may be looking at the target). */
+export function setEnergyDirection(v) {
+  if (!ENERGY_DIRS.includes(v)) return;
+  try { localStorage.setItem('ms_dj_energy_dir', v); } catch { /* private mode */ }
+  syncEnergyDir();
+  getPlayerModule().then((m) => { try { m.repickNext?.(); } catch { /* classic engine */ } }).catch(() => {});
+}
+
+// Set a control to a value; a value the control has no option for (another client's
+// profile) gets a marked option of its own rather than a blank select.
+function _setControl(el, val) {
+  el.value = val;
+  if (el.tagName !== 'SELECT' || el.value === val) return;
+  const opt = document.createElement('option');
+  opt.value = val; opt.textContent = val; opt.dataset.remoteOpt = '1';
+  el.appendChild(opt);
+  el.value = val;
+}
+
+function _dropRemoteOptions(el) {
+  if (el.tagName === 'SELECT') el.querySelectorAll('option[data-remote-opt]').forEach(o => o.remove());
+}
+
+// Pull current values into the panel controls: from localStorage (this device), or
+// under remote control from the target's report. Called on every open so the panel
+// reflects any change made in Settings since last time, and by remote.js on every
+// state report of the target.
+// remote.js calls syncDjPanel() every second while controlling; repaint only when
+// the mirrored report (or the pending energy direction) changed.
+let _remoteSyncKey = '';
+
 export function syncDjPanel() {
+  const remote = !!store.remoteTarget;
+  const dj = remote ? (_remoteDev()?.dj || null) : null;
+  if (remote) {
+    const dev = _remoteDev();
+    const key = JSON.stringify([store.remoteTarget, dev && dev.name, dev && dev.engine, dj,
+      _pendingDir && _pendingDir.v, _pendingDir && Date.now() > _pendingDir.until]);
+    if (key === _remoteSyncKey) return;
+    _remoteSyncKey = key;
+  } else {
+    _remoteSyncKey = '';
+  }
   for (const [key, cfg] of Object.entries(PANEL_CONFIG)) {
     const el = $(cfg.sel);
     if (!el) continue;
-    const stored = localStorage.getItem(`ms_dj_${key}`);
-    const val = (stored != null && stored !== '') ? stored : cfg.def;
-    el.value = val;
+    _dropRemoteOptions(el);
+    let val;
+    if (remote) {
+      const rv = dj ? dj[REMOTE_KEYS[key]] : null;
+      val = (rv != null && rv !== '') ? String(rv) : cfg.def;
+    } else {
+      const stored = localStorage.getItem(`ms_dj_${key}`);
+      val = (stored != null && stored !== '') ? stored : cfg.def;
+    }
+    _setControl(el, val);
+    el.disabled = remote;
     if (cfg.badge) { const b = $(cfg.badge); if (b) b.textContent = val; }
   }
   const engEl = $('#fpPlayerEngine');
@@ -139,6 +227,7 @@ export function syncDjPanel() {
 async function _applyEngineChange() {
   const el = $('#fpPlayerEngine');
   if (!el || el.value === getPlayerEngine()) return;
+  if (store.remoteTarget) { el.value = getPlayerEngine(); return; } // hidden under remote control
   const next = el.value;
   try { const m = await getPlayerModule(); await m.flushQueue?.(); } catch {}
   localStorage.setItem('ms_player_engine', next);
@@ -150,6 +239,31 @@ async function _applyEngineChange() {
 
 function _isDjEngine() {
   return (localStorage.getItem('ms_player_engine') || 'classic') === 'dj';
+}
+
+// The engine whose controls the panel shows: under remote control the TARGET's.
+function _panelIsDj() {
+  if (!store.remoteTarget) return _isDjEngine();
+  const eng = _remoteDev()?.engine;
+  return eng === 'v3' || eng === 'dj';
+}
+
+// "Settings of <device> — change them on that device", above the rows. Built here,
+// not in markup: it exists only for remote control.
+function _remoteBanner() {
+  let el = $('#fpDjRemoteBanner');
+  if (el) return el;
+  const body = document.querySelector('#fpDjPanel .fp-dj-body');
+  if (!body) return null;
+  el = document.createElement('div');
+  el.id = 'fpDjRemoteBanner';
+  el.className = 'fp-dj-remote-banner';
+  el.setAttribute('role', 'note');
+  el.style.cssText = 'display:none;font-size:12px;line-height:1.4;color:var(--text-muted);'
+    + 'background:var(--bg-elevated);border:1px solid var(--border);'
+    + 'border-radius:var(--radius-xs);padding:8px 10px;';
+  body.prepend(el);
+  return el;
 }
 
 let _isOpen = false;
@@ -242,11 +356,32 @@ export function refreshDjPanelVisibility() {
 // "DJ controls": the heading and the button both say so, or the user opens a drawer
 // promising a mixing desk and finds a single dropdown.
 function _applyPanelMode() {
-  const isDj = _isDjEngine();
+  const remote = !!store.remoteTarget;
+  const isDj = _panelIsDj();
   const rows = $('#fpDjOnlyRows');
   if (rows) rows.style.display = isDj ? '' : 'none';
+  // "More in Settings" opens THIS device's Settings — not the target's.
   const more = $('#fpDjMoreSettings');
-  if (more) more.style.display = isDj ? '' : 'none';
+  if (more) more.style.display = (isDj && !remote) ? '' : 'none';
+  // The engine selector and Preload set act on this device only: switching engines
+  // reloads the page (and dropped remote mode), Preload downloads this device's queue.
+  const engGroup = $('#fpPlayerEngine')?.closest('.setting-group');
+  if (engGroup) engGroup.style.display = remote ? 'none' : '';
+  const preload = document.querySelector('#fpDjPanel .fp-dj-preload-group');
+  if (preload) preload.style.display = remote ? 'none' : '';
+  if (remote) { const saved = $('#fpDjSavedStatus'); if (saved) saved.textContent = ''; }
+  const banner = remote ? _remoteBanner() : $('#fpDjRemoteBanner');
+  if (banner) {
+    if (remote) {
+      const name = _remoteDev()?.name || 'the other device';
+      banner.textContent = `Settings of ${name} — change them on that device`
+        + (isDj ? '' : `. ${name} uses the classic player (no DJ mixing).`);
+      banner.style.display = '';
+    } else {
+      banner.style.display = 'none';
+      banner.textContent = '';
+    }
+  }
   const title = $('#fpDjPanelTitle');
   if (title) title.textContent = isDj ? '🎛 Live DJ Controls' : 'Player';
   const btn = $('#fpDjPanelBtn');
@@ -297,16 +432,24 @@ export function init() {
     dirBox.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-v]');
       if (!btn) return;
+      if (store.remoteTarget) {
+        // Steering the energy is playback control: the TARGET applies it with its own
+        // profile and re-picks its next track. This device's key stays untouched.
+        const v = btn.dataset.v;
+        const dev = _remoteDev();
+        document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'energy_dir', value: v } }));
+        _pendingDir = { v, until: Date.now() + 5000 };
+        syncEnergyDir();
+        const dj = dev && dev.dj;
+        if (v !== 'auto' && dj && (dj.smart_queue || 'off') === 'off') {
+          showToast(`Smart Queue is off on ${dev.name || 'that device'} – the energy is not steered`);
+        }
+        return;
+      }
       try { localStorage.setItem('ms_dj_energy_dir', btn.dataset.v); } catch { /* private mode */ }
       syncEnergyDir();
       _savedStatus();
       const smart = (localStorage.getItem('ms_dj_smart_queue') || 'off') !== 'off';
-      if (store.remoteTarget) {
-        // The other device picks its own tracks with its own settings; re-picking here
-        // would only prefetch audio on a device that is not playing.
-        showToast('Applies to playback on this device – the remote device keeps its own setting');
-        return;
-      }
       if (btn.dataset.v !== 'auto' && !smart) { showToast('Turn Smart Queue on – in playlist order the energy is not steered'); return; }
       if (btn.dataset.v !== 'auto' && store.shuffleEnabled) { showToast('Shuffle is on – it decides the next track, not the energy'); return; }
       getPlayerModule().then((m) => { if (m.repickNext?.()) showToast('Next track re-picked'); });
@@ -328,6 +471,7 @@ export function init() {
     if (!el) continue;
     const ev = el.tagName === 'SELECT' ? 'change' : 'input';
     el.addEventListener(ev, () => {
+      if (store.remoteTarget) return; // disabled under remote control; belt and braces
       if (cfg.badge) { const b = $(cfg.badge); if (b) b.textContent = el.value; }
       _writeKey(key, el.value);
     });

@@ -6,7 +6,7 @@ import { apiJson, libraryWritesInFlight } from './api.js';
 import { renderSongList } from './search.js';
 import { renderCollRows, collSkeleton } from './collrow.js';
 import { fetchPlaylistBpm, addBpmBadges, createBpmFilter, addScanButton } from './bpm.js';
-import { attachContextMenu, buildActionsFor, showContextMenu, wasLongPress, makeKebabButton } from './contextmenu.js';
+import { attachContextMenu, buildActionsFor, showContextMenu, wasLongPress, makeKebabButton, playNext } from './contextmenu.js';
 import { getPlayerModule } from './player_active.js';
 import { loadLikes, getLikedTracks, likedCount } from './likes.js';
 
@@ -363,13 +363,17 @@ async function _playLibraryPlaylist(pl, playNow) {
   try {
     const tracks = await _fetchPlaylistTracks(pl.id);
     if (!tracks.length) { showToast('Empty playlist'); return; }
-    store.playlistMode = { id: pl.id, name: pl.name };
-    const m = await getPlayerModule();
     if (playNow) {
       // Mode is named playlist — playTracks will not mirror (guarded by isUpNextActive)
+      store.playlistMode = { id: pl.id, name: pl.name };
       const u = await import('./upnext.js');
       u.playTracks(tracks);
     } else {
+      // "Queue all" appends to whatever is playing and must NOT adopt this
+      // playlist as the context: addToQueue mirrors what it queues into
+      // store.playlistMode, so the playlist would be written into itself
+      // (the 6 → 48 trap, see _queueLibPlaylist).
+      const m = await getPlayerModule();
       m.addToQueue(tracks);
     }
   } catch (e) {
@@ -780,18 +784,8 @@ function _buildMultiSelectMenu(playlistId, playlistName) {
       },
       {
         label: 'Play next', icon: '&#8595;',
-        onClick: () => {
-          const playing = store.playerIndex >= 0;
-          const idx = (playing ? store.playerIndex : -1) + 1;
-          store.playerQueue.splice(idx, 0, ...selectedItems);
-          import('./queue.js').then(m => m.renderQueue());
-          if (!playing) store.playerIndex = idx;
-          getPlayerModule().then(m => {
-            if (!playing && m.loadAndPlay) m.loadAndPlay();
-            m.saveQueueDebounced && m.saveQueueDebounced();
-          });
-          showToast(playing ? `${count} tracks will play next` : 'Playing');
-        },
+        // Same "Play next" as the track menu (to the controlled device under remote).
+        onClick: () => playNext(selectedItems),
       },
       {
         label: 'Add to queue', icon: '+',

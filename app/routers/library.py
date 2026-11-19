@@ -147,6 +147,22 @@ def _own_playlists_owner(user: dict) -> str:
     return ""
 
 
+async def _own_playlist(playlist_id: str, user: dict) -> dict:
+    """The playlist, if the caller may write it — 404 when Navidrome does not show
+    it, 403 when it is someone else's. Every endpoint that changes a playlist
+    calls this BEFORE its first write (the playlist manager checks the same rule
+    through `library.owns_playlist` inside its lock)."""
+    try:
+        pl = await library.get_playlist(playlist_id)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Navidrome unavailable ({e})")
+    if not pl:
+        raise HTTPException(404, "Playlist not found")
+    if not library.owns_playlist(pl, _own_playlists_owner(user), user.get("username", "")):
+        raise HTTPException(403, "Not your playlist")
+    return pl
+
+
 @router.get("/playlists")
 async def get_playlists(user: dict = Depends(bind_navidrome_creds)):
     playlists = await library.get_playlists()
@@ -188,7 +204,10 @@ async def get_radio_playlist(request: Request, user: dict = Depends(bind_navidro
 @router.post("/playlist/{playlist_id}/replace-by-name")
 async def replace_playlist_by_name(playlist_id: str, req: ReplaceByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     """Atomically replace a playlist's tracks by name/artist matching."""
+    await _own_playlist(playlist_id, user)
     result = await library.replace_playlist_by_names(playlist_id, req.tracks)
+    if result.get("error"):
+        raise HTTPException(502, result["error"])
     return result
 
 
@@ -218,6 +237,7 @@ async def create_playlist(req: CreatePlaylistRequest, user: dict = Depends(bind_
 
 @router.put("/playlist/{playlist_id}/tracks")
 async def add_tracks_to_playlist(playlist_id: str, req: AddTracksByIdRequest, user: dict = Depends(bind_navidrome_creds)):
+    await _own_playlist(playlist_id, user)
     ok = await library.update_playlist(playlist_id, song_ids_to_add=req.song_ids)
     if not ok:
         raise HTTPException(500, "Failed to add tracks")
@@ -226,17 +246,14 @@ async def add_tracks_to_playlist(playlist_id: str, req: AddTracksByIdRequest, us
 
 @router.post("/playlist/{playlist_id}/add-by-name")
 async def add_track_by_name(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(bind_navidrome_creds)):
+    pl = await _own_playlist(playlist_id, user)
     song_id = await library.find_song_id(req.name, req.artist, req.album)
     if not song_id:
         raise HTTPException(404, "Track not found in Navidrome library")
-    # Dedup: skip the add if the track is already in the playlist. Fetch is
-    # best-effort — if get_playlist fails, fall back to adding (don't 500).
-    try:
-        pl = await library.get_playlist(playlist_id)
-        if pl and any(t.get("id") == song_id for t in pl.get("tracks", [])):
-            return {"status": "ok", "song_id": song_id, "skipped": True}
-    except Exception:
-        pass
+    # Dedup: skip the add if the track is already in the playlist (the copy read
+    # by the ownership check).
+    if any(t.get("id") == song_id for t in pl.get("tracks", [])):
+        return {"status": "ok", "song_id": song_id, "skipped": True}
     ok = await library.update_playlist(playlist_id, song_ids_to_add=[song_id])
     if not ok:
         raise HTTPException(500, "Failed to add track")
@@ -245,6 +262,7 @@ async def add_track_by_name(playlist_id: str, req: AddTrackByNameRequest, user: 
 
 @router.delete("/playlist/{playlist_id}/tracks")
 async def remove_tracks_from_playlist(playlist_id: str, req: RemoveTracksRequest, user: dict = Depends(bind_navidrome_creds)):
+    await _own_playlist(playlist_id, user)
     ok = await library.update_playlist(playlist_id, song_indices_to_remove=req.indices)
     if not ok:
         raise HTTPException(500, "Failed to remove tracks")
@@ -254,6 +272,7 @@ async def remove_tracks_from_playlist(playlist_id: str, req: RemoveTracksRequest
 @router.put("/playlist/{playlist_id}/rename")
 async def rename_playlist(playlist_id: str, req: CreatePlaylistRequest, user: dict = Depends(bind_navidrome_creds)):
     """Rename a playlist (also updates description when provided)."""
+    await _own_playlist(playlist_id, user)
     ok = await library.update_playlist_details(playlist_id, name=req.name, comment=req.description)
     if not ok:
         raise HTTPException(500, "Failed to rename playlist")
@@ -265,6 +284,7 @@ async def update_playlist_details(playlist_id: str, req: PlaylistDetailsRequest,
     """Update a playlist's name and/or description (Subsonic name/comment)."""
     if req.name is None and req.description is None:
         raise HTTPException(400, "Provide name and/or description")
+    await _own_playlist(playlist_id, user)
     ok = await library.update_playlist_details(playlist_id, name=req.name, comment=req.description)
     if not ok:
         raise HTTPException(500, "Failed to update playlist details")
@@ -274,6 +294,7 @@ async def update_playlist_details(playlist_id: str, req: PlaylistDetailsRequest,
 @router.post("/playlist/{playlist_id}/cover")
 async def set_playlist_cover(playlist_id: str, req: PlaylistCoverRequest, user: dict = Depends(bind_navidrome_creds)):
     """Set an app-side cover image override (a URL) for a playlist."""
+    await _own_playlist(playlist_id, user)
     if not req.image_url:
         raise HTTPException(400, "image_url is required")
     if not req.image_url.startswith(("http://", "https://")):
@@ -288,6 +309,7 @@ async def set_playlist_cover(playlist_id: str, req: PlaylistCoverRequest, user: 
 @router.delete("/playlist/{playlist_id}/cover")
 async def delete_playlist_cover(playlist_id: str, user: dict = Depends(bind_navidrome_creds)):
     """Clear an app-side cover image override for a playlist."""
+    await _own_playlist(playlist_id, user)
     with _covers_lock:
         covers = _load_playlist_covers()
         existed = covers.pop(str(playlist_id), None) is not None
@@ -299,6 +321,7 @@ async def delete_playlist_cover(playlist_id: str, user: dict = Depends(bind_navi
 @router.put("/playlist/{playlist_id}/reorder")
 async def reorder_playlist(playlist_id: str, req: AddTracksByIdRequest, user: dict = Depends(bind_navidrome_creds)):
     """Reorder playlist tracks. Receives full ordered list of song_ids."""
+    await _own_playlist(playlist_id, user)
     ok = await library.reorder_playlist(playlist_id, req.song_ids)
     if not ok:
         raise HTTPException(500, "Failed to reorder playlist")
@@ -312,7 +335,8 @@ async def transfer_track(req: TransferRequest, user: dict = Depends(bind_navidro
     try:
         return await library.transfer_track(req.from_id, req.from_index, req.song_id,
                                             req.to_id, req.to_index, req.mode == "copy",
-                                            owner=_own_playlists_owner(user))
+                                            owner=_own_playlists_owner(user),
+                                            username=user.get("username", ""))
     except library.TransferForbidden:
         raise HTTPException(403, "Not your playlist")
     except library.TransferMissing:
@@ -334,7 +358,8 @@ async def remove_at(req: RemoveAtRequest, user: dict = Depends(bind_navidrome_cr
     """Playlist manager: remove the row at `index`, only if it still holds `song_id`."""
     try:
         return {"tracks": await library.remove_at(req.playlist_id, req.index, req.song_id,
-                                                  owner=_own_playlists_owner(user))}
+                                                  owner=_own_playlists_owner(user),
+                                                  username=user.get("username", ""))}
     except library.TransferForbidden:
         raise HTTPException(403, "Not your playlist")
     except library.TransferMissing:
@@ -348,6 +373,7 @@ async def remove_at(req: RemoveAtRequest, user: dict = Depends(bind_navidrome_cr
 @router.post("/playlist/{playlist_id}/remove-by-name")
 async def remove_track_by_name(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     """Remove a track from playlist by name/artist match (exact index when given)."""
+    await _own_playlist(playlist_id, user)
     ok = await library.remove_track_by_name(playlist_id, req.name, req.artist, req.index)
     if not ok:
         raise HTTPException(404, "Track not found in playlist")
@@ -357,6 +383,7 @@ async def remove_track_by_name(playlist_id: str, req: AddTrackByNameRequest, use
 @router.post("/playlist/{playlist_id}/add-and-download")
 async def add_and_download(playlist_id: str, req: AddTrackByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     """Add track to playlist. If not in Navidrome, download first then add."""
+    await _own_playlist(playlist_id, user)
     # Try to find in Navidrome first
     song_id = await library.find_song_id(req.name, req.artist, req.album)
     if song_id:
@@ -390,6 +417,7 @@ async def add_and_download_batch(playlist_id: str, req: BatchAddRequest, user: d
     creates a download job per missing track (with playlist_id callback so the
     track lands in the playlist after the download completes).
     """
+    await _own_playlist(playlist_id, user)
     tracks = req.tracks or []
     if not tracks:
         return {"added": 0, "queued": 0, "missing": []}
@@ -471,6 +499,7 @@ async def check_track_playlists(req: AddTrackByNameRequest, user: dict = Depends
 
 @router.delete("/playlist/{playlist_id}")
 async def delete_playlist(playlist_id: str, user: dict = Depends(bind_navidrome_creds)):
+    await _own_playlist(playlist_id, user)
     ok = await library.delete_playlist(playlist_id)
     if not ok:
         raise HTTPException(500, "Failed to delete playlist")

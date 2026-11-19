@@ -717,6 +717,7 @@ jobs:
           import android.os.IBinder
           import android.os.Looper
           import android.os.PowerManager
+          import android.os.SystemClock
           import android.support.v4.media.MediaMetadataCompat
           import android.support.v4.media.session.MediaSessionCompat
           import android.support.v4.media.session.PlaybackStateCompat
@@ -744,14 +745,22 @@ jobs:
               // without that type Android 14+ feeds a backgrounded recorder pure silence.
               private var partyActive = false
               // acquireWakeLock() only takes the lock when it is NOT already held, so calling
-              // it repeatedly never extends the 1h safety timeout. Playback gets away with
-              // that because ACTION_PROGRESS arrives every few hundred ms and re-takes the
-              // lock the instant it lapses. A party session has no such traffic — and worse,
-              // once the lock lapses the CPU may suspend, which stops the very JS that would
-              // have re-taken it. So re-arm from the service, before the timeout, while the
-              // CPU is still guaranteed to be ours. Parties outlast an hour routinely.
-              private val PARTY_WAKE_REARM_MS = 50L * 60 * 1000
-              private var partyWakeRunnable: Runnable? = null
+              // it repeatedly never extends the 1h safety timeout. Local playback mostly got
+              // away with that because ACTION_PROGRESS arrives about once a second and
+              // re-takes the lock once it lapses. A party session has no such traffic, and
+              // neither has a cast to a receiver (the phone plays nothing, so there is no
+              // timeupdate) - and once the lock lapses the CPU may suspend, which stops the
+              // very JS that would have re-taken it. So the service re-arms the lock itself,
+              // before the timeout, while the CPU is still guaranteed to be ours: for a party,
+              // and for playback (a two-hour mix, local or cast) - wantsWakeLock().
+              private val WAKE_REARM_MS = 50L * 60 * 1000
+              private var wakeRearmRunnable: Runnable? = null
+              // Playback keeps re-arming only while the page shows signs of life (ACTION_PLAY
+              // or ACTION_PROGRESS). A page that died without a pause would otherwise hold a
+              // "playing" service and its wake lock forever; the old 1h timeout was the only
+              // thing that bounded that. A party is bounded by its own stop paths, as before.
+              private val PLAY_SILENCE_MAX_MS = 4L * 60 * 60 * 1000
+              private var lastPlaySignMs = 0L
 
               override fun onCreate() {
                   super.onCreate()
@@ -772,7 +781,11 @@ jobs:
                   when (intent?.action) {
                       "ACTION_PLAY" -> {
                           cancelPauseStop()
-                          acquireWakeLock()
+                          lastPlaySignMs = SystemClock.elapsedRealtime()
+                          // A fresh 1h lock and a re-arm 50 min from NOW: the timer and the
+                          // lock's timeout must start together, or a re-arm scheduled from
+                          // a later ACTION_PLAY would fire after the earlier lock lapsed.
+                          renewWakeLock()
                           currentTitle = intent.getStringExtra("title") ?: currentTitle
                           currentArtist = intent.getStringExtra("artist") ?: currentArtist
                           updateNotification(true)
@@ -789,8 +802,7 @@ jobs:
                       "ACTION_PARTY_START" -> {
                           cancelPauseStop()
                           partyActive = true
-                          acquireWakeLock()
-                          schedulePartyWakeRearm()
+                          renewWakeLock()
                           updateNotification(isCurrentlyPlaying)
                       }
                       "ACTION_PARTY_STOP" -> endPartySession()
@@ -811,6 +823,7 @@ jobs:
                           // ACTION_PLAY, so a long unattended session lost the wake lock
                           // mid-track. This is a no-op while the lock is still held.
                           acquireWakeLock()
+                          if (isCurrentlyPlaying) lastPlaySignMs = SystemClock.elapsedRealtime()
                           currentPosition = intent.getLongExtra("position", 0L)
                           currentDuration = intent.getLongExtra("duration", 0L)
                           // NOT updatePlaybackState(true): 'timeupdate' also fires when the
@@ -847,7 +860,6 @@ jobs:
                       "ACTION_SHUTDOWN" -> {
                           cancelPauseStop()
                           partyActive = false
-                          cancelPartyWakeRearm()
                           releaseWakeLock()
                           stopForeground(STOP_FOREGROUND_REMOVE)
                           stopSelf()
@@ -861,7 +873,6 @@ jobs:
               override fun onDestroy() {
                   cancelPauseStop()
                   partyActive = false
-                  cancelPartyWakeRearm()
                   mediaSession?.release()
                   releaseWakeLock()
                   super.onDestroy()
@@ -871,7 +882,6 @@ jobs:
                   // User swiped app from recents — clean up
                   cancelPauseStop()
                   partyActive = false
-                  cancelPartyWakeRearm()
                   releaseWakeLock()
                   stopForeground(STOP_FOREGROUND_REMOVE)
                   stopSelf()
@@ -886,8 +896,26 @@ jobs:
                   if (wakeLock?.isHeld != true) wakeLock?.acquire(60L * 60 * 1000)  // Max 1 hour
               }
 
+              // Every deliberate release also ends the re-arm, so a lock that was let go
+              // is never quietly taken back 50 minutes later.
               private fun releaseWakeLock() {
+                  cancelWakeRearm()
                   wakeLock?.let { if (it.isHeld) it.release() }
+              }
+
+              // Drop and re-take the lock (a fresh 1h timeout) and schedule the next re-arm.
+              // The lock is reference-counted, hence release-then-acquire, never a second
+              // acquire on a held lock.
+              private fun renewWakeLock() {
+                  wakeLock?.let { if (it.isHeld) it.release() }
+                  acquireWakeLock()
+                  scheduleWakeRearm()
+              }
+
+              private fun wantsWakeLock(): Boolean {
+                  val playingAlive = isCurrentlyPlaying &&
+                      SystemClock.elapsedRealtime() - lastPlaySignMs < PLAY_SILENCE_MAX_MS
+                  return partyActive || playingAlive
               }
 
               private fun schedulePauseStop() {
@@ -900,10 +928,10 @@ jobs:
               }
 
               // The one place a party session ends. Playback, if any, survives it — the two
-              // are independent reasons for this service to exist.
+              // are independent reasons for this service to exist. A playing session keeps
+              // its lock and its re-arm; the other branches release both.
               private fun endPartySession() {
                   partyActive = false
-                  cancelPartyWakeRearm()
                   if (isCurrentlyPlaying) {
                       updateNotification(true)
                   } else if (currentTitle.isNotEmpty()) {
@@ -921,21 +949,20 @@ jobs:
                   }
               }
 
-              private fun schedulePartyWakeRearm() {
-                  cancelPartyWakeRearm()
-                  partyWakeRunnable = Runnable {
-                      if (partyActive) {
-                          wakeLock?.let { if (it.isHeld) it.release() }
-                          acquireWakeLock()
-                          schedulePartyWakeRearm()
-                      }
+              private fun scheduleWakeRearm() {
+                  cancelWakeRearm()
+                  wakeRearmRunnable = Runnable {
+                      wakeRearmRunnable = null
+                      // When nothing wants the CPU any more, the lock is left to run out on
+                      // its own timeout (about 10 min from now) instead of being renewed.
+                      if (wantsWakeLock()) renewWakeLock()
                   }
-                  pauseStopHandler?.postDelayed(partyWakeRunnable!!, PARTY_WAKE_REARM_MS)
+                  pauseStopHandler?.postDelayed(wakeRearmRunnable!!, WAKE_REARM_MS)
               }
 
-              private fun cancelPartyWakeRearm() {
-                  partyWakeRunnable?.let { pauseStopHandler?.removeCallbacks(it) }
-                  partyWakeRunnable = null
+              private fun cancelWakeRearm() {
+                  wakeRearmRunnable?.let { pauseStopHandler?.removeCallbacks(it) }
+                  wakeRearmRunnable = null
               }
 
               private fun cancelPauseStop() {

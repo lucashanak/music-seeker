@@ -1,6 +1,26 @@
 // store.js — Shared application state
 // All global variables extracted from the monolithic script block.
 
+const _TAB_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** A fresh id for this browser tab (remote control, B3). Letters, digits, `_`, `-`
+ *  only — the server validates it with `^[A-Za-z0-9_-]{1,64}$`. */
+export function newTabId() {
+  let r = '';
+  try { r = Array.from(crypto.getRandomValues(new Uint8Array(9)), b => b.toString(36).padStart(2, '0')).join(''); } catch {}
+  return (r || Math.random().toString(36).slice(2)) + Date.now().toString(36);
+}
+
+// sessionStorage, not localStorage: the device id is shared by every tab of the
+// browser profile, the tab id must not be — it survives a reload of the same tab.
+function _loadTabId() {
+  try {
+    let id = sessionStorage.getItem('ms_tab_id');
+    if (!id || !_TAB_ID_RE.test(id)) { id = newTabId(); sessionStorage.setItem('ms_tab_id', id); }
+    return id;
+  } catch { return newTabId(); }
+}
+
 export const store = {
   // ── Version / Providers ──
   APP_VERSION: '1.8.0',
@@ -116,12 +136,16 @@ export const store = {
   // handlePopstate se na ni ptá).
   genreOpen: false,
   playerSaveTimer: null,
+  playerSavePending: false, // a queue save is due (saveQueueDebounced) and has not gone out yet
 
   // ── Playlist Mode ──
   playlistMode: null, // { id, name } or null
 
   // ── Device Identity ──
   deviceId: localStorage.getItem('ms_device_id') || (() => { const id = crypto.randomUUID?.() || ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)); localStorage.setItem('ms_device_id', id); return id; })(),
+  // Per tab (sessionStorage `ms_tab_id`): the remote-control broker delivers a
+  // command to ONE tab of a device, not to every tab that shares the device id.
+  tabId: _loadTabId(),
   deviceName: '',
   deviceOutputMode: 'default', // 'default' | 'local' | 'dlna_only'
   deviceDlnaRendererUrl: '',
@@ -134,8 +158,12 @@ export const store = {
   remoteEventSource: null,
   remoteStateTimer: null,
   remoteDevices: {},
-  remoteTarget: null,
+  remoteTarget: null,          // device id this device is CONTROLLING (null = plays itself)
   remoteReconnectTimer: null,
+  // The target's saved queue (GET /api/remote/queue) while controlling it:
+  // { queue, current_index, shuffle_order, playlist_mode, radio_mode } | null.
+  // The queue panel draws this under remote control, never store.playerQueue.
+  remoteQueue: null,
 
   // ── Full Player ──
   fullPlayerOpen: false,

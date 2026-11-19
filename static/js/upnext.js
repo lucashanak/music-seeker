@@ -69,8 +69,11 @@ export async function initUpNext() {
 
 // Atomic replace of a playlist's contents by name/artist matching.
 // Returns the API response: { matched: int, missing: [{name, artist, album}] }.
+// An EMPTY list is sent too: it is how Clear empties Up Next (clearActiveQueue,
+// and the target's queue_op clear). The server must tell that apart from a list
+// none of whose names matched, which it never applies.
 export async function replaceByName(playlistId, tracks) {
-  if (!playlistId || !tracks || !tracks.length) return { matched: 0, missing: [] };
+  if (!playlistId || !Array.isArray(tracks)) return { matched: 0, missing: [] };
   return await apiJson(`/api/library/playlist/${playlistId}/replace-by-name`, {
     method: 'POST',
     body: { tracks },
@@ -114,18 +117,45 @@ function _prewarmFirst() {
   } catch {}
 }
 
+// Under remote control (store.remoteTarget) this device is a remote, not a
+// player: store.playerQueue/playerIndex are only the scratch the transfer is built
+// from (loadAndPlay sends it), and nothing here may write to Navidrome or move
+// store.playlistMode — the target adopts the list and mirrors it itself.
+
+// The queue is a COPY of the caller's list, never the list itself. Callers pass
+// arrays their page keeps (store.currentAlbumTracks, an artist's top tracks, the
+// search results): with the queue being that array, addToQueue's push grew the
+// page's list, and an album's "Add all" handed addToQueue the live queue itself.
+// `_src` (the list it came from) and `_srcLen` (how many of its rows it took) are
+// non-enumerable: never saved, never sent; search.js grows the queue from them.
+function _queueCopy(tracks) {
+  const q = tracks.slice();
+  Object.defineProperty(q, '_src', { value: tracks });
+  Object.defineProperty(q, '_srcLen', { value: tracks.length, writable: true });
+  return q;
+}
+
 // startIndex: where in `tracks` to begin. Starting a song from the middle of a
 // list keeps the whole list as the queue, so the rest plays on in order.
 export async function playTracks(tracks, startIndex = 0) {
   if (!tracks || !tracks.length) return;
-  store.playerQueue = tracks;
+  const remote = !!store.remoteTarget;
+  store.playerQueue = _queueCopy(tracks);
   store.playerIndex = Math.min(Math.max(0, startIndex | 0), tracks.length - 1);
+  // A new list ends a radio session (playTrack does the same). Left on, the
+  // engine refilled the end of an album with radio tracks, and under remote
+  // control the stale flag rode along in the transfer to the target.
+  store.radioMode = false;
+  // Warms the SERVER's stream cache, which the target plays from as well.
   _prewarmFirst();
   // Re-anchor DJ per-set state to the NEW subset so the smart queue's candidate
   // pool (== store.playerQueue) is freshly bounded and prediction==commit holds.
-  await _resetDjSet();
+  // Not under remote: this device plays nothing, and its own set state is what
+  // it resumes when control ends (the transfer re-anchors the target's).
+  if (!remote) await _resetDjSet();
   const playerMod = await getPlayerModule();
   playerMod.loadAndPlay();
+  if (remote) return;
   const id = activePlaylistId();
   if (id && isTempActive()) {
     replaceByName(id, tracks).catch(e => console.warn('Mirror failed:', e));
@@ -137,6 +167,21 @@ export async function playTracks(tracks, startIndex = 0) {
 // can return to their previous queue when radio mode ends.
 export async function playRadio(tracks) {
   if (!tracks || !tracks.length) return;
+  if (store.remoteTarget) {
+    // The target plays the radio in its own context. Fetching /api/library/radio
+    // here would touch THIS device's Radio playlist; and a named playlist left in
+    // this device's scratch playlistMode would ride along in the transfer and be
+    // adopted by the target (the server takes named ones), which would then write
+    // radio tracks into it. null = "not a named playlist": the target keeps its own.
+    // store.radioMode / radioSeedTrack (set by radio.js) travel in the transfer.
+    store.playlistMode = null;
+    store.playerQueue = _queueCopy(tracks);
+    store.playerIndex = 0;
+    _prewarmFirst();
+    const playerMod = await getPlayerModule();
+    playerMod.loadAndPlay();
+    return;
+  }
   try {
     const rpl = await apiJson('/api/library/radio');
     if (rpl && rpl.id) {
@@ -145,7 +190,7 @@ export async function playRadio(tracks) {
       if (badge) { badge.textContent = RADIO_DISPLAY; badge.style.display = ''; }
     }
   } catch {}
-  store.playerQueue = tracks;
+  store.playerQueue = _queueCopy(tracks);
   store.playerIndex = 0;
   _prewarmFirst();
   await _resetDjSet();
@@ -162,6 +207,7 @@ export async function playRadio(tracks) {
 // for auto-radio fills and similar incremental appends.
 export function mirrorAdd(tracks) {
   if (!tracks || !tracks.length) return;
+  if (store.remoteTarget) return;   // the target mirrors what it is sent
   const id = activePlaylistId();
   if (!id || !isTempActive()) return;
   apiJson(`/api/library/playlist/${id}/add-and-download-batch`, {
@@ -175,6 +221,11 @@ export function mirrorAdd(tracks) {
 // its Navidrome contents (so the mirror stays in sync). Named playlists are
 // never destructively cleared — we just switch back to a fresh Up Next.
 export async function clearActiveQueue() {
+  if (store.remoteTarget) {
+    // Clear the controlled device's queue, not this one's scratch (nor its Up Next).
+    document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'queue_op', value: { op: 'clear' } } }));
+    return;
+  }
   store.playerQueue = [];
   store.playerIndex = -1;
   clearPrefetch(); // revoke cached blob URLs so they don't leak when the queue is emptied

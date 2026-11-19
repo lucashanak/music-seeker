@@ -212,6 +212,10 @@ export async function initApp() {
     // hydration decides whether to overwrite it (was a non-deterministic boot race
     // that could clobber the restored track/position).
     await getPlayerModule().then(m => m.loadQueueState());
+    // A cast that outlived the page (reload, discarded tab): take it up again. After the
+    // queue, whose rows the server's track is matched against; not from the engine's
+    // init(), which runs before login (cast-opravy, finding 2).
+    import('./cast.js').then(c => c.restoreCast()).catch(() => {});
     initUpNext().catch(() => {});
 
     // Remote device control: connect SSE + start state reporting (needs the player

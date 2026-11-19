@@ -81,7 +81,9 @@ async def _stream_auth(request: Request, token: str = ""):
     """
     if token:
         payload = auth_service._decode_token(token)
-        if not payload:
+        # A remote token (aud=remote, in the remote-control SSE URL) is not a
+        # stream credential; session and stream tokens are, as before.
+        if not payload or payload.get("aud") == "remote":
             raise HTTPException(401, "Invalid token")
         users = auth_service._load_users()
         user_data = users.get(payload["sub"])

@@ -618,16 +618,76 @@ let _trackRowQueue = [];
 const QUEUE_TARGET = 100;
 let _toppingUp = false;
 
-// playTracks() adopts a list's context array as store.playerQueue, so anything
-// pushed into that same array lands in the live queue. The identity check is
-// what tells us the thing playing is still this list.
-async function _growLiveQueue(ctx, added) {
-  if (!added.length || store.playerQueue !== ctx) return false;
+// playTracks() starts the queue as a COPY of the list's context array and marks
+// it with that array (`store.playerQueue._src === ctx`, non-enumerable, never
+// saved) and with how many of its rows the copy has taken (`_srcLen`). The queue
+// must not BE the page's array: an album's "Add all" then handed addToQueue the
+// live queue itself (it looped forever), and Add to queue / radio refills grew the
+// page's list. So the list keeps growing on its own, and whatever it gained since
+// is pushed into the queue here — every caller (top-up pages, infinite scroll, the
+// All tab) goes through this one function, serialised, so no row is added twice and
+// a page loaded by scrolling in between leaves no gap. The `_src` check is what
+// tells us the thing playing is still this list.
+let _growChain = Promise.resolve(true);
+function _growLiveQueue(ctx) {
+  const run = _growChain.then(() => _growOnce(ctx));
+  _growChain = run.catch(() => false);
+  return run;
+}
+
+async function _growOnce(ctx) {
+  const q = store.playerQueue;
+  if (!q || q._src !== ctx) return false;
+  const from = Number.isInteger(q._srcLen) ? q._srcLen : ctx.length;
+  const added = ctx.slice(from);
+  if (!added.length) return true;
+  if (store.remoteTarget) return _growRemoteQueue(q, ctx, added);
+  q._srcLen = from + added.length;
+  for (const it of added) q.push(it);
   // The server-side mirror was written when playback started and knows nothing
   // about these, and the queue panel paints from a snapshot.
   try { (await import('./upnext.js')).mirrorAdd(added); } catch {}
   try { (await import('./queue.js')).renderQueue(); } catch {}
   return true;
+}
+
+// Under remote control the list plays on the TARGET: it got this device's queue
+// (`q`, the scratch copy) in the transfer, and the rows the list gained since are
+// sent after them as an enqueue (the target appends and mirrors them itself). Only
+// once the target reports a track of this queue and exactly its length — proof the
+// transfer landed and nothing else changed the target's queue. Anything else (the
+// target plays something else, its queue was edited, no report within 10 s) ends
+// the top-up rather than add to an unrelated queue.
+async function _growRemoteQueue(q, ctx, added) {
+  const target = store.remoteTarget;
+  const before = q.length;                 // what the target was given
+  const want = before + added.length;      // ...and should end with
+  const norm = (s) => String(s || '').normalize('NFC').trim().toLowerCase();
+  const inList = (t) => !!t && q.some(x => norm(x.name) === norm(t.name) && norm(x.artist) === norm(t.artist));
+  const deadline = Date.now() + 10000;
+  for (;;) {
+    if (store.remoteTarget !== target || store.playerQueue !== q || q._src !== ctx) return false;
+    const dev = (store.remoteDevices || {})[target];
+    const len = dev && Number.isInteger(dev.queue_len) ? dev.queue_len : -1;
+    if (dev && inList(dev.track) && len >= before) {
+      if (len !== before) return false;
+      document.dispatchEvent(new CustomEvent('remote:enqueue', { detail: added }));
+      // The scratch copy follows, so the next page is measured against it.
+      q._srcLen = (Number.isInteger(q._srcLen) ? q._srcLen : before) + added.length;
+      for (const it of added) q.push(it);
+      // Wait for the target to have them before the next page is measured.
+      const until = Date.now() + 10000;
+      while (Date.now() < until) {
+        await new Promise(r => setTimeout(r, 300));
+        const d = (store.remoteDevices || {})[target];
+        if (store.remoteTarget !== target) return false;
+        if (d && Number.isInteger(d.queue_len) && d.queue_len >= want) return true;
+      }
+      return false;
+    }
+    if (Date.now() > deadline) return false;
+    await new Promise(r => setTimeout(r, 300));
+  }
 }
 
 async function _topUpQueue() {
@@ -640,7 +700,7 @@ async function _topUpQueue() {
       await doSearch(true);
       const added = ctx.slice(before);
       if (!added.length) break;   // superseded search, or the list was replaced
-      if (!await _growLiveQueue(ctx, added)) break;   // playing something else now
+      if (!await _growLiveQueue(ctx)) break;   // playing something else now
     }
   } catch (e) {
     console.warn('Queue top-up failed', e);
@@ -659,7 +719,7 @@ async function _topUpAllSongs(ctx, q) {
     const seen = new Set(ctx.map(t => String(t.id)));
     const added = (data.results || []).filter(t => !seen.has(String(t.id)));
     ctx.push(...added);
-    await _growLiveQueue(ctx, added);
+    await _growLiveQueue(ctx);
   } catch (e) {
     console.warn('Queue top-up failed', e);
   } finally {
@@ -678,6 +738,9 @@ function _renderTrackRows(tracks, append) {
   const list = renderSongRows(tracks, sink, { context: _trackRowQueue });
   if (existing) {
     while (list.firstChild) existing.appendChild(list.firstChild);
+    // A page loaded by scrolling joins the queue playing from this list (it used
+    // to, when the queue was this very array).
+    if (store.playerQueue && store.playerQueue._src === _trackRowQueue) _growLiveQueue(_trackRowQueue);
   } else {
     // Starting a song here is what asks for a deeper queue — both the ▶ button
     // and a tap on the row, which clicks that same button.

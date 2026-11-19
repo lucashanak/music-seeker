@@ -335,7 +335,9 @@ def test_nav_target_asks_navidrome_for_the_raw_file(tmp, monkeypatch):
     assert path.endswith("abc.raw.m4a") and params == {"id": "abc", "format": "raw"}
     path, params = player.nav_cache_target("abc", False, None)               # unknown suffix: as before
     assert path.endswith("abc.mp3") and params["format"] == "mp3"
-    path, params = player.nav_cache_target("abc", True, "m4a")               # lossless request: original
+    path, params = player.nav_cache_target("abc", True, "m4a")               # lossless request: original,
+    assert path.endswith("abc.raw.m4a") and params["format"] == "raw"        # in its own format (cast #12)
+    path, params = player.nav_cache_target("abc", True, None)                # a FLAC / unknown original
     assert path.endswith("abc.flac") and "format" not in params
 
 

@@ -147,6 +147,25 @@ def create_stream_token(username: str, ttl: int = STREAM_TOKEN_EXPIRY) -> str:
     return f"{payload_b64}.{sig}"
 
 
+REMOTE_TOKEN_EXPIRY = 3600  # the remote-control SSE: one device, one hour
+
+
+def create_remote_token(username: str, device_id: str, ttl: int = REMOTE_TOKEN_EXPIRY) -> str:
+    """Token for the remote-control event stream only (aud=remote), bound to one
+    device (`dev`). A leaked stream token (nginx logs, DLNA renderers, Referer)
+    must not be able to read every device's state or take a device's commands."""
+    payload = json.dumps({
+        "sub": username,
+        "aud": "remote",
+        "dev": device_id,
+        "exp": int(time.time()) + ttl,
+    })
+    import base64
+    payload_b64 = base64.urlsafe_b64encode(payload.encode()).decode()
+    sig = hmac.new(JWT_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{sig}"
+
+
 def _decode_token(token: str) -> dict | None:
     import base64
     try:
@@ -258,8 +277,9 @@ def get_current_user(request: Request, response: Response = None) -> dict:
     payload = _decode_token(token)
     if not payload:
         raise HTTPException(401, "Invalid or expired token")
-    if payload.get("aud") == "stream":
-        # Stream-scoped tokens may only be used on stream endpoints.
+    if payload.get("aud") is not None:
+        # Stream- and remote-scoped tokens may only be used on their own endpoints;
+        # a session token has no audience.
         raise HTTPException(401, "Stream token not valid for this endpoint")
 
     users = _load_users()
@@ -312,6 +332,12 @@ def create_user(username: str, password: str, is_admin: bool = False,
     users = _load_users()
     if username in users:
         return False
+    clash = next((u for u in users if username.startswith(u + "_") or u.startswith(username + "_")), None)
+    if clash:
+        # Old per-device queue files were `<user>_<device>.json`; such a pair of
+        # names made one user's file look like the other's (see player._legacy_flat_path).
+        raise ValueError(f"Username too similar to existing user '{clash}': "
+                         "one may not be the other followed by '_'")
     users[username] = {
         "password": _hash_password(password),
         "is_admin": is_admin,
@@ -488,9 +514,9 @@ def remove_device(username: str, device_id: str) -> bool:
         return False
     del devices[device_id]
     _save_users(users)
-    # Remove queue file
-    import os
-    queue_path = os.path.join(os.environ.get("DATA_DIR", "/app/data"), "player", f"{username}_{device_id}.json")
-    if os.path.exists(queue_path):
-        os.unlink(queue_path)
+    # Remove its queue file — never by the old flat name, which could be another
+    # user's file (`claude` + `test_x` = `claude_test` + `x`).
+    if re.match(r'^[A-Za-z0-9_-]{1,64}$', device_id):
+        from app.services import player
+        player.clear_queue(username, device_id)
     return True

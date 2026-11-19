@@ -241,13 +241,15 @@ export function buildActionsFor(item, type, context = {}) {
   const addLabel = 'Add to queue';
 
   if (type === 'queue-track') {
+    // context.remote: the row belongs to the queue of the device being controlled
+    // (queue.js draws it under store.remoteTarget); its edits go there.
     actions.push({
       label: 'Play now', icon: '&#9654;',
-      onClick: () => _playQueueIndex(context.queueIndex),
+      onClick: () => (context.remote ? _remoteRow('jump', context.queueIndex, it) : _playQueueIndex(context.queueIndex)),
     });
     actions.push({
       label: 'Play next', icon: '&#8595;',
-      onClick: () => _moveQueueAfterCurrent(context.queueIndex),
+      onClick: () => (context.remote ? _remoteRow('move_next', context.queueIndex, it) : _moveQueueAfterCurrent(context.queueIndex)),
     });
     actions.push({ divider: true });
   } else if (type === 'recommendation') {
@@ -446,11 +448,13 @@ export function buildActionsFor(item, type, context = {}) {
     actions.push({ divider: true });
     actions.push({
       label: 'Remove from queue', icon: '&times;', danger: true,
-      onClick: () => _removeFromQueue(context.queueIndex),
+      onClick: () => (context.remote ? _remoteRow('remove', context.queueIndex, it) : _removeFromQueue(context.queueIndex)),
     });
     // When the queue is backed by a real (named) Navidrome playlist, also offer
     // removing the track from that playlist (not just the in-memory queue).
-    if (store.playlistMode && store.playlistMode.name !== 'Up Next') {
+    // Not for the target's queue: store.playlistMode is this device's, and the
+    // target's own remove already mirrors into the playlist it plays.
+    if (!context.remote && store.playlistMode && store.playlistMode.name !== 'Up Next') {
       actions.push({
         label: 'Remove from playlist', icon: '&times;', danger: true,
         onClick: () => _removeFromQueue(context.queueIndex, true),
@@ -479,18 +483,33 @@ function _playNow(item) {
   getPlayerModule().then(m => m.addToQueue([item], true));
 }
 
+// "Play next" for items that are not in the queue yet. One implementation, in
+// queue.js, serves this menu, the library's multi-select and the target side of a
+// remote queue_op insert_next. Under remote control it goes to the target.
+export async function playNext(items) {
+  if (!items || !items.length) return;
+  const q = await import('./queue.js');
+  const label = items.length > 1 ? `${items.length} tracks` : '';
+  if (store.remoteTarget) {
+    q.sendQueueOp({ op: 'insert_next', items });
+    showToast(`${label ? label + ' w' : 'W'}ill play next on ${q.remoteDeviceName()}`);
+    return;
+  }
+  const playing = q.playNextItems(items);
+  showToast(playing ? `${label ? label + ' w' : 'W'}ill play next` : 'Playing');
+}
+
 function _playNext(item) {
-  // Insert at current index + 1 — or play now if nothing is currently playing.
-  const playing = store.playerIndex >= 0;
-  const idx = (playing ? store.playerIndex : -1) + 1;
-  store.playerQueue.splice(idx, 0, item);
-  import('./queue.js').then(m => m.renderQueue());
-  if (!playing) store.playerIndex = idx;
-  getPlayerModule().then(m => {
-    if (!playing && m.loadAndPlay) m.loadAndPlay();
-    m.saveQueueDebounced && m.saveQueueDebounced();
-  });
-  showToast(playing ? 'Will play next' : 'Playing');
+  return playNext([item]);
+}
+
+// A row of the controlled device's queue: the queue panel's rows, and the full
+// player's ⋯ (whose item is the target's reported track at its reported index).
+// The name/artist sent are the menu's own item, so the target can find the row
+// even when that index is a moment old.
+function _remoteRow(op, idx, item) {
+  if (typeof idx !== 'number' || !item) return;
+  import('./queue.js').then(m => m.sendQueueOp({ op, index: idx, name: item.name || '', artist: item.artist || '' }));
 }
 
 function _playQueueIndex(idx) {
@@ -500,41 +519,15 @@ function _playQueueIndex(idx) {
 }
 
 function _moveQueueAfterCurrent(idx) {
-  if (typeof idx !== 'number' || idx < 0 || idx >= store.playerQueue.length) return;
-  const [item] = store.playerQueue.splice(idx, 1);
-  let dest = (store.playerIndex >= 0 ? store.playerIndex : -1) + 1;
-  if (idx < store.playerIndex) {
-    store.playerIndex--;
-    dest = store.playerIndex + 1;
-  }
-  store.playerQueue.splice(dest, 0, item);
-  import('./queue.js').then(m => m.renderQueue());
-  getPlayerModule().then(m => m.saveQueueDebounced && m.saveQueueDebounced());
+  if (typeof idx !== 'number') return;
+  import('./queue.js').then(m => m.moveAfterCurrent(idx));
 }
 
+// "Remove from queue" (queue only) / "Remove from playlist" (also the Navidrome
+// playlist behind the queue — what the row's ✕ does).
 function _removeFromQueue(idx, fromPlaylist) {
-  if (typeof idx !== 'number' || idx < 0 || idx >= store.playerQueue.length) return;
-  const removed = store.playerQueue[idx];
-  store.playerQueue.splice(idx, 1);
-  if (idx < store.playerIndex) store.playerIndex--;
-  else if (idx === store.playerIndex) {
-    if (store.playerIndex >= store.playerQueue.length) store.playerIndex = store.playerQueue.length - 1;
-    if (store.playerIndex >= 0) getPlayerModule().then(m => {
-      // Hard cut: pause the active deck so crossfade/dj engines don't crossfade
-      // out of the track that was just removed.
-      try { const a = m.getAudio && m.getAudio(); if (a) a.pause(); } catch (e) {}
-      m.loadAndPlay && m.loadAndPlay();
-    });
-  }
-  import('./queue.js').then(m => m.renderQueue());
-  getPlayerModule().then(m => m.saveQueueDebounced && m.saveQueueDebounced());
-  // "Remove from playlist": also drop it from the backing Navidrome playlist
-  // (mirrors the queue row's ✕ button when in playlist mode).
-  if (fromPlaylist && store.playlistMode && removed) {
-    import('./api.js').then(m => m.apiJson(`/api/library/playlist/${store.playlistMode.id}/remove-by-name`, {
-      method: 'POST', body: { name: removed.name || '', artist: removed.artist || '', index: idx },
-    })).catch(() => {});
-  }
+  if (typeof idx !== 'number') return;
+  import('./queue.js').then(m => m.removeQueueIndex(idx, { mirror: !!fromPlaylist }));
 }
 
 async function _fetchAlbumTracks(album) {
@@ -723,8 +716,13 @@ async function _playArtistRadio(item) {
     const data = await apiJson(`/api/radio?${params}`);
     const tracks = data.tracks || [];
     if (!tracks.length) { showToast('No radio tracks'); return; }
-    store.radioMode = true;
-    store.radioSeedTrack = tracks[0];
+    // Under remote control the tracks are enqueued on the target, which cannot
+    // learn radio mode from an enqueue; setting it here would only leave this
+    // device's scratch state saying "radio" for the next transfer to carry.
+    if (!store.remoteTarget) {
+      store.radioMode = true;
+      store.radioSeedTrack = tracks[0];
+    }
     _addToQueue(tracks);
   } catch (e) {
     showToast(e.message || 'Radio failed');
