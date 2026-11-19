@@ -1126,6 +1126,42 @@ export function init() {
 
   // Handle OAuth callback redirect
   checkSpotifyCallback();
+
+  // Under remote control the Playback section still edits THIS device (engine,
+  // streaming quality, every DJ knob — all per-device localStorage). Say so, or the
+  // user tunes the device in their hand believing they changed the one that plays.
+  // Follows body.remote-active (set by remote.js) so nothing has to call in here.
+  syncRemoteSettingsNote();
+  try {
+    new MutationObserver(syncRemoteSettingsNote)
+      .observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  } catch { /* no MutationObserver: the note still updates on section open */ }
+  $('#djModeSection')?.addEventListener('toggle', syncRemoteSettingsNote);
+}
+
+/** Show or hide "These settings apply to this device, not <device>" at the top of
+ *  the Playback section, from store.remoteTarget. Safe to call any time. */
+export function syncRemoteSettingsNote() {
+  const body = document.querySelector('#djModeSection .setting-section-body');
+  if (!body) return;
+  let note = $('#settingsRemoteNote');
+  if (!store.remoteTarget) {
+    if (note) { note.style.display = 'none'; note.textContent = ''; }
+    return;
+  }
+  if (!note) {
+    note = document.createElement('p');
+    note.id = 'settingsRemoteNote';
+    note.className = 'setting-help settings-remote-note';
+    note.setAttribute('role', 'note');
+    note.style.cssText = 'margin:0 0 12px;padding:8px 10px;border:1px solid var(--border);'
+      + 'border-radius:var(--radius-xs);background:var(--bg-elevated);';
+    body.prepend(note);
+  }
+  const dev = (store.remoteDevices || {})[store.remoteTarget];
+  const name = (dev && dev.name) || 'the device you control';
+  note.textContent = `These settings apply to this device, not ${name}`;
+  note.style.display = '';
 }
 
 function checkSpotifyCallback() {

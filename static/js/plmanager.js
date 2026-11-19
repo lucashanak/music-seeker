@@ -263,7 +263,9 @@ function _renderPane(i) {
 }
 
 function _markNowPlaying() {
-  const cur = store.playerQueue && store.playerQueue[store.playerIndex];
+  // Under remote control the track that plays is the target's (it reports the id).
+  const dev = store.remoteTarget ? (store.remoteDevices || {})[store.remoteTarget] : null;
+  const cur = store.remoteTarget ? (dev && dev.track) : (store.playerQueue && store.playerQueue[store.playerIndex]);
   const curId = cur && cur.id ? String(cur.id) : '';
   document.querySelectorAll('#plmPanes .plm-row').forEach(r =>
     r.classList.toggle('plm-now', !!curId && r.dataset.id === curId));
@@ -374,6 +376,7 @@ const _sameIds = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === 
 // playlist) unties the queue from the playlist instead: playback goes on, and
 // nothing the queue does is written into the playlist any more.
 async function _syncPlayingQueue(id, tracks, prevIds) {
+  if (store.remoteTarget) { _remotePlaying(id); return; }
   const mode = store.playlistMode;
   if (!mode || String(mode.id) !== String(id)) return;
   const q = store.playerQueue;
@@ -398,6 +401,25 @@ async function _syncPlayingQueue(id, tracks, prevIds) {
   store.playerIndex = ni;
   try { const qm = await import('./queue.js'); qm.renderQueue && qm.renderQueue(); } catch {}
   _saveQueue();
+}
+
+// Under remote control this device's queue is scratch, so there is nothing of its
+// own to rebuild. The target may be playing this very playlist: it keeps its queue
+// (playback goes on), and the edit lives in the playlist only — there is no command
+// that rebuilds a target's queue from its playlist without restarting the track.
+// Say so once per playlist and session, instead of leaving the queue panel and the
+// playlist silently different.
+const _remoteWarned = new Set();
+function _remotePlaying(id) {
+  const rq = store.remoteQueue;
+  const pm = rq && rq.playlist_mode;
+  if (!pm || String(pm.id) !== String(id)) return;
+  const key = `${store.remoteTarget}|${id}`;
+  if (_remoteWarned.has(key)) return;
+  _remoteWarned.add(key);
+  const dev = (store.remoteDevices || {})[store.remoteTarget];
+  const name = (dev && dev.name) || 'the other device';
+  showToast(`${name} keeps playing its queue — the change is in the playlist only`);
 }
 
 function _untieQueue() {

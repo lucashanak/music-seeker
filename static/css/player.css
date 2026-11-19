@@ -321,6 +321,50 @@ body.player-active .player-bar { display: flex; }
 .remote-controlling-banner { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--accent); background: var(--accent-dim); border-bottom: 1px solid var(--border); padding: 4px 12px; }
 .remote-controlling-banner button { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 4px; }
 body.remote-active #playerDevicesBtn, body.remote-active #fpDevicesBtn { color: var(--accent); }
+.remote-controlling-banner .rcb-text { flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+.remote-controlling-banner .rcb-next { flex: 1; min-width: 0; font-weight: 400; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-controlling-banner .rcb-next:empty { display: none; }
+.remote-controlling-banner.warn { color: #f59e0b; background: rgba(245,158,11,.12); }
+.remote-controlling-banner.warn button { color: #f59e0b; }
+.remote-controlling-banner button { margin-left: auto; }
+/* Pinned right above the player bar (it used to sit in the document flow after the
+   page content, i.e. out of sight) — it carries "Reconnecting…", "isn't responding"
+   and "Tap <device> once to allow playback", which have to be seen. */
+body.remote-active .remote-controlling-banner {
+  position: fixed; left: 0; right: 0; z-index: 99; box-sizing: border-box; min-height: 26px;
+  bottom: calc(var(--player-height, 68px) + env(safe-area-inset-bottom, 0));
+  border-top: 1px solid var(--border); border-bottom: none;
+  background: linear-gradient(var(--accent-dim), var(--accent-dim)), var(--bg);
+}
+body.remote-active .remote-controlling-banner.warn { background: linear-gradient(rgba(245,158,11,.12), rgba(245,158,11,.12)), var(--bg); }
+body.player-active.remote-active main { padding-bottom: calc(var(--player-height) + 24px + 28px); }
+body.keyboard-open .remote-controlling-banner { display: none !important; }
+/* The feedback button sits just above the player bar; lift it over the banner so
+   it does not cover the banner's ⨯ (a margin moves a fixed box with `bottom`). */
+body.player-active.remote-active #feedbackFab { margin-bottom: 28px; }
+@media (max-width: 640px) {
+  /* On a phone the bottom nav sits on top of the player bar. */
+  body.remote-active .remote-controlling-banner { bottom: calc(67px + env(safe-area-inset-bottom, 0) + var(--bottom-nav-height)); }
+  body.player-active.remote-active main { padding-bottom: calc(var(--bottom-nav-height) + 68px + 16px + 28px); }
+}
+.remote-device-row.stale { opacity: .55; }
+.remote-device-row .rdr-hint { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+/* Next/Prev wait for the target to move (one press per move, B12). */
+body.remote-active .remote-pending { opacity: .45; }
+/* Under remote control these would act on, or show, THIS device's own track or
+   playback — not the target's — and nothing forwards them to the target:
+   cast (B16; casting is the target's business), the source badge and prefetch
+   strip (the controller's frozen decks), the playlist badge (the controller's own
+   playlist mode), and add-to/remove-from playlist, download and the kebab, which
+   take the controller's item (B7). !important beats the inline display the engines
+   and cast.js set on some of them. */
+body.remote-active #playerCastBtn, body.remote-active #fpCastBtn, body.remote-active #fpCastVol,
+body.remote-active #playerSourceBadge, body.remote-active #fpSourceBadge,
+body.remote-active #prefetchStatus, body.remote-active #fpPrefetchStatus,
+body.remote-active #fpPlaylistBadge,
+body.remote-active #playerAddToPlaylist, body.remote-active #fpAddToPlaylist,
+body.remote-active #playerRemoveFromPlaylist, body.remote-active #fpRemoveFromPlaylist,
+body.remote-active #playerDownloadBtn, body.remote-active #fpDownload, body.remote-active #fpKebab { display: none !important; }
 
 /* ── DJ panel: energy direction (segmented; thumb-sized on a phone) ── */
 .dj-energy-dir { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }

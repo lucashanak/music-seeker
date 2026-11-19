@@ -6,6 +6,9 @@ import { apiJson } from './api.js';
 import { renderQueueInto, renderQueue, openFpQueuePanel, closeFpQueuePanel, closeQueuePanel, scrollToNowPlaying, resetShuffleOrder } from './queue.js';
 import { toggleLike, isLiked } from './likes.js';
 import * as djPanel from './djpanel.js';
+// Namespace import: clearQueueAction is C2's newer export; a missing name here is
+// `undefined`, where a named import of it would fail the whole module.
+import * as queueMod from './queue.js';
 
 // Forward references set during init to avoid circular imports
 let nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon;
@@ -31,11 +34,43 @@ export function setPlayerRefs(refs) {
   _engineVolume = refs.setVolume || null;
 }
 
+// ── Remote control (this device drives another one) ──
+// Under store.remoteTarget this device is a remote: it never changes its own playback
+// state for a button press, it asks the target (remote.js turns `remote:cmd` into a
+// command) and shows what the target reports. `dev` is that report.
+function _remoteDev() {
+  return store.remoteTarget ? (store.remoteDevices[store.remoteTarget] || null) : null;
+}
+
+function _remoteCmd(action, value) {
+  const detail = value === undefined ? { action } : { action, value };
+  document.dispatchEvent(new CustomEvent('remote:cmd', { detail }));
+}
+
+const _REPEAT_MODES = ['off', 'all', 'one'];
+
 // ── Shared player-mode toggles (engine-agnostic: drive store, sync both UIs) ──
 // Behavior mirrors the original full-player handlers; the active engine reads
 // store.shuffleEnabled / store.repeatMode, so flipping the store is sufficient.
 export function toggleShuffle() {
-  store.shuffleEnabled = !store.shuffleEnabled;
+  if (store.remoteTarget) {
+    const dev = _remoteDev();
+    _remoteCmd('shuffle', !(dev && dev.shuffle));
+    return;
+  }
+  _applyShuffle(!store.shuffleEnabled);
+}
+
+/** Target side of a `shuffle` command: the same as pressing the button here. */
+export function setShuffle(on) {
+  _restoreModes();
+  if (!!on === store.shuffleEnabled) { syncShuffleRepeatUI(); return; }
+  _applyShuffle(!!on);
+}
+
+function _applyShuffle(on) {
+  _restoreModes();
+  store.shuffleEnabled = on;
   // A fresh permutation per switch-on; switching off leaves the queue order and the
   // index already on the playing track, so there is nothing to restore.
   resetShuffleOrder();
@@ -47,8 +82,21 @@ export function toggleShuffle() {
 }
 
 export function toggleRepeat() {
-  const modes = ['off', 'all', 'one'];
-  store.repeatMode = modes[(modes.indexOf(store.repeatMode) + 1) % 3];
+  if (store.remoteTarget) {
+    const dev = _remoteDev();
+    const cur = dev && _REPEAT_MODES.includes(dev.repeat) ? dev.repeat : 'off';
+    _remoteCmd('repeat', _REPEAT_MODES[(_REPEAT_MODES.indexOf(cur) + 1) % 3]);
+    return;
+  }
+  _restoreModes();
+  setRepeat(_REPEAT_MODES[(_REPEAT_MODES.indexOf(store.repeatMode) + 1) % 3]);
+}
+
+/** Target side of a `repeat` command. Anything but off/all/one is ignored. */
+export function setRepeat(mode) {
+  if (!_REPEAT_MODES.includes(mode)) return;
+  _restoreModes();
+  store.repeatMode = mode;
   _persistModes();
   syncShuffleRepeatUI();
 }
@@ -80,19 +128,26 @@ function _restoreModes() {
 
 export function syncShuffleRepeatUI() {
   _restoreModes();
+  // Under remote control the buttons show the TARGET's modes; this device's own
+  // store values are left alone and come back on screen when control ends.
+  const dev = _remoteDev();
+  const shuffle = store.remoteTarget ? !!(dev && dev.shuffle) : store.shuffleEnabled;
+  const repeat = store.remoteTarget
+    ? (dev && _REPEAT_MODES.includes(dev.repeat) ? dev.repeat : 'off')
+    : store.repeatMode;
   for (const id of ['#fpShuffle', '#playerShuffle']) {
     const b = $(id);
-    if (b) b.classList.toggle('active', store.shuffleEnabled);
+    if (b) b.classList.toggle('active', shuffle);
   }
-  const repeatTitle = store.repeatMode === 'off' ? 'Repeat off'
-    : store.repeatMode === 'all' ? 'Repeat all' : 'Repeat one';
+  const repeatTitle = repeat === 'off' ? 'Repeat off'
+    : repeat === 'all' ? 'Repeat all' : 'Repeat one';
   for (const [btnId, badgeId] of [['#fpRepeat', '#fpRepeatBadge'], ['#playerRepeat', '#playerRepeatBadge']]) {
     const btn = $(btnId);
     if (!btn) continue;
-    btn.classList.toggle('active', store.repeatMode !== 'off');
+    btn.classList.toggle('active', repeat !== 'off');
     btn.title = repeatTitle;
     const badge = $(badgeId);
-    if (badge) badge.textContent = store.repeatMode === 'one' ? '1' : '';
+    if (badge) badge.textContent = repeat === 'one' ? '1' : '';
   }
 }
 
@@ -119,7 +174,24 @@ function _applyVolume(vol) {
 }
 
 export function toggleMute() {
-  if (store.playerVolume > 0) {
+  if (store.remoteTarget) {
+    const dev = _remoteDev();
+    _remoteCmd('mute', !(dev && dev.muted));
+    return;
+  }
+  setMuted(!isMuted());
+}
+
+/** Muted = volume 0, the same rule the icon has always used. */
+export function isMuted() {
+  return store.playerVolume <= 0;
+}
+
+/** Target side of a `mute` command (and the local button). Unmuting goes back to
+ *  the level before the mute, or to full volume when there is none to go back to. */
+export function setMuted(muted) {
+  if (!!muted === isMuted()) { syncMuteUI(); return; }
+  if (muted) {
     _preMuteVolume = store.playerVolume;
     _applyVolume(0);
   } else {
@@ -132,7 +204,8 @@ const _ICON_SPEAKER = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><pat
 const _ICON_MUTED = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>';
 
 export function syncMuteUI() {
-  const muted = store.playerVolume <= 0;
+  const dev = _remoteDev();
+  const muted = store.remoteTarget ? !!(dev && dev.muted) : isMuted();
   for (const [iconId, btnId] of [['#playerMuteIcon', '#playerMute'], ['#fpMuteIcon', '#fpMute']]) {
     const icon = $(iconId);
     if (icon) icon.innerHTML = muted ? _ICON_MUTED : _ICON_SPEAKER;
@@ -167,7 +240,20 @@ function _toggleCurrentLike() {
 
 // ── Sync Full Player ──
 export function syncFullPlayer() {
-  if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) return;
+  // Under remote control the controller's own (paused) track must not be painted:
+  // the engine calls this on its own track changes, and openFullPlayer on every open.
+  if (store.remoteTarget) { _remotePaintKey = ''; _paintRemoteTrack(_remoteDev()); return; }
+  _remotePaintKey = '';
+  _hideRemoteNext();
+  if (store.playerIndex < 0 || store.playerIndex >= store.playerQueue.length) {
+    // Nothing local to show, but the toggles may still carry the target's state
+    // from a remote session that just ended.
+    syncShuffleRepeatUI();
+    syncMuteUI();
+    syncLikeUI();
+    syncSourceLabel();
+    return;
+  }
   const item = store.playerQueue[store.playerIndex];
   const fpImg = $('#fpImg');
   if (fpImg) setArt(fpImg, item.image);
@@ -198,13 +284,90 @@ export function syncFullPlayer() {
 export function syncSourceLabel() {
   const el = document.querySelector('.fp-source');
   if (!el) return;
+  if (store.remoteTarget) {
+    const dev = _remoteDev();
+    const pm = store.remoteQueue && store.remoteQueue.playlist_mode;
+    const pl = pm && typeof pm === 'object' ? pm.name : '';
+    el.textContent = `Playing on ${(dev && dev.name) || 'other device'}` + (pl ? ` · ${pl}` : '');
+    return;
+  }
   const name = store.playlistMode && store.playlistMode.name;
   el.textContent = name ? `Playing from ${name}` : 'Now Playing';
 }
 
+// ── Remote now-playing extras ──
+// remote.js paints title, art, time, play/pause and volume from the target's report;
+// this paints the rest of the full player from the same report. Idempotent — remote.js
+// calls it on every state update, syncFullPlayer() on open.
+// remote.js calls this every second while controlling: skip the repaint when nothing
+// it shows has changed. Liked state is in the key too — a like made on another
+// device changes it, and the 'likeschange' listener repaints the hearts anyway.
+let _remotePaintKey = '';
+
+export function paintRemoteState(dev) {
+  if (!store.remoteTarget) return;
+  dev = dev || _remoteDev();
+  const tr = dev && dev.track, nx = dev && dev.next;
+  const pm = store.remoteQueue && store.remoteQueue.playlist_mode;
+  const key = [store.remoteTarget, dev && dev.name, tr && tr.id, tr && tr.name, tr && tr.artist,
+    tr ? isLiked(tr) : '', dev && dev.muted, dev && dev.shuffle, dev && dev.repeat,
+    nx && nx.name, nx && nx.artist, pm && typeof pm === 'object' ? pm.name : ''].join('\u0001');
+  if (key === _remotePaintKey) return;
+  _remotePaintKey = key;
+  syncLikeUI();
+  syncMuteUI();
+  syncShuffleRepeatUI();
+  syncSourceLabel();
+  _paintRemoteNext(dev);
+}
+
+function _paintRemoteTrack(dev) {
+  const tr = (dev && dev.track) || null;
+  const fpImg = $('#fpImg');
+  if (fpImg && tr) setArt(fpImg, tr.image || '');
+  const fpTitle = $('#fpTitle');
+  if (fpTitle) fpTitle.textContent = (tr && tr.name) || '';
+  const fpArtist = $('#fpArtist');
+  if (fpArtist) fpArtist.textContent = (tr && tr.artist) || '';
+  paintRemoteState(dev);
+}
+
+// "Next: <name> — <artist>" under the artist row: what the TARGET will play next
+// (its shuffle / Smart Queue pick), which the queue order on screen cannot tell.
+// Built here rather than in markup; it exists only for remote control.
+function _remoteNextEl() {
+  let el = $('#fpRemoteNext');
+  if (el) return el;
+  const anchor = document.querySelector('#fullPlayer .fp-artist-row');
+  if (!anchor) return null;
+  el = document.createElement('div');
+  el.id = 'fpRemoteNext';
+  el.className = 'fp-remote-next';
+  el.style.cssText = 'display:none;font-size:12px;color:var(--text-muted);margin-top:4px;'
+    + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  anchor.after(el);
+  return el;
+}
+
+function _paintRemoteNext(dev) {
+  const nx = dev && dev.next;
+  if (!nx || !(nx.name || nx.artist)) { _hideRemoteNext(); return; }
+  const el = _remoteNextEl();
+  if (!el) return;
+  el.textContent = `Next: ${nx.name || ''}` + (nx.artist ? ` — ${nx.artist}` : '');
+  el.style.display = '';
+}
+
+function _hideRemoteNext() {
+  const el = $('#fpRemoteNext');
+  if (el) { el.style.display = 'none'; el.textContent = ''; }
+}
+
 // ── Open/Close Full Player ──
 export function openFullPlayer() {
-  if (store.fullPlayerOpen || store.playerIndex < 0) return;
+  // Under remote control the controller's own queue may well be empty; the full
+  // player then shows the target's track.
+  if (store.fullPlayerOpen || (store.playerIndex < 0 && !store.remoteTarget)) return;
   // The bar is now lifted over the queue backdrop (z-index 250) so it stays usable
   // while the small panel is open — and a tap on the bar's artwork opens THIS player
   // (201). Left alone, bar and panel would both sit on top of it: two players over
@@ -215,15 +378,16 @@ export function openFullPlayer() {
   if (inheritHistory) closeQueuePanel(true);
   syncFullPlayer();
   syncSourceLabel();
-  // Update progress if already playing
-  const _a = audio();
+  // Update progress if already playing (locally — under remote control remote.js
+  // paints the target's position and play/pause icon).
+  const _a = store.remoteTarget ? null : audio();
   if (_a && _a.duration) {
     const pct = (_a.currentTime / _a.duration) * 100;
     $('#fpProgressFill').style.width = pct + '%';
     $('#fpTimeCurrent').textContent = fmtTime(_a.currentTime);
     $('#fpTimeTotal').textContent = fmtTime(_a.duration);
   }
-  if (updatePlayPauseIcon) updatePlayPauseIcon(store.playerPlaying);
+  if (updatePlayPauseIcon && !store.remoteTarget) updatePlayPauseIcon(store.playerPlaying);
   $('#fullPlayer').classList.add('open');
   store.fullPlayerOpen = true;
   // Populate desktop inline queue
@@ -276,11 +440,22 @@ async function _openArtistPage(name) {
   cm.openArtistByName(name);
 }
 
-// Current now-playing item (or null).
+// Current now-playing item (or null). Under remote control it is the track the
+// TARGET reports playing — like, download, add to playlist and the ⋯ menu act on
+// what is heard, not on the controller's stale local track. The likes API is per
+// user, so liking the reported item is liking it for the target's user too.
 function _currentItem() {
+  if (store.remoteTarget) {
+    const dev = _remoteDev();
+    const tr = dev && dev.track;
+    return tr && (tr.name || tr.id) ? tr : null;
+  }
   return (store.playerIndex >= 0 && store.playerIndex < store.playerQueue.length)
     ? store.playerQueue[store.playerIndex] : null;
 }
+
+/** The track per-track actions should act on (see _currentItem). */
+export function currentItem() { return _currentItem(); }
 
 // ── Init ──
 export function init() {
@@ -357,6 +532,20 @@ export function init() {
 
   // Desktop inline queue clear button
   $('#fpClearQueue').addEventListener('click', async () => {
+    // queue.js owns what "clear" means in both modes (local: pause, clear, hide the
+    // bar, save; remote: queue_op clear to the target, nothing local touched).
+    if (typeof queueMod.clearQueueAction === 'function') {
+      await queueMod.clearQueueAction();
+      closeFullPlayer();
+      return;
+    }
+    if (store.remoteTarget) {
+      // The target clears its own queue (and its Up Next); nothing local changes —
+      // no pause, no hidePlayerBar (the bar shows the target's track).
+      _remoteCmd('queue_op', { op: 'clear' });
+      closeFullPlayer();
+      return;
+    }
     audio().pause();
     const u = await import('./upnext.js');
     await u.clearActiveQueue();
@@ -367,7 +556,11 @@ export function init() {
   });
 
   // Full player controls
-  $('#fpPlayPause').addEventListener('click', () => {
+  // Under remote control remote.js intercepts these in the capture phase and calls
+  // preventDefault(); the branches here only send when that did not happen, so a
+  // press is never sent twice and never plays this device's own deck.
+  $('#fpPlayPause').addEventListener('click', (e) => {
+    if (store.remoteTarget) { if (!e.defaultPrevented) _remoteCmd('toggle'); return; }
     if (store.castDevice) {
       if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
       else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
@@ -376,16 +569,24 @@ export function init() {
       if (a.paused) a.play().catch(() => {}); else a.pause();
     }
   });
-  $('#fpPrev').addEventListener('click', () => prevTrack());
-  $('#fpNext').addEventListener('click', () => nextTrack());
+  $('#fpPrev').addEventListener('click', (e) => {
+    if (store.remoteTarget) { if (!e.defaultPrevented) _remoteCmd('prev'); return; }
+    prevTrack();
+  });
+  $('#fpNext').addEventListener('click', (e) => {
+    if (store.remoteTarget) { if (!e.defaultPrevented) _remoteCmd('next'); return; }
+    nextTrack();
+  });
 
   // Full player seek
+  function _fpPct(e) {
+    const rect = $('#fpProgressBar').getBoundingClientRect();
+    const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+    return rect.width > 0 ? Math.max(0, Math.min(1, (x - rect.left) / rect.width)) : 0;
+  }
   function _fpSeek(e) {
     const a = audio();
-    const bar = $('#fpProgressBar');
-    const rect = bar.getBoundingClientRect();
-    const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
-    const pct = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+    const pct = _fpPct(e);
     // The DJ engine knows durations this element does not (a stream served while its
     // file is still being built reports Infinity) and how to seek in such a stream.
     if (!store.castDevice && _engineSeek) { _engineSeek(pct); return; }
@@ -399,11 +600,27 @@ export function init() {
       try { a.currentTime = pct * dur; } catch {}
     }
   }
-  $('#fpProgressBar').addEventListener('click', _fpSeek);
-  $('#fpProgressBar').addEventListener('touchstart', (e) => { e.preventDefault(); _fpSeek(e); }, { passive: false });
+  // Under remote control a seek must reach the target and never this device's own
+  // paused deck. remote.js has capture-phase interceptors for click AND touchstart
+  // that preventDefault(); these handlers send `seek_pct` only when no interceptor
+  // did (remote.js converts it with the TARGET's duration and refuses an unknown one).
+  $('#fpProgressBar').addEventListener('click', (e) => {
+    if (store.remoteTarget) { if (!e.defaultPrevented) _remoteCmd('seek_pct', _fpPct(e)); return; }
+    _fpSeek(e);
+  });
+  $('#fpProgressBar').addEventListener('touchstart', (e) => {
+    if (store.remoteTarget) {
+      if (!e.defaultPrevented) { e.preventDefault(); _remoteCmd('seek_pct', _fpPct(e)); }
+      return;
+    }
+    e.preventDefault(); _fpSeek(e);
+  }, { passive: false });
 
   // Full player volume
   $('#fpVolume').addEventListener('input', (e) => {
+    // remote.js sends the slider to the target (capture phase); this device's own
+    // volume must not follow it.
+    if (store.remoteTarget) return;
     store.playerVolume = e.target.value / 100;
     $('#playerVolume').value = e.target.value;
     if (store.castDevice) {
@@ -416,7 +633,7 @@ export function init() {
 
   // Full player download
   $('#fpDownload').addEventListener('click', async () => {
-    const item = store.playerIndex >= 0 ? store.playerQueue[store.playerIndex] : null;
+    const item = _currentItem();
     if (!item) return;
     const btn = $('#fpDownload');
     btn.style.color = 'var(--accent)';
@@ -479,6 +696,12 @@ export function init() {
       const kebab = m.makeKebabButton(() => {
         const item = _currentItem();
         if (!item) return null;
+        // Under remote control the row is the target's current queue row.
+        if (store.remoteTarget) {
+          const dev = _remoteDev();
+          const qi = dev && Number.isInteger(dev.index) ? dev.index : -1;
+          return { item, type: 'queue-track', context: { queueIndex: qi, remote: true } };
+        }
         return { item, type: 'queue-track', context: { queueIndex: store.playerIndex } };
       });
       kebab.id = 'fpKebab';
@@ -555,6 +778,9 @@ export function init() {
       if (Math.abs(dx) < 5) {
         art.style.transform = '';
         art.style.opacity = '';
+        // Under remote control a tap toggles the TARGET; this device's deck still
+        // holds its old track and must stay silent.
+        if (store.remoteTarget) { _remoteCmd('toggle'); return; }
         const a = audio();
         if (a.paused) a.play().catch(() => {}); else a.pause();
         return;
@@ -570,7 +796,9 @@ export function init() {
           art.style.transition = 'none';
           art.style.transform = `translateX(${enterFrom}px)`;
           art.style.opacity = '0';
-          if (goNext) {
+          if (store.remoteTarget) {
+            _remoteCmd(goNext ? 'next' : 'prev');
+          } else if (goNext) {
             nextTrack();
           } else if (store.playerIndex > 0) {
             store.playerIndex--;
