@@ -303,8 +303,10 @@ const scenarios = {
       // from the same value the transition trigger reads.
       await sleep(1200);
       const total = await s.page.evaluate(() => document.querySelector('#playerTimeTotal').textContent);
+      const secs = (mmss) => { const [m, x] = String(mmss).split(':').map(Number); return m * 60 + x; };
       const want = `${Math.floor(learned / 60)}:${String(Math.floor(learned % 60)).padStart(2, '0')}`;
-      check('progressive: the engine uses it while the element still reports no duration', !Number.isFinite(elDur) && total === want, `element=${elDur}, shown total=${total}, learned=${want}`);
+      check('progressive: the engine uses it while the element still reports no duration', !Number.isFinite(elDur) && Math.abs(secs(total) - learned) <= 1,   // the log rounds to 0.1 s: 140.96 reads 2:21 there and 2:20 on screen
+        `element=${elDur}, shown total=${total}, learned=${want}`);
       if (!learned) return;
       await waitCached(s.page, b);
       await s.page.evaluate(() => { window.__gain.length = 0; });

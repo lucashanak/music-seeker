@@ -362,6 +362,99 @@ test('an expired stream token is renewed and retried — never treated as a dead
   }
 });
 
+test('a prefetch that failed on the network is tried again — and a 4xx is not', async () => {
+  store.playerQueue = tracks(6);
+  store.playerIndex = 0;
+  const realFetch = globalThis.fetch;
+  const saved = [...P.RETRY_DELAYS_MS];
+  P.RETRY_DELAYS_MS.splice(0, 3, 80, 80, 80);
+  const calls = { t1: 0, t2: 0, t3: 0 };
+  globalThis.fetch = async (url, opts) => {
+    const name = new URL(String(url), 'http://x').searchParams.get('name');
+    if (name in calls) calls[name]++;
+    if (name === 't1' && calls.t1 === 1) throw new TypeError('network changed');      // link dropped
+    if (name === 't2' && calls.t2 <= 2) return { ok: false, status: 502, headers: { get: () => null } };
+    if (name === 't3') return { ok: false, status: 404, headers: { get: () => null } };
+    return realFetch(url, opts);
+  };
+  try {
+    P.pausePrefetch(); P.clearAll(); P.resumePrefetch();   // window = t1, t2, t3
+    await settle();
+    assert.equal(P.getStatus('t1', 'a'), null, 'failed, nothing cached yet');
+    await new Promise(r => setTimeout(r, 450));
+    await settle();
+    assert.equal(P.getStatus('t1', 'a')?.state, 'ready', 'the dropped download was retried');
+    assert.equal(calls.t1, 2);
+    assert.equal(P.getStatus('t2', 'a')?.state, 'ready', 'a 5xx is retried until it answers');
+    assert.equal(calls.t2, 3);
+    assert.equal(calls.t3, 1, 'a 404 is an answer: asked once');
+  } finally {
+    globalThis.fetch = realFetch;
+    P.RETRY_DELAYS_MS.splice(0, 3, ...saved);
+    P.clearAll();
+  }
+});
+
+test('a failed prefetch is not retried for a track that left the queue, and gives up in the end', async () => {
+  const realFetch = globalThis.fetch;
+  const saved = [...P.RETRY_DELAYS_MS];
+  P.RETRY_DELAYS_MS.splice(0, 3, 80, 80, 80);
+  let n = 0;
+  globalThis.fetch = async () => { n++; throw new TypeError('offline'); };
+  try {
+    store.playerQueue = tracks(2);
+    store.playerIndex = 0;
+    P.pausePrefetch(); P.clearAll(); P.resumePrefetch();
+    await settle();
+    assert.equal(n, 1);
+    store.playerQueue = [];                    // the user cleared the queue meanwhile
+    await new Promise(r => setTimeout(r, 250));
+    assert.equal(n, 1, 'gone from the queue → no retry');
+
+    n = 0;
+    store.playerQueue = tracks(2);
+    P.pausePrefetch(); P.clearAll(); P.resumePrefetch();
+    await new Promise(r => setTimeout(r, 700));
+    assert.equal(n, 4, 'first try + three retries, then it stops');
+  } finally {
+    globalThis.fetch = realFetch;
+    P.RETRY_DELAYS_MS.splice(0, 3, ...saved);
+    P.clearAll();
+  }
+});
+
+test('a failed prefetch is not retried once the user has skipped past the track', async () => {
+  const realFetch = globalThis.fetch;
+  const saved = [...P.RETRY_DELAYS_MS];
+  P.RETRY_DELAYS_MS.splice(0, 3, 80, 80, 80);
+  const asked = [];
+  globalThis.fetch = async (url) => { asked.push(new URL(String(url), 'http://x').searchParams.get('name')); throw new TypeError('offline'); };
+  try {
+    store.playerQueue = tracks(40);
+    store.playerIndex = 0;
+    P.pausePrefetch(); P.clearAll(); P.resumePrefetch();      // asks for t1–t3, all fail
+    await settle();
+    assert.deepEqual(asked.sort(), ['t1', 't2', 't3']);
+    // Skipped far ahead; t1 is still IN the queue, but behind us.
+    store.playerIndex = 20;
+    await new Promise(r => setTimeout(r, 400));
+    assert.equal(asked.length, 3, 'out of the upcoming window → not downloaded again');
+
+    // Same, through the engine's own abort on an advance.
+    asked.length = 0;
+    store.playerIndex = 0;
+    P.pausePrefetch(); P.clearAll(); P.resumePrefetch();
+    await settle();
+    P.abortStale([P.keyFor('t9', 'a')]);
+    await new Promise(r => setTimeout(r, 400));
+    assert.equal(asked.length, 3, 'abortStale drops the pending retries');
+  } finally {
+    globalThis.fetch = realFetch;
+    P.RETRY_DELAYS_MS.splice(0, 3, ...saved);
+    P.clearAll();
+  }
+});
+
 test('cleanup under shuffle keeps the upcoming permutation, not the storage neighbours', async () => {
   store.shuffleEnabled = true;
   store.playerQueue = tracks(60);

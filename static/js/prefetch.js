@@ -9,6 +9,13 @@ const _fetching = new Map();    // key → { priority, controller, progress }
 const MAX_CONCURRENT = 3;
 const IDLE_ABORT_MS = 30000;
 const _queue = [];              // priority-sorted FIFO
+// A download that FAILED (link dropped, body cut short, server 5xx) is tried again.
+// It used to be dropped for good: nothing asked for that track again until the next
+// `playing` event, so one network blip meant the transition into it ran off the live
+// stream. Exported (and mutable) so the tests do not wait real seconds.
+export const RETRY_DELAYS_MS = [3000, 10000, 30000];
+const RETRY_FORGET_MS = 5 * 60 * 1000;
+const _retries = new Map();     // key → { n, timer, last }
 // Preload-set state: keys pinned against eviction + the (key,item) targets to
 // keep re-enqueued across resume. Empty when no preload is active → cleanup and
 // resume behave EXACTLY as before (no pins → nothing extra kept/re-enqueued).
@@ -51,6 +58,12 @@ export function abortStale(keepKeys) {
   for (let i = _queue.length - 1; i >= 0; i--) {
     if (!keep.has(_queue[i].key)) _queue.splice(i, 1);
   }
+  // …and a pending retry of a download that is stale now must not bring it back.
+  for (const [key, r] of _retries) {
+    if (keep.has(key)) continue;
+    clearTimeout(r.timer);
+    _retries.delete(key);
+  }
 }
 
 /** Build the prefetch cache key for a track (decoded artist:name or id:<id>).
@@ -65,6 +78,8 @@ export function clearAll() {
   for (const [, state] of _fetching) { try { state.controller.abort(); } catch (e) {} }
   _fetching.clear();
   _queue.length = 0;
+  for (const [, r] of _retries) clearTimeout(r.timer);
+  _retries.clear();
   // Queue is being replaced → any preload target is void; clear pins so the new
   // blobs evict normally (no leftover pins keeping stale-queue blobs alive).
   _pinned.clear();
@@ -241,6 +256,49 @@ function _fillQueueFrom(queue, currentIndex, count) {
   }
 }
 
+/** Still worth downloading: in the window of what plays next (the same one cleanup()
+ *  keeps), pinned by a preload, or asked for by the engine by name (priority 0 — the
+ *  bound next track, which Smart Queue takes from anywhere) and still in the queue.
+ *  A track the user skipped past is neither: abortStale() drops its pending retry. */
+function _stillWanted(entry) {
+  const key = entry.key;
+  if (_pinned.has(key)) return true;
+  const q = store.playerQueue || [];
+  for (const i of _upcomingIndices(q, store.playerIndex, _prefetchCount() + 2)) {
+    if (q[i] && _key(q[i].name, q[i].artist, q[i].id) === key) return true;
+  }
+  if (entry.priority !== 0) return false;
+  for (let i = 0; i < q.length; i++) {
+    if (i !== store.playerIndex && q[i] && _key(q[i].name, q[i].artist, q[i].id) === key) return true;
+  }
+  return false;
+}
+
+function _retryLater(entry) {
+  const now = Date.now();
+  let r = _retries.get(entry.key);
+  if (!r || now - r.last > RETRY_FORGET_MS) r = { n: 0, timer: null, last: now };
+  r.last = now;
+  _retries.set(entry.key, r);
+  clearTimeout(r.timer);
+  // Gave up: forget it, so a later request (the next `playing`, a refill) starts afresh.
+  if (r.n >= RETRY_DELAYS_MS.length) { _retries.delete(entry.key); return; }
+  r.timer = setTimeout(() => {
+    r.timer = null;
+    // Paused: resumePrefetch() refills the window itself, and the engine asks for the
+    // bound next track on every `playing`. Not an attempt — do not count it.
+    if (_paused || store.castDevice) { r.n = Math.max(0, r.n - 1); return; }
+    if (_cache.has(entry.key) || _fetching.has(entry.key) || _queue.some(q => q.key === entry.key)) return;
+    if (!_stillWanted(entry)) { _retries.delete(entry.key); return; }
+    // By priority: a retry from further down the window must not jump ahead of the
+    // track the engine has just asked for.
+    const at = _queue.findIndex(q => q.priority > entry.priority);
+    if (at < 0) _queue.push(entry); else _queue.splice(at, 0, entry);
+    _processNext();
+  }, RETRY_DELAYS_MS[r.n]);
+  r.n++;
+}
+
 /** Process queue — up to MAX_CONCURRENT downloads at a time. */
 function _processNext() {
   while (!_paused && _fetching.size < MAX_CONCURRENT && _queue.length > 0) {
@@ -252,8 +310,11 @@ function _processNext() {
 
 async function _startFetch(entry) {
   const controller = new AbortController();
-  const state = { priority: entry.priority, controller, progress: 0 };
+  const state = { priority: entry.priority, controller, progress: 0, idleAbort: false };
   _fetching.set(entry.key, state);
+  // Only OUR registration: after an abort the same key may already belong to a newer
+  // download, and deleting that one threw its finished blob away.
+  const drop = () => { if (_fetching.get(entry.key) === state) _fetching.delete(entry.key); };
 
   try {
     const cleanName = _decodeEntities(entry.item.name || '');
@@ -269,12 +330,16 @@ async function _startFetch(entry) {
       if (controller.signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
       res = await fetch(url(), { signal: controller.signal });
     }
-    if (!res.ok) { _fetching.delete(entry.key); _processNext(); return; }
+    if (!res.ok) {
+      drop();
+      if (res.status >= 500) _retryLater(entry);     // a 4xx is an answer, not a hiccup
+      _processNext(); return;
+    }
     // Validate content-type — reject HTML/JSON error pages served with 200 status.
     // Accept audio/* and application/octet-stream (some flac/mp3 streams use it).
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (ct && !ct.startsWith('audio/') && !ct.startsWith('application/octet-stream')) {
-      _fetching.delete(entry.key); _processNext(); return;
+      drop(); _processNext(); return;
     }
 
     // Track download progress via ReadableStream
@@ -289,7 +354,7 @@ async function _startFetch(entry) {
       // it is protected from cleanup and blocks a retry — so that track was never
       // cached. Bytes have started; 30 s without another one is a dead link.
       let idle = null;
-      const arm = () => { clearTimeout(idle); idle = setTimeout(() => { try { controller.abort(); } catch (e) {} }, IDLE_ABORT_MS); };
+      const arm = () => { clearTimeout(idle); idle = setTimeout(() => { state.idleAbort = true; try { controller.abort(); } catch (e) {} }, IDLE_ABORT_MS); };
       try {
         arm();
         while (true) {
@@ -305,24 +370,28 @@ async function _startFetch(entry) {
       // giving up) would otherwise be cached as a complete track. The container
       // header still declares the full duration, so playback would run out of
       // audio partway and play silence to the shown end — never cache a short read.
-      if (received !== total) { _fetching.delete(entry.key); _processNext(); return; }
+      if (received !== total) { drop(); _retryLater(entry); _processNext(); return; }
       blob = new Blob(chunks);
     } else {
       blob = await res.blob();
     }
     // Reject suspiciously small bodies — an error page/JSON served as octet-stream
     // with HTTP 200 would otherwise poison the cache for the full 4h stream TTL.
-    if (blob.size < 10240) { _fetching.delete(entry.key); _processNext(); return; }
+    if (blob.size < 10240) { drop(); _processNext(); return; }
     // Aborted mid-flight (skip/clear deleted the _fetching entry): don't poison the
     // cache with a blob for an already-skipped track, and don't leak the object URL.
-    if (controller.signal.aborted || !_fetching.has(entry.key)) { _processNext(); return; }
+    if (controller.signal.aborted || _fetching.get(entry.key) !== state) { _processNext(); return; }
     _cache.set(entry.key, { blobUrl: URL.createObjectURL(blob), size: blob.size });
     state.progress = 100;
+    const done = _retries.get(entry.key);
+    if (done) { clearTimeout(done.timer); _retries.delete(entry.key); }
   } catch (e) {
-    if (e.name !== 'AbortError') { /* network error, skip */ }
+    // A user/engine abort (skip, queue cleared) is final. A network error, or our own
+    // idle abort of a link that went dead, is worth another try.
+    if ((e.name !== 'AbortError' || state.idleAbort) && _fetching.get(entry.key) === state) _retryLater(entry);
   }
 
-  _fetching.delete(entry.key);
+  drop();
   if (!_paused) _processNext();
 }
 
