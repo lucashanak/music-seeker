@@ -134,7 +134,14 @@ const decks = (page) => page.evaluate(() => [...document.querySelectorAll('audio
 })));
 const title = (page) => page.evaluate(() => document.querySelector('#playerTitle').textContent);
 async function waitCached(page, t, ms = 90000) {
-  await page.waitForFunction((t) => window.__m.prefetch.getStatus(t.name, t.artist)?.state === 'ready', t, { timeout: ms });
+  try {
+    await page.waitForFunction((t) => window.__m.prefetch.getStatus(t.name, t.artist)?.state === 'ready', t, { timeout: ms });
+  } catch (e) {
+    e.diag = 'prefetch of the next track never became ready: ' + JSON.stringify({
+      status: await page.evaluate((t) => window.__m.prefetch.getStatus(t.name, t.artist) || null, t).catch(() => '?'),
+      decks: await decks(page).catch(() => '?'), title: await title(page).catch(() => '?') });
+    throw e;
+  }
 }
 async function seekToEnd(page, secBefore) {
   return page.evaluate((s) => {
@@ -248,22 +255,36 @@ const scenarios = {
   // is cold: it must start at once, the deck must learn its real length, and the
   // transition out of it must still end on the track's end.
   async progressive() {
-    let nav = null;
-    for (const t of lib.slice(40, 160)) {
-      const q = new URLSearchParams({ name: t.name, artist: t.artist });
-      const src = await api(`/api/player/resolve-source?${q}`, null, tok);
-      if (src.source !== 'navidrome') continue;
-      const d = await (await fetch(`${BASE}/api/player/stream-duration?${q}&token=${encodeURIComponent(tok)}`, { headers: { 'User-Agent': 'ms-review/1.0' } })).json().catch(() => ({}));
-      if (d.ready === false) { nav = t; break; }       // resolved, but no finished cache file
-    }
-    if (!nav) { check('progressive: a cold Navidrome-only track exists to test with', false, 'none found (all warm, or endpoint not deployed)'); return; }
-    const b = lib.find(t => t.artist !== nav.artist && styleOf(nav.camelot, t.camelot) === 'blend');
-    const s = await session();
-    try {
-      let prog = false;
+    // A cold cache is not enough: Navidrome keeps its own transcodes, and a song it can
+    // hand over within a moment is built before the router's 1 s wait ends — a plain file,
+    // correctly not progressive. So candidates are tried until one really is served
+    // while it is built (the same first cold track used to be picked after every deploy).
+    const cold = async (from) => {
+      for (let i = from; i < 160; i++) {
+        const t = lib[i];
+        if (!t) break;
+        const q = new URLSearchParams({ name: t.name, artist: t.artist });
+        const src = await api(`/api/player/resolve-source?${q}`, null, tok);
+        if (src.source !== 'navidrome' || src.raw) continue;   // served untouched: a plain file, never progressive
+        const d = await (await fetch(`${BASE}/api/player/stream-duration?${q}&token=${encodeURIComponent(tok)}`, { headers: { 'User-Agent': 'ms-review/1.0' } })).json().catch(() => ({}));
+        if (d.ready === false) return [t, i];           // resolved, but no finished cache file
+      }
+      return [null, 160];
+    };
+    let nav = null, s = null, prog = false, t0 = 0, b = null, at = 40;
+    const quick = [];
+    for (let tries = 0; tries < 5 && !prog; tries++) {
+      [nav, at] = await cold(at); at++;
+      if (!nav) break;
+      b = lib.find(t => t.artist !== nav.artist && styleOf(nav.camelot, t.camelot) === 'blend');
+      s = await session();
       s.page.on('response', (r) => { if (r.url().includes('/api/player/stream?') && r.headers()['x-stream-progressive'] === '1') prog = true; });
-      const t0 = Date.now();
+      t0 = Date.now();
       await start(s.page, [item(nav), item(b)]);
+      if (!prog) { quick.push(nav.name); await s.browser.close(); s = null; }
+    }
+    if (!s) { check('progressive: a cold Navidrome-only track that takes time to build exists to test with', false, quick.length ? `built within a moment: ${quick.join(', ')}` : 'none found (all warm, all served untouched, or endpoint not deployed)'); return; }
+    try {
       const took = Date.now() - t0;
       check('progressive: the stream is served while it is being built', prog, `${nav.artist} – ${nav.name}`);
       check('progressive: playback starts at once', took < 6000, `audible after ${(took / 1000).toFixed(1)}s (BPM warm-up included)`);

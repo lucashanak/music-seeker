@@ -345,7 +345,9 @@ async def resolve_source(name: str, artist: str = "", user: dict = Depends(bind_
         if player.youtube_cache_path(name, artist) or player.youtube_cache_path(name, artist, "320k"):
             return {"source": "youtube", "cached": True}
         raise HTTPException(404, "Could not resolve")
-    return {"source": result["source"]}
+    # `raw`: a compact Navidrome song is copied as it is and served as a plain file —
+    # the "while it is built" path is never used for it (dj_mode.mjs picks its track by this).
+    return {"source": result["source"], "raw": bool(result.get("raw_ext"))}
 
 
 @router.get("/recommendations")
