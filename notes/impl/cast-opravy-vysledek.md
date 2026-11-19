@@ -58,3 +58,14 @@ z nápovědy klienta (shuffle, Smart Queue, repeat, rádio), bez ní z uložené
 7. Mediální tlačítka / notifikace na telefonu během castu → ovládají receiver, telefon nehraje.
 8. Zastav cast v appce → Play pokračuje v telefonu od pozice, kde byl receiver.
 Když něco nesedí: čas a co se stalo; log je `docker logs music-seeker | grep DLNA`.
+
+## Kontroly (stav při commitu)
+- `python3 -m pytest tests/ -q` → 603 passed, 5 skipped (cílené DLNA/stream 140).
+- `node --test tests/js/cast.test.mjs` → 71/71; `dj_transition` 33, `shuffle_order` 7,
+  `android_bridge` 5 (`bpm_client` 12/1 padá stejně i na main).
+- `node tests/e2e/audit/cast.mjs` (všechny `/api/dlna/*` i fronta podvržené, žádný receiver):
+  produkce 50/38/1 (původních 5 scénářů) + 40/14 (midstop, midstopmix, superseded);
+  strom 213/0/1 na phone+tablet+desktop (18:02), po posledních změnách klienta desktop 71/0 (18:24).
+- Review: kód server, kód klient, adversariální bez zadání, 2 ověřovací kola s mutacemi.
+  Neopraveno vědomě: Smart Queue tah, který server vzal z nápovědy mezi dvěma kroky,
+  se po probuzení neoznačí jako odehraný; review nález 9 dálkového ovládání patří dávce remote-opravy.
