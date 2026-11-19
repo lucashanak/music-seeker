@@ -901,6 +901,14 @@ async function _preAnalyzeUpcoming() {
 const audio = _deckA;
 export function getAudio() { return _activeDeckEl(); }
 
+/** The user's volume lives on BOTH decks. Setting only the playing one leaves the
+ *  other at the old level, and the next transition fades into that level. */
+export function setVolume(v) {
+  const vol = Math.max(0, Math.min(1, Number(v) || 0));
+  _deckA.volume = vol;
+  _deckB.volume = vol;
+}
+
 
 /** Wait until audio element has buffered enough (30s ahead or full track).
  *  Resolves immediately for blob URLs (fully loaded). Polls every 500ms, max 15s wait. */
@@ -2751,7 +2759,7 @@ export function init() {
   });
 
   // ── Cast (DLNA) — shared module (cast.js) ──
-  cast.initCast({ getAudioEl: getAudio, nextTrack });
+  cast.initCast({ getAudioEl: getAudio, nextTrack, syncVolume: () => setVolume(store.playerVolume) });
   cast.wireControls();
 
   // Play button on cards (event delegation)

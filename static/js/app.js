@@ -32,7 +32,7 @@ import { initVirtualKeyboard } from './utils.js';
 setQueuePlayerRefs({ loadAndPlay, hidePlayerBar, saveQueueDebounced, audio, getAudio });
 
 // Full player module needs player functions (avoids circular import)
-setFpPlayerRefs({ nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon, audio, getAudio, seekToFraction: _playerModule.seekToFraction });
+setFpPlayerRefs({ nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon, audio, getAudio, seekToFraction: _playerModule.seekToFraction, setVolume: _playerModule.setVolume });
 
 // Router needs close handlers for popstate
 setCloseHandlers({

@@ -11,6 +11,7 @@ import * as djPanel from './djpanel.js';
 let nextTrack, prevTrack, loadAndPlay, hidePlayerBar, saveQueueDebounced, updatePlayPauseIcon;
 let _audioRef = null;    // static ref (classic player)
 let _engineSeek = null;
+let _engineVolume = null; // DJ engine: sets both decks, not just the one playing
 let _audioGetter = null; // dynamic getter (crossfade player — returns active deck)
 
 function audio() {
@@ -27,6 +28,7 @@ export function setPlayerRefs(refs) {
   _audioRef = refs.audio;
   _audioGetter = refs.getAudio || null;
   _engineSeek = refs.seekToFraction || null; // DJ engine only; classic leaves it unset
+  _engineVolume = refs.setVolume || null;
 }
 
 // ── Shared player-mode toggles (engine-agnostic: drive store, sync both UIs) ──
@@ -94,6 +96,13 @@ export function syncShuffleRepeatUI() {
   }
 }
 
+/** A deck that is not playing must carry the volume too: the DJ engine crossfades
+ *  into it, and a mute set on one deck used to come back as a silent next track. */
+function _setElementVolume(vol) {
+  if (_engineVolume) { _engineVolume(vol); return; }
+  const a = audio(); if (a) a.volume = vol;
+}
+
 // ── Mute toggle ──
 let _preMuteVolume = null;
 
@@ -105,7 +114,7 @@ function _applyVolume(vol) {
   if (store.castDevice) {
     apiJson('/api/dlna/volume', { method: 'POST', body: { volume: pct } }).catch(() => {});
   } else {
-    const a = audio(); if (a) a.volume = vol;
+    _setElementVolume(vol);
   }
 }
 
@@ -400,7 +409,7 @@ export function init() {
     if (store.castDevice) {
       apiJson('/api/dlna/volume', { method: 'POST', body: { volume: parseInt(e.target.value) } }).catch(() => {});
     } else {
-      audio().volume = store.playerVolume;
+      _setElementVolume(store.playerVolume);
     }
     syncMuteUI();
   });

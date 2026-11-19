@@ -113,6 +113,9 @@ export function syncCastButtons(color) {
   });
   // Toggle volume sliders: show DLNA volume in cast mode, local volume otherwise
   const isCasting = color && color !== '';
+  // While casting, the volume controls talk to the renderer and the local element keeps
+  // its old level. Back on local output, the element takes the level the UI now shows.
+  if (!isCasting) { try { _ctx.syncVolume?.(); } catch {} }
   const castVol = $('#fpCastVol');
   if (castVol) castVol.style.display = isCasting ? '' : 'none';
   const localVol = document.querySelector('.fp-vol-wrap');

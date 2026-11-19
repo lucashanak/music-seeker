@@ -907,7 +907,7 @@ export function init() {
   });
 
   // ── Cast (DLNA) — shared module (cast.js) ──
-  cast.initCast({ getAudioEl: getAudio, nextTrack });
+  cast.initCast({ getAudioEl: getAudio, nextTrack, syncVolume: () => { const el = getAudio(); if (el) el.volume = store.playerVolume; } });
   cast.wireControls();
 
   // Play button on cards (event delegation)
