@@ -311,8 +311,15 @@ async def get_player_queue(request: Request, user: dict = Depends(bind_navidrome
     return player.load_queue(user["username"], device_id)
 
 
+class _QueueStateBody(QueueState):
+    # Radio travels with the queue: a device that got a radio queue by transfer
+    # must keep refilling it, and a restart must not end the radio (review B15).
+    radio_mode: bool = False
+    radio_seed: dict | None = None
+
+
 @router.put("/queue")
-async def save_player_queue(state: QueueState, request: Request, user: dict = Depends(bind_navidrome_creds)):
+async def save_player_queue(state: _QueueStateBody, request: Request, user: dict = Depends(bind_navidrome_creds)):
     device_id = _get_device_id(request)
     player.save_queue(user["username"], state.model_dump(), device_id)
     return {"status": "saved"}

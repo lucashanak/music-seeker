@@ -882,8 +882,9 @@ async def replace_playlist_by_names(playlist_id: str, tracks: list[dict]) -> dic
     song_ids = [sid for _, sid in pairs if sid]
     missing = [t for t, sid in pairs if not sid]
 
-    # Nothing matched: never clear the existing playlist on zero matches.
-    if not song_ids:
+    # Nothing matched: never clear the existing playlist on zero matches. An
+    # explicit EMPTY list is different — it is how Clear empties Up Next.
+    if not song_ids and tracks != []:
         return {"matched": 0, "missing": missing}
 
     # Add-before-remove: add the new ids FIRST so a failed add leaves the
@@ -894,28 +895,47 @@ async def replace_playlist_by_names(playlist_id: str, tracks: list[dict]) -> dic
 
 
 async def _replace_ids(playlist_id: str, song_ids: list[str], missing: list[dict]) -> dict:
+    """Append `song_ids`, then remove the original rows. Every write's Subsonic
+    status is checked (Navidrome refuses with HTTP 200): a refused append used to
+    be followed by the removal anyway — an emptied playlist. On a refusal the rows
+    appended so far are stripped again and the answer carries `error`."""
     pl = await get_playlist(playlist_id)
-    orig_count = len(pl["tracks"]) if pl and pl.get("tracks") else 0
+    old = [t.get("id") for t in pl["tracks"]] if pl and pl.get("tracks") else []
+    orig_count = len(old)
+    appended = False
 
     async with httpx.AsyncClient(base_url=NAVIDROME_URL, timeout=30) as client:
-        # Add new ids in batches (appended after the existing entries)
-        batch_size = 20
-        for i in range(0, len(song_ids), batch_size):
-            batch = song_ids[i:i + batch_size]
-            param_list = list(_params(playlistId=playlist_id).items())
-            for sid in batch:
-                param_list.append(("songIdToAdd", sid))
+        async def _write(param_list) -> bool:
             resp = await client.get("/rest/updatePlaylist", params=param_list)
             resp.raise_for_status()
+            try:
+                return resp.json().get("subsonic-response", {}).get("status") == "ok"
+            except ValueError:          # not JSON (a proxy error page): refused
+                return False
 
-        # Only after all adds succeeded: remove the ORIGINAL leading entries
-        # (indices 0..orig_count-1), descending to avoid index shift.
-        if orig_count > 0:
-            param_list = list(_params(playlistId=playlist_id).items())
-            for i in range(orig_count - 1, -1, -1):
-                param_list.append(("songIndexToRemove", str(i)))
-            resp = await client.get("/rest/updatePlaylist", params=param_list)
-            resp.raise_for_status()
+        try:
+            # Add new ids in batches (appended after the existing entries)
+            batch_size = 20
+            for i in range(0, len(song_ids), batch_size):
+                param_list = list(_params(playlistId=playlist_id).items())
+                for sid in song_ids[i:i + batch_size]:
+                    param_list.append(("songIdToAdd", sid))
+                appended = True
+                if not await _write(param_list):
+                    raise TransferError("append refused")
+
+            # Only after all adds succeeded: remove the ORIGINAL leading entries
+            # (indices 0..orig_count-1), descending to avoid index shift.
+            if orig_count > 0:
+                param_list = list(_params(playlistId=playlist_id).items())
+                for i in range(orig_count - 1, -1, -1):
+                    param_list.append(("songIndexToRemove", str(i)))
+                if not await _write(param_list):
+                    raise TransferError("remove refused")
+        except TransferError as e:
+            if appended and await _undo_append(playlist_id, old, song_ids, song_ids):
+                return {"matched": len(song_ids), "missing": missing}
+            return {"matched": 0, "missing": missing, "error": f"Navidrome refused the write ({e})"}
 
     return {"matched": len(song_ids), "missing": missing}
 

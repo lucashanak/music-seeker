@@ -189,6 +189,8 @@ async def get_radio_playlist(request: Request, user: dict = Depends(bind_navidro
 async def replace_playlist_by_name(playlist_id: str, req: ReplaceByNameRequest, user: dict = Depends(bind_navidrome_creds)):
     """Atomically replace a playlist's tracks by name/artist matching."""
     result = await library.replace_playlist_by_names(playlist_id, req.tracks)
+    if result.get("error"):
+        raise HTTPException(502, result["error"])
     return result
 
 

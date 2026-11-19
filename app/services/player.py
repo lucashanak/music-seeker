@@ -1096,39 +1096,97 @@ def _ensure_player_dir():
 
 
 def _queue_path(username: str, device_id: str = "default") -> Path:
-    """Get queue file path. Falls back to legacy path for migration."""
-    if device_id and device_id != "default":
-        return PLAYER_DIR / f"{username}_{device_id}.json"
-    return PLAYER_DIR / f"{username}.json"
+    """`PLAYER_DIR/users/<username>/<device>.json`. The old flat name
+    `<username>_<device>.json` let user `claude` with device `test_x` read and write
+    user `claude_test`'s device `x` (`_` is legal in both). Creates the user's dir."""
+    # Under `users/`, never next to the old flat files: a user named `a.json`
+    # would otherwise need a directory where user `a`'s legacy FILE `a.json` is.
+    d = PLAYER_DIR / "users" / username
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{device_id or 'default'}.json"
 
 
-def load_queue(username: str, device_id: str = "default") -> dict:
+def _legacy_flat_path(username: str, device_id: str = "default") -> Path | None:
+    """The device's pre-directory flat file — read, never written again — or None
+    when it may be another user's. `claude_test_x.json` is user `claude` + device
+    `test_x` AND user `claude_test` + device `x`; the registered devices decide:
+    it is this user's only if no other user claims it (another user's device
+    registered under that remainder, or another user's own default file) and,
+    when the name is ambiguous at all, the device is registered to this user."""
+    from app.services import auth
+    users = auth._load_users()
+    is_default = not device_id or device_id == "default"
+    stem = username if is_default else f"{username}_{device_id}"
+
+    def registered(user: str, dev: str) -> bool:
+        return dev in ((users.get(user) or {}).get("devices") or {})
+
+    ambiguous = False
+    for other in users:
+        if other == username:
+            continue
+        if stem == other:
+            ambiguous = True
+            return None                    # another user's own default file
+        if stem.startswith(other + "_"):
+            ambiguous = True
+            if registered(other, stem[len(other) + 1:]):
+                return None                # another user's registered device
+    if ambiguous and not is_default and not registered(username, device_id):
+        return None                        # nobody can prove it; refuse
+    return PLAYER_DIR / f"{stem}.json"
+
+
+def _queue_fallbacks(username: str, device_id: str = "default", default_device: bool = True) -> list[Path]:
+    """Where a device without its own file reads from, in order: its legacy flat
+    file, then (another device) the default device's queue, as it did when that
+    was the flat `<username>.json`."""
+    out = [_legacy_flat_path(username, device_id)]
+    if default_device and device_id and device_id != "default":
+        out += [_queue_path(username, "default"), _legacy_flat_path(username, "default")]
+    return [p for p in out if p is not None]
+
+
+def load_queue(username: str, device_id: str = "default", *, fallback: bool = True) -> dict:
+    """`fallback=False`: only this device's own file (or its own legacy one), and
+    `{}` when there is none — never the default device's queue, whose volume and
+    playlist would become another device's."""
     _ensure_player_dir()
-    # Try device-specific file first
-    path = _queue_path(username, device_id)
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    # Fallback to legacy file (migration)
-    if device_id and device_id != "default":
-        legacy = PLAYER_DIR / f"{username}.json"
-        if legacy.exists():
+    for path in [_queue_path(username, device_id), *_queue_fallbacks(username, device_id, fallback)]:
+        if path.exists():
             try:
-                return json.loads(legacy.read_text())
+                return json.loads(path.read_text())
             except (json.JSONDecodeError, OSError):
                 pass
+    if not fallback:
+        return {}
     return {"queue": [], "current_index": -1, "position_seconds": 0.0, "volume": 1.0}
+
+
+def _write_queue_file(path: Path, data: dict) -> None:
+    """Atomic: a reader sees the old file or the new one, never half of one.
+    Compact: `indent=2` forces the pure-Python encoder (~75 ms for 5000 items)."""
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data, separators=(",", ":")))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def save_queue(username: str, data: dict, device_id: str = "default"):
     _ensure_player_dir()
-    path = _queue_path(username, device_id)
-    path.write_text(json.dumps(data, indent=2))
+    _write_queue_file(_queue_path(username, device_id), data)
 
 
 def clear_queue(username: str, device_id: str = "default"):
-    path = _queue_path(username, device_id)
-    if path.exists():
-        path.unlink()
+    # The device's own legacy flat file goes too, or the next load would bring the
+    # cleared queue back from it. Never a file whose name another user could own.
+    for path in (_queue_path(username, device_id), _legacy_flat_path(username, device_id)):
+        if path is not None and path.exists():
+            path.unlink()
