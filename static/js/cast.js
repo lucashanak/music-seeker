@@ -118,7 +118,20 @@ function _resolveRenderer(devices, saved) {
 // ── Shared flags ──
 // Set by the ENGINE's loadAndPlay/nextTrack/prevTrack cast branches and read by the
 // poll. Must be a shared object (live binding) so cross-module writes are visible here.
-export const castState = { skipAutoAdvance: false, transitioning: false };
+// position / positionAt / duration / playing: the receiver as this page last saw it
+// (seconds, Date.now() of that sample, castDuration(), its play state) — read by the
+// remote-control state report while store.castDevice is set. Extrapolate position
+// from positionAt only while playing.
+export const castState = {
+  skipAutoAdvance: false, transitioning: false,
+  position: 0, positionAt: 0, duration: 0, playing: false,
+};
+function _publish(playing) {
+  castState.position = _castLastPos;
+  castState.positionAt = _castLastPosAt;
+  castState.duration = castDuration();
+  castState.playing = !!playing;
+}
 let _castTransitionTimer = null;
 // Cast-stall tracking: when the last cast was issued, and whether the renderer has
 // actually reported PLAYING since. A renderer that silently never starts the track is
@@ -195,6 +208,7 @@ function _trackReset(start = 0) {
   _castLastDur = 0;
   _castWasPlaying = false;
   _abKey = '';
+  _publish(false); // a new track: not playing until the receiver says so
 }
 
 /** Length of the track on the receiver, seconds (0 = unknown). The local deck never
@@ -355,6 +369,7 @@ export function castPlay() {
   if (!store.castDevice) return Promise.resolve();
   return apiJson('/api/dlna/play', { method: 'POST' }).then(() => {
     _lastState = 'playing';
+    _publish(true);
     _call(_ctx.onCastPlaying, true);
     _reportAndroid('playing');
   }).catch(() => {});
@@ -363,6 +378,7 @@ export function castPause() {
   if (!store.castDevice) return Promise.resolve();
   return apiJson('/api/dlna/pause', { method: 'POST' }).then(() => {
     _lastState = 'paused';
+    _publish(false);
     _call(_ctx.onCastPlaying, false);
     _reportAndroid('paused');
   }).catch(() => {});
@@ -462,6 +478,7 @@ export async function castToDevice(device) {
 // caller's hand-back (two paths can race to the same end: a poll and a click).
 function _endSession() {
   const had = !!store.castDevice;
+  Object.assign(castState, { position: 0, positionAt: Date.now(), duration: 0, playing: false });
   _pollGen++;
   clearTimeout(store.castPollTimer);
   store.castPollTimer = null;
@@ -897,6 +914,7 @@ function _applyStatus(status, gap) {
   const est = _estPos(now);
   // A stopped receiver does not move on: freeze the estimate where it is.
   if (stopped) { _castLastPos = est; _castLastPosAt = now; _castExtrap = false; }
+  _publish(playing);
   const shownDur = dur || castDuration();
   const shownPos = (playing || paused) && pos > 0 ? pos : est;
   if (shownDur > 0) {

@@ -1121,3 +1121,32 @@ test('a queue save that hangs holds the cast at most 3 s', async (t) => {
   await p;
   void eng;
 });
+
+// ── castState for the remote-control state report (remote-opravy) ──
+test('castState carries the receiver\'s position, sample time, duration and play state', async (t) => {
+  setup(t);
+  server.status = playing(70, 300);
+  cast.startCastPoll();
+  await run(t, 2000);
+  const at = Date.now();
+  assert.deepEqual(
+    { position: cast.castState.position, positionAt: cast.castState.positionAt, duration: cast.castState.duration, playing: cast.castState.playing },
+    { position: 70, positionAt: at, duration: 300, playing: true });
+  await cast.castPause();
+  assert.equal(cast.castState.playing, false);
+  await cast.castPlay();
+  assert.equal(cast.castState.playing, true);
+  server.status = () => ({ ...playing(95, 300)(), state: 'PAUSED_PLAYBACK' });
+  await run(t, 2000);
+  assert.equal(cast.castState.position, 95);
+  assert.equal(cast.castState.playing, false);
+  server.status = stopped(); // a stop freezes where it was; position stays the last one
+  await run(t, 2000);
+  assert.equal(cast.castState.playing, false);
+  assert.equal(cast.castState.position, 95);
+  await cast.stopCast();
+  assert.deepEqual(
+    { position: cast.castState.position, duration: cast.castState.duration, playing: cast.castState.playing },
+    { position: 0, duration: 0, playing: false });
+  assert.equal(cast.castState.positionAt, Date.now());
+});
