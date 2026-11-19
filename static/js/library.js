@@ -2,7 +2,7 @@
 
 import { store } from './store.js';
 import { $, $$, esc, escAttr, showToast, historyBack, showPlaylistPicker, showInputModal, showPlaylistFormModal, showConfirmModal, setArt} from './utils.js';
-import { apiJson } from './api.js';
+import { apiJson, libraryWritesInFlight } from './api.js';
 import { renderSongList } from './search.js';
 import { renderCollRows, collSkeleton } from './collrow.js';
 import { fetchPlaylistBpm, addBpmBadges, createBpmFilter, addScanButton } from './bpm.js';
@@ -94,6 +94,8 @@ export function switchLibraryTab(name, force) {
     if (name === 'mixes') import('./mixes.js').then(m => m.refreshMixLibrary());
     // Playlists may have changed in another view since the last visit.
     if (name === 'manager') import('./plmanager.js').then(m => m.loadPlManager());
+    // …and so may the Downloaded list, from any page (GitHub #12).
+    if (name === 'downloaded' && _gridDirty) _quietReloadGrid();
     return;
   }
   _loadedLibTabs.add(name);
@@ -186,7 +188,8 @@ export async function loadLibrary() {
   collSkeleton(grid, 6);
   try {
     const data = await apiJson('/api/library/playlists');
-    libraryCache = data.playlists || [];
+    libraryCache = (data.playlists || []).filter(p => !_pendingPlaylistDeletes.has(p.id));
+    _gridDirty = false;
     renderLibraryGrid(libraryCache, grid);
   } catch (e) {
     grid.innerHTML = `<div class="empty-state"><p>Failed to load library playlists</p></div>`;
@@ -939,6 +942,116 @@ export function closeLibraryDetail(fromPopstate) {
   $('#libraryList').style.display = '';
   currentLibPlaylistId = null;
   if (!fromPopstate) historyBack();
+  if (_gridDirty) _quietReloadGrid();
+}
+
+// ── The open Library follows changes made elsewhere (GitHub #12) ──
+// api.js fires `librarychange` after every playlist write, whichever page made
+// it. What is on screen is fetched again — quietly: no skeleton, no history
+// entry, and nothing redrawn when the answer did not change (which is the
+// common case: library.js's own writes already reload what they touch).
+let _libChangeTimer = null;
+let _libChangeIds = new Set();
+let _gridDirty = false;
+
+function _onLibraryChange(e) {
+  const m = /\/api\/library\/playlist\/([^/?#]+)/.exec((e.detail && e.detail.url) || '');
+  let id = '*';
+  if (m) { try { id = decodeURIComponent(m[1]); } catch { id = m[1]; } }
+  _libChangeIds.add(id);
+  _gridDirty = true;
+  _armLibraryChange(600);
+}
+
+function _armLibraryChange(ms) {
+  clearTimeout(_libChangeTimer);
+  _libChangeTimer = setTimeout(_applyLibraryChange, ms);
+}
+
+function _visible(sel) {
+  const el = $(sel);
+  return !!el && el.offsetParent !== null;
+}
+
+// The open playlist is in the user's hands: a selection, a tempo filter, a drag
+// or a dialog. Redrawing now would drop the selection (and a confirm that is
+// open would then act on nothing) or show every track under an active filter.
+function _detailBusy() {
+  if (_selectSet.size > 0) return true;
+  if ($('#libraryTracks .lib-dragging')) return true;
+  if (store.dialogStack && store.dialogStack.length) return true;
+  const preset = $('#libraryDetail .bpm-filter .bpm-preset.active');
+  if (preset && !(preset.dataset.min === '0' && preset.dataset.max === '999')) return true;
+  if ($('#libraryDetail .bpm-filter') && !preset) return true;   // a custom range
+  return false;
+}
+
+async function _applyLibraryChange() {
+  _libChangeTimer = null;
+  // Another write is still on its way. Its own event normally brings us back,
+  // but a write that fails fires none — so look again shortly either way.
+  if (libraryWritesInFlight() > 0) { _armLibraryChange(1000); return; }
+  if (_visible('#libraryGrid')) await _quietReloadGrid();
+  const id = currentLibPlaylistId;
+  const wanted = id && (_libChangeIds.has('*') || _libChangeIds.has(id));
+  if (wanted && _visible('#libraryDetail')) {
+    if (_detailBusy()) { _armLibraryChange(3000); return; }   // ids kept for later
+    await _quietReloadDetail(id);
+  }
+  _libChangeIds = new Set();
+}
+
+async function _quietReloadGrid() {
+  const grid = $('#libraryGrid');
+  if (!grid) return;
+  _gridDirty = false;
+  try {
+    const data = await apiJson('/api/library/playlists');
+    // A playlist inside its undo window is still on the server; it stays hidden.
+    const fresh = (data.playlists || []).filter(p => !_pendingPlaylistDeletes.has(p.id));
+    if (_libChangeTimer || libraryWritesInFlight() > 0) { _gridDirty = true; return; }
+    if (JSON.stringify(fresh) === JSON.stringify(libraryCache)) return;
+    libraryCache = fresh;
+    renderLibraryGrid(libraryCache, grid);
+  } catch {
+    _gridDirty = true;   // try again on the next change or return to the list
+  }
+}
+
+async function _quietReloadDetail(id) {
+  try {
+    const data = await apiJson(`/api/library/playlist/${id}`);
+    // The user left or opened another playlist meanwhile, or more writes came.
+    if (currentLibPlaylistId !== id || _libChangeTimer || libraryWritesInFlight() > 0) return;
+    if (_detailBusy()) { _libChangeIds.add(id); _armLibraryChange(3000); return; }
+    const tracks = data.tracks || [];
+    const sig = (list) => list.map(t => t.id || `${t.artist}:${t.name}`).join('\n');
+    const same = sig(tracks) === sig(currentLibPlaylistTracks)
+      && (data.name || '') === currentLibPlaylistName
+      && (data.description || '') === currentLibPlaylistDesc;
+    if (same) return;
+    currentLibPlaylistTracks = tracks;
+    currentLibPlaylistName = data.name || '';
+    currentLibPlaylistDesc = data.description || '';
+    $('#libDetailName').textContent = currentLibPlaylistName;
+    const descEl = $('#libDetailDesc');
+    if (descEl) {
+      descEl.textContent = currentLibPlaylistDesc;
+      descEl.style.display = currentLibPlaylistDesc ? '' : 'none';
+    }
+    setArt($('#libDetailImg'), data.image);
+    $('#libDetailImg').style.background = data.image ? '' : 'linear-gradient(135deg,var(--accent),#1a1a2e)';
+    _setLibDetailCount();
+    _renderLibDetailTracks(id);
+    // Same as loadLibraryDetail: a fresh filter bar over the fresh rows (the
+    // old one was "All" — _detailBusy saw to that) and BPM for new tracks.
+    const bpmFilter = _initBpmFilter(id);
+    fetchPlaylistBpm(id).then(() => {
+      if (currentLibPlaylistId !== id) return;
+      addBpmBadges('#libraryTracks');
+      if (bpmFilter && bpmFilter._refreshCoverage) bpmFilter._refreshCoverage();
+    });
+  } catch {}
 }
 
 // ── Liked Songs view ──
@@ -948,6 +1061,39 @@ function _refreshLikedCount() {
   const n = likedCount();
   const tileCount = $('#likedSongsCount');
   if (tileCount) tileCount.textContent = n === 1 ? '1 song' : `${n} songs`;
+  _refreshLikedArt();
+}
+
+// The covers of the newest liked songs (GitHub #10): one cover while fewer than
+// four distinct ones exist, then a 2×2 grid — the same shape Navidrome draws for
+// a playlist. With no covers at all the heart stays. Distinct by URL, so four
+// songs off one album do not make a grid of one picture.
+export function likedCollage(tracks) {
+  const seen = [];
+  for (const t of tracks || []) {
+    const img = t && t.image;
+    if (img && !seen.includes(img)) seen.push(img);
+    if (seen.length === 4) break;
+  }
+  return seen.length >= 4 ? seen : seen.slice(0, 1);
+}
+
+function _paintLikedArt(el, covers) {
+  if (!el) return;
+  const key = covers.join('\n');
+  if (el.dataset.covers === key) return;   // likeschange fires often; keep the <img>s
+  el.dataset.covers = key;
+  el.classList.toggle('liked-collage', covers.length > 0);
+  el.classList.toggle('liked-collage-4', covers.length === 4);
+  el.innerHTML = covers.length
+    ? covers.map(src => `<img src="${escAttr(src)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`).join('')
+    : '&#9829;';
+}
+
+function _refreshLikedArt() {
+  const covers = likedCollage(getLikedTracks());
+  _paintLikedArt($('#likedSongsTile .coll-thumb'), covers);
+  _paintLikedArt($('#likedHeroImg'), covers);
 }
 
 export async function openLikedSongs() {
@@ -995,6 +1141,7 @@ export function closeLikedSongs(fromPopstate) {
   _likedViewOpen = false;
   _refreshLikedCount();
   if (!fromPopstate) historyBack();
+  if (_gridDirty) _quietReloadGrid();
 }
 
 function _getLikedTracksForPlayer() {
@@ -1161,6 +1308,7 @@ export function getCurrentLibPlaylist() {
 
 // ── Init ──
 export function init() {
+  window.addEventListener('librarychange', _onLibraryChange);
   // Library sub-tab strip (Downloaded / Spotify / Podcasts / Mixes / Favorites)
   $$('#libraryTabs .sp-tab').forEach(tab => {
     tab.addEventListener('click', () => switchLibraryTab(tab.dataset.libTab));

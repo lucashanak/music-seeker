@@ -231,7 +231,9 @@ export async function checkLibrary(items, containerEl, cards) {
     });
     if (!cards) cards = $$('.card', containerEl);
     data.results.forEach((inLib, i) => {
-      if (inLib && cards[i]) {
+      // Two checks of one card can overlap (a search and the recheck after a
+      // download): the second must not add a second badge.
+      if (inLib && cards[i] && !cards[i].classList.contains('in-library')) {
         cards[i].classList.add('in-library');
         const badge = document.createElement('div');
         badge.className = 'in-library-badge';
@@ -264,6 +266,25 @@ export async function checkLibrary(items, containerEl, cards) {
     // it though — a mid-search auth expiry looks identical to "nothing matched".
     console.warn('Library check failed; in-library badges skipped.', e);
   }
+}
+
+// A download finished (GitHub #12): cards already on screen that were not in the
+// library may be now. Only visible, unmarked track/album cards are asked about,
+// at most 60 — the page that is open, not every list the app has ever drawn.
+export function recheckVisibleLibrary() {
+  const cards = [];
+  const items = [];
+  for (const c of $$('.card')) {
+    if (cards.length >= 60) break;
+    if (c.classList.contains('in-library') || !c.dataset.item || c.offsetParent === null) continue;
+    let it;
+    try { it = JSON.parse(c.dataset.item); } catch { continue; }
+    const type = it.type || 'track';
+    if (type !== 'track' && type !== 'album') continue;
+    cards.push(c);
+    items.push(it);
+  }
+  if (items.length) return checkLibrary(items, null, cards);
 }
 
 // ── Persist / Restore Search ──

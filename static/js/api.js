@@ -10,9 +10,29 @@ export function authHeaders() {
 }
 
 // ── Fetch with Auth + 401 Handling ──
+// A write that changes what the Library shows (GitHub #12). Every playlist write
+// in the app goes through here, from whichever page made it — the player bar,
+// a context menu, the manager — so this is the one place that sees them all.
+// `librarychange` fires after the write answered OK; `libraryWritesInFlight`
+// lets a listener tell that another one is still on its way.
+const _LIBRARY_WRITE = /^\/api\/library\/(playlist|track\/delete|album\/delete)/;
+let _libraryWrites = 0;
+export function libraryWritesInFlight() { return _libraryWrites; }
+
 export async function apiFetch(url, opts = {}) {
   opts.headers = { ...authHeaders(), ...(opts.headers || {}) };
-  const res = await fetch(url, opts);
+  const method = (opts.method || 'GET').toUpperCase();
+  const libWrite = method !== 'GET' && method !== 'HEAD' && _LIBRARY_WRITE.test(String(url));
+  if (libWrite) _libraryWrites++;
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } finally {
+    if (libWrite) _libraryWrites--;
+  }
+  if (libWrite && res.ok) {
+    try { window.dispatchEvent(new CustomEvent('librarychange', { detail: { url: String(url), method } })); } catch {}
+  }
   // Sliding session renewal: the server hands back a fresh token via this header
   // once the current one is past half its lifetime. Swap it in so an active
   // session rolls forward indefinitely and never hits the hard expiry.

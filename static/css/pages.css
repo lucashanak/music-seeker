@@ -503,3 +503,9 @@ body.plm-drag-active, body.plm-drag-active * { cursor: grabbing !important; }
   .plm-filter { padding: 5px 8px; }
   .plm-num { display: none; }
 }
+
+/* Liked Songs shows its songs' covers (GitHub #10): one, or a 2×2 grid of four.
+   The gradient + heart in the markup is what stays when there are none. */
+.liked-collage { padding: 0; overflow: hidden; background: var(--bg-elevated) !important; }
+.liked-collage img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.liked-collage-4 { display: grid !important; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }

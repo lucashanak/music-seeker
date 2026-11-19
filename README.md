@@ -51,9 +51,10 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 
 ### Library
 - **Private playlists per user** — every user gets its own Navidrome account automatically, so playlists, likes and stars are personal while the music library stays shared
-- **Organized tabs** — Downloaded (your Navidrome playlists + Liked Songs), Spotify (read-only mirror), Podcasts, Favorites
+- **Organized tabs** — Downloaded (your Navidrome playlists + Liked Songs), Spotify (read-only mirror), Podcasts, Mixes, Manager, Artists (the artists you follow)
 - **Spotify tab** — Playlists, Albums, Artists, Shows segmented control for easy browsing
-- **Quick search** — "In Library" badge with fuzzy matching on all search results
+- **Quick search** — "In Library" badge with fuzzy matching on all search results; it appears on the open page when a download finishes
+- **Live updates** — a playlist changed from anywhere in the app (player bar, menus, Manager) updates in the open Library without a reload
 
 ### Playlist Management (Spotify-style)
 - **Inline creation** — create playlists from "Add to playlist" with name + description
@@ -66,7 +67,7 @@ Built with FastAPI + vanilla JS. Runs as a single Docker container. Native apps 
 ### Library & Recognition
 - **Song recognition** — Shazam fingerprinting via microphone
 
-### Favorites & New Releases
+### Followed Artists & New Releases
 - **Follow artists** — heart icon from search or artist detail
 - **New release detection** — automatic background checks with "NEW" badges
 - **Auto-download** — optional per-artist toggle for new albums

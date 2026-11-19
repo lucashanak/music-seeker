@@ -339,13 +339,29 @@ async function retryJob(id) {
   } catch (e) { showToast('Retry failed: ' + e.message, true); }
 }
 
+// A download landed (GitHub #12). Navidrome sees the file only after its scan,
+// which the job starts as it ends, so the open page asks twice: soon, and once
+// the scan has surely finished. Several jobs ending together share the passes.
+let _regrowTimers = [];
+function _libraryGrew() {
+  _regrowTimers.forEach(clearTimeout);
+  _regrowTimers = [5000, 20000].map(ms => setTimeout(() => {
+    import('./search.js').then(m => m.recheckVisibleLibrary()).catch(() => {});
+    // A download into a playlist adds its tracks when it finishes.
+    window.dispatchEvent(new CustomEvent('librarychange', { detail: { url: '', method: 'job' } }));
+  }, ms));
+}
+
 // ── Browser Notifications for Job Completions ──
 export function checkJobCompletions(jobs) {
   for (const j of jobs) {
     const prev = store.previousJobStates[j.id];
     const wasActive = prev === 'running' || prev === 'queued';
     // A finished download may be a track the queue marked "no BPM"; ask again.
-    if (wasActive && j.status === 'done') forgetBpmUnavailable();
+    if (wasActive && j.status === 'done') {
+      forgetBpmUnavailable();
+      if (!_jobIsHandedOff(j)) _libraryGrew();
+    }
     if (store.notificationsEnabled && wasActive) {
       if (j.status === 'done' && _jobIsHandedOff(j)) {
         // Nothing has downloaded yet — the panel says where it went.
