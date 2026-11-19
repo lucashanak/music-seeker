@@ -270,7 +270,9 @@ export function groupClips(clips) {
   return groups;
 }
 
-const clipItem = (c) => ({ name: c.title, artist: c.artist, type: 'track' });
+// duration_ms from the cut (end − start): a cast needs the length (cast review, 4/10).
+const clipItem = (c) => ({ name: c.title, artist: c.artist, type: 'track',
+  duration_ms: c.end > c.start ? Math.round((c.end - c.start) * 1000) : 0 });
 
 // ───────────────────────── playback helpers ─────────────────────────
 

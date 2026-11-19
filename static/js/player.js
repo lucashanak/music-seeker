@@ -4,7 +4,7 @@ import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
 import { apiJson } from './api.js';
 import { openModal } from './downloads.js';
-import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
+import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, adoptShuffleIndex, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
 import { syncFullPlayer, syncMuteUI } from './fullplayer.js';
 import { getCachedUrl, waitForCache, prefetchUpcoming, cleanup as prefetchCleanup, pausePrefetch, resumePrefetch, streamQuality } from './prefetch.js';
 import * as cast from './cast.js';
@@ -13,14 +13,25 @@ import { ab as _ab, abPlay, abPause, abStop } from './androidbridge.js';
 const audio = $('#audioElement');
 let _lastAbUpdate = 0;
 
+// Play/pause from outside the page's own buttons (notification, lock screen, media keys,
+// remote control). While casting they act on the receiver, never on the local element.
+function _pauseLocalPlayback() {
+  if (store.castDevice) { cast.castPause(); return; }
+  audio.pause();
+}
+function _resumeLocalPlayback() {
+  if (store.castDevice) { cast.castPlay(); return; }
+  audio.play().catch(() => {});
+}
+
 // Android native media action callback (notification buttons → WebView)
 window._androidMediaAction = function(action) {
   // A controller never makes sound itself (B1): the notification and headset keys
   // drive the device it controls, the same as the on-screen buttons do.
   if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action } })); return; }
   switch (action) {
-    case 'play': audio.play().catch(() => {}); break;
-    case 'pause': audio.pause(); break;
+    case 'play': _resumeLocalPlayback(); break;
+    case 'pause': _pauseLocalPlayback(); break;
     case 'next': nextTrack(); break;
     case 'prev': prevTrack(); break;
   }
@@ -319,18 +330,7 @@ export async function loadAndPlay() {
     cast.autoCastAndPlay(item, cleanName, cleanArtist);
   // Cast mode: send to DLNA renderer (unless local-only)
   } else if (store.castDevice && mode !== 'local') {
-    cast.castState.skipAutoAdvance = true;
-    // markCastTransition (not a bare flag) so both latches carry a hard expiry — see
-    // cast.js. A raw `transitioning = true` here could only ever be cleared by a
-    // PLAYING state, which a renderer that never starts the track does not send.
-    cast.markCastTransition();
-    const castBody = {
-      device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
-      album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
-    };
-    apiJson('/api/dlna/cast', { method: 'POST', body: castBody })
-      .then(() => { /* cast started */ })
-      .catch(e => { showToast('Cast failed: ' + (e.message || '')); cast.castState.transitioning = false; cast.castState.skipAutoAdvance = false; });
+    cast.castTrack(item, { name: cleanName, artist: cleanArtist }); // the one cast POST (cast.js)
   } else {
     let cached = getCachedUrl(cleanName, cleanArtist);
     // If prefetch is downloading this track, wait for it (avoids competing parallel stream)
@@ -510,6 +510,9 @@ export function nextTrack() {
   // A controller advances nothing of its own: every user Next is a remote:cmd, and an
   // automatic one (ended, error, cast end-of-track) would transfer its queue.
   if (store.remoteTarget) return;
+  // Casting from a page that just woke: let one status poll adopt what the server moved
+  // on to, THEN step from there.
+  if (cast.deferUntilFresh(() => nextTrack())) return;
   // Throttle rapid advances (error/ended chain-skips) — matches crossfade/dj engines
   const now = Date.now();
   if (now - _lastNextTime < 500) return;
@@ -693,15 +696,7 @@ export function playRecTrack(item) {
   const cleanArtist = _decodeEntities(item.artist || '');
   // Cast mode: send to DLNA renderer
   if (store.castDevice) {
-    cast.castState.skipAutoAdvance = true;
-    // markCastTransition (not a bare flag) so both latches carry a hard expiry — see
-    // cast.js. A raw `transitioning = true` here could only ever be cleared by a
-    // PLAYING state, which a renderer that never starts the track does not send.
-    cast.markCastTransition();
-    apiJson('/api/dlna/cast', { method: 'POST', body: {
-      device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
-      album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
-    }}).catch(e => { showToast('Cast failed: ' + (e.message || '')); cast.castState.transitioning = false; cast.castState.skipAutoAdvance = false; });
+    cast.castTrack(item, { name: cleanName, artist: cleanArtist, queueIndex: -1 }); // not a queue row
   } else {
     const cached = getCachedUrl(cleanName, cleanArtist);
     if (cached) {
@@ -733,14 +728,15 @@ function updateMediaSessionWith(item) {
     title: item.name || '', artist: item.artist || '', album: item.album || '',
     artwork: item.image ? [{ src: item.image, sizes: '300x300', type: 'image/jpeg' }] : [],
   });
-  navigator.mediaSession.setActionHandler('play', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'play' } })); return; } audio.play(); });
-  navigator.mediaSession.setActionHandler('pause', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'pause' } })); return; } audio.pause(); });
+  navigator.mediaSession.setActionHandler('play', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'play' } })); return; } _resumeLocalPlayback(); });
+  navigator.mediaSession.setActionHandler('pause', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'pause' } })); return; } _pauseLocalPlayback(); });
   navigator.mediaSession.setActionHandler('previoustrack', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'prev' } })); return; } prevTrack(); });
   navigator.mediaSession.setActionHandler('nexttrack', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'next' } })); return; } nextTrack(); });
 }
 
 export function prevTrack() {
   if (store.remoteTarget) return; // see nextTrack
+  if (cast.deferUntilFresh(() => prevTrack())) return; // see nextTrack
   if (store.castDevice) {
     cast.markCastTransition();
   }
@@ -816,6 +812,7 @@ export async function resolveItemTracks(item) {
 // ── Queue Persistence ──
 export function saveQueueDebounced() {
   _remoteReport();
+  store.playerSavePending = true; // cast.js flushes it before a cast (the server reads it)
   clearTimeout(store.playerSaveTimer);
   store.playerSaveTimer = setTimeout(saveQueueNow, 2000);
   // Trigger recommendations refresh
@@ -823,6 +820,7 @@ export function saveQueueDebounced() {
 }
 
 async function saveQueueNow() {
+  store.playerSavePending = false;
   if (!store.currentUser) return;
   // A controller's queue is a scratch pad while it controls another device: its saved
   // queue stays what it was before, and remote.js restores it on the way out.
@@ -833,7 +831,7 @@ async function saveQueueNow() {
       body: {
         queue: store.playerQueue,
         current_index: store.playerIndex,
-        position_seconds: audio.currentTime || 0,
+        position_seconds: store.castDevice ? cast.castPosition() : (audio.currentTime || 0),
         volume: store.playerVolume,
         playlist_mode: store.playlistMode,
         shuffle_order: serializeShuffleOrder(),
@@ -853,6 +851,54 @@ async function saveQueueNow() {
 export async function flushQueue() {
   clearTimeout(store.playerSaveTimer);
   return saveQueueNow();
+}
+
+// Load `item` without playing it, to start at `pos` on Play: the restored queue, and
+// the hand-back when a cast ends (cast.js primeLocal).
+const _primed = { src: '', pos: 0 }; // the source _primeAudio set, and where it will start
+function _primeAudio(item, pos) {
+  const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: (store.streamToken || store.authToken) });
+  audio.src = `/api/player/stream?${params}&quality=${streamQuality()}`;
+  audio.preload = 'none';
+  _primed.src = audio.src;
+  _primed.pos = pos > 0 ? pos : 0;
+  if (pos > 0) {
+    const restoreSrc = audio.src;
+    audio.addEventListener('loadedmetadata', () => {
+      // Only seek if still the restored track — the user may have switched tracks
+      // before this one-shot metadata load fired.
+      if (audio.src === restoreSrc) audio.currentTime = pos;
+    }, { once: true });
+  }
+}
+
+// What the classic engine plays after the current track (cast.js next-hint).
+function _castUpcoming() {
+  const q = store.playerQueue, i = store.playerIndex;
+  if (!q.length || i < 0) return null;
+  let n = null;
+  if (store.shuffleEnabled && q.length > 1) n = peekShuffleNext();
+  else if (i + 1 < q.length) n = i + 1;
+  else if (store.repeatMode === 'all' && q.length > 1) n = 0;
+  return n == null ? null : { index: n, item: q[n] };
+}
+
+// The server's cast follower moved on to queue[idx] while the page slept: show it, do
+// not load or cast it (cast.js). idx -1: not in this queue.
+function _adoptCastTrack(idx, track, saved) {
+  // No Smart Queue in this engine.
+  const adopted = cast.adoptQueueIndex(idx, { shuffle: adoptShuffleIndex, restoreOrder: restoreShuffleOrder, saved });
+  if (!adopted) return;
+  _currentRecItem = null;
+  const item = adopted || track || {};
+  setArt($('#playerImg'), item.image);
+  $('#playerTitle').textContent = item.name || '';
+  $('#playerArtist').textContent = item.artist || '';
+  syncFullPlayer();
+  updateDownloadButtons(item);
+  updateMediaSessionWith(item);
+  renderQueue();
+  saveQueueDebounced();
 }
 
 /** The transfer half of loadQueueState: queue, index, order, radio and playlist context
@@ -906,17 +952,7 @@ export async function loadQueueState({ touchDeck = true } = {}) {
         $('#playerTitle').textContent = item.name || '';
         $('#playerArtist').textContent = item.artist || '';
         // Pre-set audio source so play button works immediately
-        const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: (store.streamToken || store.authToken) });
-        audio.src = `/api/player/stream?${params}&quality=${streamQuality()}`;
-        audio.preload = 'none';
-        if (data.position_seconds > 0) {
-          const restoreSrc = audio.src;
-          audio.addEventListener('loadedmetadata', () => {
-            // Only seek if still the restored track — the user may have switched tracks
-            // before this one-shot metadata load fired.
-            if (audio.src === restoreSrc) audio.currentTime = data.position_seconds;
-          }, { once: true });
-        }
+        _primeAudio(item, data.position_seconds);
         syncFullPlayer();
         updateDownloadButtons(item);
         showPlayerBar();
@@ -942,8 +978,8 @@ function updateMediaSession() {
     title: item.name || '', artist: item.artist || '', album: item.album || '',
     artwork: item.image ? [{ src: item.image, sizes: '300x300', type: 'image/jpeg' }] : [],
   });
-  navigator.mediaSession.setActionHandler('play', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'play' } })); return; } audio.play(); });
-  navigator.mediaSession.setActionHandler('pause', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'pause' } })); return; } audio.pause(); });
+  navigator.mediaSession.setActionHandler('play', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'play' } })); return; } _resumeLocalPlayback(); });
+  navigator.mediaSession.setActionHandler('pause', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'pause' } })); return; } _pauseLocalPlayback(); });
   navigator.mediaSession.setActionHandler('previoustrack', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'prev' } })); return; } prevTrack(); });
   navigator.mediaSession.setActionHandler('nexttrack', () => { if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'next' } })); return; } nextTrack(); });
 }
@@ -954,7 +990,7 @@ export function getAudio() { return audio; }
 
 // Fully stop local playback (used when handing off / controlling a remote device,
 // so the source device doesn't keep playing alongside the target).
-export function pauseLocal() { try { audio.pause(); } catch {} updatePlayPauseIcon(false); }
+export function pauseLocal() { try { audio.pause(); } catch {} pausePrefetch(); updatePlayPauseIcon(false); }
 
 /** Entering remote control: nothing on this device may sound or advance on its own —
  *  a load waiting for the cache, or a cast renderer, used to carry on. The automatic
@@ -982,6 +1018,9 @@ export function init() {
     if (localStorage.getItem('ms_prefetch_enabled') !== '0') resumePrefetch();
   });
   audio.addEventListener('pause', () => {
+    // Casting pauses the element; the receiver plays on (icon: cast.js poll). The
+    // Android shell must not hear a pause — it would let the page freeze mid-cast.
+    if (cast.castOwnsLocalPause()) return;
     updatePlayPauseIcon(false);
     pausePrefetch();
     abPause();
@@ -1031,8 +1070,7 @@ export function init() {
   // Controls
   $('#playerPlayPause').addEventListener('click', () => {
     if (store.castDevice) {
-      if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
-      else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
+      cast.castToggle();
     } else {
       if (audio.paused) audio.play().catch(() => {});
       else audio.pause();
@@ -1057,7 +1095,7 @@ export function init() {
     // Under remote control the target seeks (B6): the touchstart below suppresses the
     // click remote.js listens for, and this device's own element is paused anyway.
     if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'seek_pct', value: pct } })); return; }
-    const dur = _getDuration();
+    const dur = cast.castSeekDuration(_getDuration); // while casting: the receiver's, not the element's
     if (!dur) return;
     if (store.castDevice) {
       apiJson('/api/dlna/seek', { method: 'POST', body: { position_seconds: pct * dur } }).catch(() => {});
@@ -1170,7 +1208,19 @@ export function init() {
   });
 
   // ── Cast (DLNA) — shared module (cast.js) ──
-  cast.initCast({ getAudioEl: getAudio, nextTrack, syncVolume: () => { const el = getAudio(); if (el) el.volume = store.playerVolume; } });
+  cast.initCast({
+    getAudioEl: getAudio, nextTrack, syncVolume: () => { const el = getAudio(); if (el) el.volume = store.playerVolume; },
+    getUpcoming: _castUpcoming,
+    adoptTrack: _adoptCastTrack,
+    pauseLocal,
+    resumeLocal: _resumeLocalPlayback,
+    flushQueue,
+    onCastPlaying: updatePlayPauseIcon,
+    // A restored queue that was never played sits at 0 with its seek still pending.
+    localPosition: () => (_currentRecItem ? 0
+      : (!audio.currentTime && _primed.src && audio.src === _primed.src ? _primed.pos : (audio.currentTime || 0))),
+    primeLocal: (idx, pos) => { const it = _currentRecItem || store.playerQueue[idx]; if (it) _primeAudio(it, pos); },
+  });
   cast.wireControls();
 
   // Play button on cards (event delegation)
@@ -1222,8 +1272,7 @@ export function init() {
       case 'Space':
         e.preventDefault();
         if (store.castDevice) {
-          if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
-          else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
+          cast.castToggle();
         } else {
           if (audio.paused) audio.play().catch(() => {}); else audio.pause();
         }
@@ -1258,7 +1307,8 @@ export function init() {
   });
 
   // Periodic save while playing
-  setInterval(() => { if (store.playerPlaying && store.currentUser) saveQueueNow(); }, 30000);
+  // Not while a cast view may be stale: the server's follower may have moved on.
+  setInterval(() => { if (store.playerPlaying && store.currentUser && cast.castStateFresh()) saveQueueNow(); }, 30000);
 
   // Save on page unload (sync XHR since sendBeacon can't set auth headers)
   window.addEventListener('beforeunload', () => {
@@ -1275,7 +1325,7 @@ export function init() {
         if (store.deviceId) xhr.setRequestHeader('X-Device-ID', store.deviceId);
         xhr.send(JSON.stringify({
           queue: store.playerQueue, current_index: store.playerIndex,
-          position_seconds: audio.currentTime || 0, volume: store.playerVolume,
+          position_seconds: store.castDevice ? cast.castPosition() : (audio.currentTime || 0), volume: store.playerVolume,
           playlist_mode: store.playlistMode,
           shuffle_order: serializeShuffleOrder(),
           radio_mode: !!store.radioMode,

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -115,6 +116,38 @@ def touch_cache_file(path: str) -> None:
         pass
 
 
+# Cache files a response is sending RIGHT NOW (path -> number of responses). A touch
+# when a request starts protects a file for EVICT_RECENCY_SEC only, and a receiver
+# playing a two-hour mix reads one GET for two hours: the file was unlinked under it,
+# the open response survived, but the next seek (or resume after a pause) found no
+# file and waited for a full re-download. Eviction now skips what is still being sent,
+# and the end of a response counts as a touch, so a short pause keeps it too.
+_serving: dict[str, int] = {}
+
+
+def _serve_key(path: str) -> str:
+    return os.path.normpath(os.path.abspath(path))
+
+
+def serving_begin(path: str) -> None:
+    k = _serve_key(path)
+    _serving[k] = _serving.get(k, 0) + 1
+
+
+def serving_end(path: str) -> None:
+    k = _serve_key(path)
+    n = _serving.get(k, 0) - 1
+    if n > 0:
+        _serving[k] = n
+    else:
+        _serving.pop(k, None)
+    touch_cache_file(path)
+
+
+def being_served(path: str) -> bool:
+    return _serve_key(path) in _serving
+
+
 def is_audio_response(resp) -> bool:
     """True when an upstream answer really carries audio. Subsonic reports errors as
     HTTP 200 with a JSON/XML body, which `raise_for_status()` lets through; writing
@@ -161,6 +194,8 @@ def evict_cache_dir(path: str, max_bytes: int) -> None:
                 break
             if now - last_touch < EVICT_RECENCY_SEC:
                 continue  # too recently touched — may be mid-stream/just-written
+            if being_served(fpath):
+                continue  # a response is still sending it (a long mix on a receiver)
             try:
                 os.unlink(fpath)
                 total -= size
@@ -391,6 +426,9 @@ async def _resolve_navidrome(name: str, artist: str) -> dict | None:
         raw_ext = nav_raw_ext(song)
         if raw_ext:
             result["raw_ext"] = raw_ext
+        ext = nav_ext(song)
+        if ext:
+            result["ext"] = ext      # the original's own format — what a lossless stream sends
         return result
     except Exception:
         return None
@@ -526,15 +564,49 @@ def nav_raw_ext(song: dict) -> str | None:
     return ext
 
 
-def nav_cache_target(song_id: str, lossless: bool = False, raw_ext: str | None = None) -> tuple[str, dict]:
+def nav_ext(song: dict) -> str | None:
+    """The song's own file suffix (lower case), or None. It ends up in a cache file
+    name, so anything but a short alphanumeric suffix is ignored."""
+    ext = str(song.get("suffix") or "").lower()
+    return ext if re.fullmatch(r"[a-z0-9]{1,5}", ext) else None
+
+
+# A lossless request (the DLNA cast) gets the song's ORIGINAL bytes. Only a FLAC may be
+# stored and served as <id>.flac: an m4a/mp3/opus original used to land there and went
+# out as audio/flac — in the HTTP answer and in the DIDL — which a renderer may refuse.
+# These originals are fetched with format=raw into <id>.raw.<ext> (the same file the
+# deck's raw path uses for mp3/m4a/aac: the same bytes) and served with their own type.
+# Anything else (flac, unknown, no suffix) keeps the old <id>.flac.
+_NAV_LOSSLESS_RAW_EXT = {"mp3", "m4a", "mp4", "aac", "opus", "ogg", "oga", "wav", "aif", "aiff"}
+
+_EXT_MIME = {"flac": "audio/flac", "opus": "audio/ogg", "ogg": "audio/ogg", "oga": "audio/ogg",
+             "m4a": "audio/mp4", "mp4": "audio/mp4", "aac": "audio/aac", "wav": "audio/wav",
+             "aif": "audio/aiff", "aiff": "audio/aiff"}
+
+
+def mime_for_path(path: str) -> str:
+    """Content-Type the stream endpoint answers for a file, by its extension."""
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return _EXT_MIME.get(ext, "audio/mpeg")
+
+
+def nav_cache_target(song_id: str, lossless: bool = False, raw_ext: str | None = None,
+                     ext: str | None = None) -> tuple[str, dict]:
     """(cache file, Subsonic stream params) for this song — ONE place, so the builder,
     the "is it finished" check and the router's progressive follower agree.
 
     Whichever representation is ALREADY on disk wins, raw first: the BPM analysis
     builds the MP3 for the same song id on its own schedule, and a stream URL must not
-    change which bytes it serves because a second file happened to appear."""
+    change which bytes it serves because a second file happened to appear.
+
+    `ext` is the song's own suffix (resolve_stream's `ext`); only a lossless request
+    reads it. A lossless target depends on nothing on disk, so it never changes."""
     cache_dir = os.path.join(tempfile.gettempdir(), "ms-nav-cache")
     if lossless:
+        orig = ext or raw_ext
+        if orig in _NAV_LOSSLESS_RAW_EXT:
+            return (os.path.join(cache_dir, f"{song_id}.raw.{orig}"),
+                    library._params(id=song_id, format="raw"))
         return os.path.join(cache_dir, f"{song_id}.flac"), library._params(id=song_id)
     mp3 = os.path.join(cache_dir, f"{song_id}.mp3")
     if raw_ext in _NAV_RAW_EXT:
@@ -546,10 +618,19 @@ def nav_cache_target(song_id: str, lossless: bool = False, raw_ext: str | None =
     return mp3, library._params(id=song_id, format="mp3", maxBitRate=320)
 
 
-def navidrome_cache_path(song_id: str, lossless: bool = False, raw_ext: str | None = None) -> str | None:
+def navidrome_cache_path(song_id: str, lossless: bool = False, raw_ext: str | None = None,
+                         ext: str | None = None) -> str | None:
     """The finished Navidrome cache file for this song, or None. Never builds."""
-    p, _ = nav_cache_target(song_id, lossless, raw_ext)
+    p, _ = nav_cache_target(song_id, lossless, raw_ext, ext)
     return p if os.path.exists(p) and os.path.getsize(p) > 0 else None
+
+
+def navidrome_stream_mime(res: dict, lossless: bool = False) -> str:
+    """The Content-Type GET /api/player/stream answers for this Navidrome resolution
+    (a resolve_stream result with source "navidrome"). For the DIDL of a cast, so the
+    renderer is told the type it will really get. Never builds or fetches anything."""
+    path, _ = nav_cache_target(res["song_id"], lossless, res.get("raw_ext"), res.get("ext"))
+    return mime_for_path(path)
 
 
 def _fresh_tmp(tmp_path: str) -> None:
@@ -613,6 +694,7 @@ async def follow_build(task: "asyncio.Task", cache_path: str):
     client sees an error and not a track that just happens to be short."""
     tmp = cache_path + ".tmp"
     f = None
+    serving_begin(cache_path)       # a deck can follow a long build for its whole length
     try:
         while f is None:
             for p in (tmp, cache_path):
@@ -652,9 +734,11 @@ async def follow_build(task: "asyncio.Task", cache_path: str):
     finally:
         if f is not None:
             f.close()
+        serving_end(cache_path)
 
 
-async def cache_navidrome_stream(song_id: str, lossless: bool = False, raw_ext: str | None = None) -> str | None:
+async def cache_navidrome_stream(song_id: str, lossless: bool = False, raw_ext: str | None = None,
+                                 ext: str | None = None) -> str | None:
     """Download Navidrome stream to temp file and return path.
     Cached files enable Content-Length, Range requests, and correct duration."""
     import tempfile
@@ -664,7 +748,7 @@ async def cache_navidrome_stream(song_id: str, lossless: bool = False, raw_ext: 
         os.chmod(cache_dir, 0o700)  # keep cached audio private to the app user
     except OSError:
         pass
-    cache_path, params = nav_cache_target(song_id, lossless, raw_ext)
+    cache_path, params = nav_cache_target(song_id, lossless, raw_ext, ext)
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
         return cache_path
     # Serialize per-target so a concurrent pre-warm + stream GET don't both
@@ -1106,6 +1190,16 @@ def _queue_path(username: str, device_id: str = "default") -> Path:
     return d / f"{device_id or 'default'}.json"
 
 
+class QueueUnreadable(Exception):
+    """The device's queue file exists but cannot be read (mid-write, damaged)."""
+
+
+# One writer at a time for the queue files of this process: the client's PUT and the
+# cast follower's pointer update (update_queue) must not interleave their writes.
+_queue_lock = threading.Lock()
+
+
+
 def _legacy_flat_path(username: str, device_id: str = "default") -> Path | None:
     """The device's pre-directory flat file — read, never written again — or None
     when it may be another user's. `claude_test_x.json` is user `claude` + device
@@ -1147,12 +1241,21 @@ def _queue_fallbacks(username: str, device_id: str = "default", default_device: 
     return [p for p in out if p is not None]
 
 
-def load_queue(username: str, device_id: str = "default", *, fallback: bool = True) -> dict:
-    """`fallback=False`: only this device's own file (or its own legacy one), and
-    `{}` when there is none — never the default device's queue, whose volume and
-    playlist would become another device's."""
+def load_queue(username: str, device_id: str = "default", strict: bool = False, *, fallback: bool = True) -> dict:
+    """The saved queue. `strict`: a device file that exists but cannot be read raises
+    QueueUnreadable instead of falling back to another file — that file may be another
+    device's, and the cast follower must not advance by it. `fallback=False`: only this
+    device's own file (or its own legacy one), and `{}` when there is none — never the
+    default device's queue, whose volume and playlist would become another device's."""
     _ensure_player_dir()
-    for path in [_queue_path(username, device_id), *_queue_fallbacks(username, device_id, fallback)]:
+    own = _queue_path(username, device_id)
+    if own.exists():
+        try:
+            return json.loads(own.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            if strict:
+                raise QueueUnreadable(str(own)) from e
+    for path in _queue_fallbacks(username, device_id, fallback):
         if path.exists():
             try:
                 return json.loads(path.read_text())
@@ -1181,7 +1284,25 @@ def _write_queue_file(path: Path, data: dict) -> None:
 
 def save_queue(username: str, data: dict, device_id: str = "default"):
     _ensure_player_dir()
-    _write_queue_file(_queue_path(username, device_id), data)
+    path = _queue_path(username, device_id)
+    with _queue_lock:
+        _write_queue_file(path, data)
+
+
+def update_queue(username: str, device_id: str, mutate, strict: bool = True) -> bool:
+    """Read the device's queue, let `mutate(data)` change it in place, write it back —
+    all under the queue lock, so a client save cannot land between the read and the
+    write and be lost. `mutate` returns False to leave the file alone. With `strict`
+    an unreadable device file raises QueueUnreadable like load_queue(strict=True).
+
+    Blocking (file I/O and a threading lock): call it from a worker thread."""
+    _ensure_player_dir()
+    with _queue_lock:
+        data = load_queue(username, device_id, strict=strict)
+        if mutate(data) is False:
+            return False
+        _write_queue_file(_queue_path(username, device_id), data)
+        return True
 
 
 def clear_queue(username: str, device_id: str = "default"):

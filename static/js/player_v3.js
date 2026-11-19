@@ -5,7 +5,7 @@ import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
 import { apiJson, refreshStreamToken, streamToken, freshStreamToken } from './api.js';
 import { openModal } from './downloads.js';
-import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, playOrder, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex } from './queue.js';
+import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, playOrder, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex, adoptShuffleIndex } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, abortStale, keyFor as prefetchKey, resumePrefetch, streamQuality, setUpcomingProvider } from './prefetch.js';
 import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration, resolveTransitionStyle, dropCutLead, clearPendingSeek, fadeBeatsFor } from './djmix.js';
@@ -994,12 +994,14 @@ function _toggleDeadDeck(deck) {
   return true;
 }
 function _pauseLocalPlayback() {
+  if (store.castDevice) { cast.castPause(); return; } // notification / lock screen / media keys
   if (_stopErrorBackoff()) return;
   { const d = _activeDeckEl(); if (d.error && store.playerPlaying && _toggleDeadDeck(d)) return; }
   if (_crossfading) _finalizeCrossfadeOnPause().pause();
   else _activeDeckEl().pause();
 }
 function _resumeLocalPlayback() {
+  if (store.castDevice) { cast.castPlay(); return; } // never start local audio under a cast
   _ensureAudioContext();
   if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
   { const d = _activeDeckEl(); if (!store.playerPlaying && _toggleDeadDeck(d)) return; }
@@ -1574,18 +1576,9 @@ async function _loadAndPlayImpl(keepRec) {
       _fadingOutDeck = null;
       _crossfading = false;
     }
-    cast.castState.skipAutoAdvance = true;
-    // markCastTransition (not a bare flag) so both latches carry a hard expiry — see
-    // cast.js. A raw `transitioning = true` here could only ever be cleared by a
-    // PLAYING state, which a renderer that never starts the track does not send.
-    cast.markCastTransition();
-    const castBody = {
-      device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
-      album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
-    };
-    apiJson('/api/dlna/cast', { method: 'POST', body: castBody })
-      .then(() => { /* cast started */ })
-      .catch(e => { showToast('Cast failed: ' + (e.message || '')); cast.castState.transitioning = false; cast.castState.skipAutoAdvance = false; });
+    // One POST for every cast (cast.js castItem): it carries the queue position, what
+    // plays next and repeat/shuffle, which the server's follower continues from.
+    cast.castTrack(item, { name: cleanName, artist: cleanArtist });
   } else {
     _ensureAudioContext();
     if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
@@ -1893,6 +1886,9 @@ export function nextTrack(opts = {}) {
   // A controller advances nothing of its own: every user Next is a remote:cmd, and an
   // automatic one (ended, error, watchdog, cast end-of-track) would transfer its queue.
   if (store.remoteTarget) return;
+  // Casting from a page that just woke: let one status poll adopt what the server moved
+  // on to, THEN step from there — not from the track the page last saw.
+  if (cast.deferUntilFresh(() => nextTrack(opts))) return;
   const reason = opts.reason || 'user';
   // A user skip outranks a pending error backoff — the buttons must never go dead
   // for the length of the wait.
@@ -2222,15 +2218,7 @@ export async function playRecTrack(item) {
   const cleanArtist = _decodeEntities(item.artist || '');
   // Cast mode: send to DLNA renderer
   if (store.castDevice) {
-    cast.castState.skipAutoAdvance = true;
-    // markCastTransition (not a bare flag) so both latches carry a hard expiry — see
-    // cast.js. A raw `transitioning = true` here could only ever be cleared by a
-    // PLAYING state, which a renderer that never starts the track does not send.
-    cast.markCastTransition();
-    apiJson('/api/dlna/cast', { method: 'POST', body: {
-      device_id: store.castDevice.id, name: cleanName, artist: cleanArtist,
-      album: item.album || '', image: item.image || '', duration_ms: item.duration_ms || 0,
-    }}).catch(e => { showToast('Cast failed: ' + (e.message || '')); cast.castState.transitioning = false; cast.castState.skipAutoAdvance = false; });
+    cast.castTrack(item, { name: cleanName, artist: cleanArtist, queueIndex: -1 }); // not a queue row
   } else {
     _ensureAudioContext();
     if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
@@ -2295,6 +2283,7 @@ function updateMediaSessionWith(item) {
 
 export function prevTrack() {
   if (store.remoteTarget) return; // see nextTrack
+  if (cast.deferUntilFresh(() => prevTrack())) return; // see nextTrack
   // #13: respect the single-flight advance latch. Without this, pressing Previous during
   // an in-flight auto-advance runs a concurrent loadAndPlay() and clears the latch out
   // from under nextTrack → overlapping crossfades. Claim it synchronously at entry; it is
@@ -2364,6 +2353,7 @@ export function pauseLocal() {
     if (_crossfading) _finalizeCrossfadeOnPause(); // or the fade timer outlives the pause
     _deckA.pause(); _deckB.pause();
   } catch {}
+  pausePrefetch(); // nothing local will play: don't keep downloading for it
   updatePlayPauseIcon(false);
 }
 
@@ -2416,6 +2406,7 @@ export async function resolveItemTracks(item) {
 // ── Queue Persistence ──
 export function saveQueueDebounced() {
   _remoteReport();
+  store.playerSavePending = true; // cast.js flushes it before a cast (the server reads it)
   clearTimeout(store.playerSaveTimer);
   store.playerSaveTimer = setTimeout(saveQueueNow, 2000);
   // Trigger recommendations refresh
@@ -2423,6 +2414,7 @@ export function saveQueueDebounced() {
 }
 
 async function saveQueueNow() {
+  store.playerSavePending = false;
   if (!store.currentUser) return;
   // A controller's queue is a scratch pad while it controls another device: its saved
   // queue stays what it was before, and remote.js restores it on the way out.
@@ -2433,7 +2425,7 @@ async function saveQueueNow() {
       body: {
         queue: store.playerQueue,
         current_index: store.playerIndex,
-        position_seconds: _activeDeckEl().currentTime || 0,
+        position_seconds: store.castDevice ? cast.castPosition() : (_activeDeckEl().currentTime || 0),
         volume: store.playerVolume,
         playlist_mode: store.playlistMode,
         shuffle_order: serializeShuffleOrder(),
@@ -2453,6 +2445,62 @@ async function saveQueueNow() {
 export async function flushQueue() {
   clearTimeout(store.playerSaveTimer);
   return saveQueueNow();
+}
+
+// Put `item` on the active deck WITHOUT playing it, to start at `pos` when the listener
+// presses Play: the restored queue, and the hand-back when a cast ends (cast.js
+// primeLocal — the receiver's position, even for a track the deck never held).
+function _primeDeck(item, pos) {
+  if (_restoreSeek) { _deckA.removeEventListener('loadedmetadata', _restoreSeek); _deckB.removeEventListener('loadedmetadata', _restoreSeek); _restoreSeek = null; }
+  const deck = _activeDeckEl();
+  const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: streamToken() });
+  const restoreSrc = `/api/player/stream?${params}&quality=${streamQuality()}`;
+  if (deck === _deckA) _expectedSrcA = _absUrl(restoreSrc);
+  else _expectedSrcB = _absUrl(restoreSrc);
+  deck.src = restoreSrc;
+  deck.preload = 'none';
+  _restorePos = pos > 0 ? pos : 0;
+  if (pos > 0) {
+    // preload is 'none', so this waits for whatever loads on the deck FIRST. If
+    // that is not the restored track — the user opened the app and picked another
+    // song — the saved position belonged to a different file: the new song
+    // started in its middle, or past its end and was skipped outright. Seek only
+    // if the deck still holds the restored source (the classic engine always did).
+    // And only when the listener resumes it (Play): an explicit load of a track
+    // — even the same one, from a playlist — starts at 0; _setDeckSrc drops this.
+    const want = _absUrl(restoreSrc);
+    _restoreSeek = () => {
+      deck.removeEventListener('loadedmetadata', _restoreSeek);
+      _restoreSeek = null;
+      if (deck.src === want) deck.currentTime = pos;
+    };
+    deck.addEventListener('loadedmetadata', _restoreSeek);
+  }
+}
+
+// The server's cast follower played queue[idx] after the track that ended while this
+// page slept (cast.js). Show it as the current track — it is already playing on the
+// receiver, so nothing is loaded or cast. idx -1: the track is not in this queue.
+function _adoptCastTrack(idx, track, saved) {
+  const smart = _djSetting('smart_queue', 'off') !== 'off';
+  const adopted = cast.adoptQueueIndex(idx, {
+    shuffle: adoptShuffleIndex, restoreOrder: restoreShuffleOrder, saved,
+    played: smart ? markPlayed : null,
+  });
+  if (!adopted) return;
+  // The prediction was made for the track before this one.
+  _predictedNextIdx = null;
+  _predictedNextKey = null;
+  _currentRecItem = null;
+  const item = adopted || track || {};
+  setArt($('#playerImg'), item.image);
+  $('#playerTitle').textContent = item.name || '';
+  $('#playerArtist').textContent = item.artist || '';
+  syncFullPlayer();
+  updateDownloadButtons(item);
+  updateMediaSessionWith(item);
+  renderQueue();
+  saveQueueDebounced();
 }
 
 /** The transfer half of loadQueueState: queue, index, order, radio and playlist context
@@ -2507,30 +2555,7 @@ export async function loadQueueState({ touchDeck = true } = {}) {
         setArt($('#playerImg'), item.image);
         $('#playerTitle').textContent = item.name || '';
         $('#playerArtist').textContent = item.artist || '';
-        const deck = _activeDeckEl();
-        const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: streamToken() });
-        const restoreSrc = `/api/player/stream?${params}&quality=${streamQuality()}`;
-        if (deck === _deckA) _expectedSrcA = _absUrl(restoreSrc);
-        else _expectedSrcB = _absUrl(restoreSrc);
-        deck.src = restoreSrc;
-        deck.preload = 'none';
-        _restorePos = data.position_seconds > 0 ? data.position_seconds : 0;
-        if (data.position_seconds > 0) {
-          // preload is 'none', so this waits for whatever loads on the deck FIRST. If
-          // that is not the restored track — the user opened the app and picked another
-          // song — the saved position belonged to a different file: the new song
-          // started in its middle, or past its end and was skipped outright. Seek only
-          // if the deck still holds the restored source (the classic engine always did).
-          // And only when the listener resumes it (Play): an explicit load of a track
-          // — even the same one, from a playlist — starts at 0; _setDeckSrc drops this.
-          const want = _absUrl(restoreSrc);
-          _restoreSeek = () => {
-            deck.removeEventListener('loadedmetadata', _restoreSeek);
-            _restoreSeek = null;
-            if (deck.src === want) deck.currentTime = data.position_seconds;
-          };
-          deck.addEventListener('loadedmetadata', _restoreSeek);
-        }
+        _primeDeck(item, data.position_seconds);
         syncFullPlayer();
         updateDownloadButtons(item);
         showPlayerBar();
@@ -2674,6 +2699,10 @@ export function init() {
       // (it is about to skip) — reporting it as a pause would tell the UI and the
       // Android shell that the listener stopped the music.
       if (deck.error) return;
+      // Casting pauses the local decks; the receiver plays on. The icon follows the
+      // receiver (cast.js poll) and the Android shell must not hear a pause — it would
+      // drop its wake lock and let the page freeze mid-cast.
+      if (cast.castOwnsLocalPause()) return;
       updatePlayPauseIcon(false);
       pausePrefetch();
       abPause();
@@ -2909,8 +2938,7 @@ export function init() {
   // Controls
   $('#playerPlayPause').addEventListener('click', () => {
     if (store.castDevice) {
-      if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
-      else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
+      cast.castToggle();
     } else {
       _ensureAudioContext();
       if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
@@ -2948,7 +2976,8 @@ export function init() {
     // Under remote control the target seeks (B6): the touchstart below suppresses the
     // click remote.js listens for, and this device's own deck is paused anyway.
     if (store.remoteTarget) { document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'seek_pct', value: pct } })); return; }
-    const dur = _getDuration();
+    // The local deck never holds the cast track: its duration is another track's.
+    const dur = cast.castSeekDuration(_getDuration);
     if (!dur) return;
     if (store.castDevice) {
       apiJson('/api/dlna/seek', { method: 'POST', body: { position_seconds: pct * dur } }).catch(() => {});
@@ -3046,7 +3075,17 @@ export function init() {
   });
 
   // ── Cast (DLNA) — shared module (cast.js) ──
-  cast.initCast({ getAudioEl: getAudio, nextTrack, syncVolume: () => setVolume(store.playerVolume) });
+  cast.initCast({
+    getAudioEl: getAudio, nextTrack, syncVolume: () => setVolume(store.playerVolume),
+    getUpcoming: () => { const i = _upcomingIdx(); return i == null ? null : { index: i, item: store.playerQueue[i] }; },
+    adoptTrack: _adoptCastTrack,
+    pauseLocal,
+    resumeLocal: _resumeLocalPlayback,
+    flushQueue,
+    onCastPlaying: updatePlayPauseIcon,
+    localPosition: () => (_currentRecItem ? 0 : (_restoreSeek ? _restorePos : (_activeDeckEl().currentTime || 0))),
+    primeLocal: (idx, pos) => { const it = _currentRecItem || store.playerQueue[idx]; if (it) _primeDeck(it, pos); },
+  });
   cast.wireControls();
 
   // Play button on cards (event delegation)
@@ -3098,8 +3137,7 @@ export function init() {
       case 'Space':
         e.preventDefault();
         if (store.castDevice) {
-          if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
-          else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
+          cast.castToggle();
         } else {
           _ensureAudioContext();
           if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
@@ -3145,7 +3183,9 @@ export function init() {
   });
 
   // Periodic save while playing
-  setInterval(() => { if (store.playerPlaying && store.currentUser) saveQueueNow(); }, 30000);
+  // Not while a cast view may be stale (page just woke): the server's follower may have
+  // moved current_index on, and this save would put the old one back.
+  setInterval(() => { if (store.playerPlaying && store.currentUser && cast.castStateFresh()) saveQueueNow(); }, 30000);
 
   // Save on page unload (sync XHR since sendBeacon can't set auth headers)
   window.addEventListener('beforeunload', () => {
@@ -3162,7 +3202,7 @@ export function init() {
         if (store.deviceId) xhr.setRequestHeader('X-Device-ID', store.deviceId);
         xhr.send(JSON.stringify({
           queue: store.playerQueue, current_index: store.playerIndex,
-          position_seconds: _activeDeckEl().currentTime || 0, volume: store.playerVolume,
+          position_seconds: store.castDevice ? cast.castPosition() : (_activeDeckEl().currentTime || 0), volume: store.playerVolume,
           playlist_mode: store.playlistMode,
           shuffle_order: serializeShuffleOrder(),
           radio_mode: !!store.radioMode,

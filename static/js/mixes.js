@@ -406,7 +406,10 @@ function playMix(m) {
   // The same shape as any other downloaded track: the stream resolves the local
   // file by title + artist. playTracks, not addToQueue: addToQueue mirrors what
   // it queues into store.playlistMode — the user's open Navidrome playlist.
-  const item = { name: m.title, artist: m.artist, album: 'DJ Sets', image: m.thumbnail || '' };
+  // duration_ms: a cast needs the length — a receiver may report none, and then any
+  // stop looked like the end of the set (cast review, findings 4/10).
+  const item = { name: m.title, artist: m.artist, album: 'DJ Sets', image: m.thumbnail || '',
+    duration_ms: m.duration > 0 ? Math.round(m.duration * 1000) : 0 };
   import('./upnext.js').then((u) => u.playTracks([item], 0));
 }
 

@@ -106,6 +106,18 @@ async def _bpm_feature_backfill():
         logging.getLogger("musicseeker").warning("feature backfill stopped: %s", e)
 
 
+# The event loop keeps only a weak reference to a task; one nobody holds can be
+# garbage-collected while it still runs.
+_tasks: set = set()
+
+
+def _spawn(coro) -> "asyncio.Task":
+    t = asyncio.create_task(coro)
+    _tasks.add(t)
+    t.add_done_callback(_tasks.discard)
+    return t
+
+
 async def startup():
     """Main startup function — called by app factory."""
     if not ADMIN_PASS:
@@ -121,3 +133,6 @@ async def startup():
     # Start DLNA renderer discovery
     from app.services import dlna
     await dlna.start_discovery()
+    # Casts that were active when the process stopped carry on being followed.
+    dlna.mark_resume_pending()
+    _spawn(dlna.resume_sessions())

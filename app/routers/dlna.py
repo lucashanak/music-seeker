@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.services import auth, dlna
@@ -14,6 +15,23 @@ class CastRequest(BaseModel):
     album: str = ""
     image: str = ""
     duration_ms: int = 0
+    # Where to start on the receiver: the local position when a cast takes over.
+    start_seconds: float = 0
+    # This item's index in the queue the client saved (PUT /api/player/queue). A cast
+    # that carries one is followed by the server, which advances the queue itself.
+    queue_index: int = -1
+    # What the client would play after this one ({queue_index, name, artist, album,
+    # image, duration_ms}) — Smart Queue's pick is known only to the client.
+    next: dict | None = None
+    repeat: str = "off"
+    shuffle: bool = False
+
+
+class NextHintRequest(BaseModel):
+    queue_index: int
+    next: dict | None = None
+    repeat: str = "off"
+    shuffle: bool = False
 
 
 class SeekRequest(BaseModel):
@@ -55,12 +73,15 @@ async def cast_to_device(req: CastRequest, request: Request, user: dict = Depend
     # failed cast (incl. an auto-advance re-cast) silently stalled the queue. Bounded by
     # the per-call renderer timeouts inside cast_to_device (+ a hard ceiling here).
     try:
-        ok = await asyncio.wait_for(dlna.cast_to_device(
+        outcome = await asyncio.wait_for(dlna.cast_with_outcome(
             sk, req.device_id, req.name, req.artist, token,
             album=req.album, image=req.image, duration_ms=req.duration_ms,
+            start_seconds=max(0.0, req.start_seconds or 0.0), queue_index=req.queue_index,
+            next_item=req.next, repeat=req.repeat, shuffle=req.shuffle,
+            username=user["username"], client_device=_get_device_id(request), by="client",
         ), timeout=40)
     except asyncio.TimeoutError:
-        ok = False
+        outcome = "failed"
     # Why the cast failed decides what the user should do, and the client needs to tell
     # a dead renderer from a bad track: on "device" it stops casting instead of walking
     # the queue one failed track at a time.
@@ -74,9 +95,26 @@ async def cast_to_device(req: CastRequest, request: Request, user: dict = Depend
             "message": f"{e.device} refused the track — wake it from standby and select its network input",
             "cause": "device",
         })
-    if not ok:
+    if outcome == "superseded":
+        # A newer cast (two quick Next taps) or a stop replaced this one: not a failure.
+        raise HTTPException(409, {"message": "superseded", "superseded": True, "cause": "superseded"})
+    if outcome != "ok":
         raise HTTPException(502, {"message": "Cast failed", "cause": "unknown"})
-    return {"status": "casting"}
+    return {"status": "casting", "cast_seq": dlna.get_cast_seq(sk),
+            "session_id": dlna.get_session_id(sk)}
+
+
+@router.post("/next-hint")
+async def next_hint(req: NextHintRequest, request: Request, user: dict = Depends(auth.get_current_user)):
+    """What the client would play after the track it believes is playing. Refused
+    (409 stale) when the server has moved on — the client takes the status first."""
+    res = await dlna.set_next_hint(_session_key(user, request), req.queue_index, req.next,
+                                   repeat=req.repeat, shuffle=req.shuffle)
+    if res == "no_session":
+        raise HTTPException(400, "No active cast session")
+    if res == "stale":
+        return JSONResponse(status_code=409, content={"stale": True})
+    return {"status": "ok"}
 
 
 @router.post("/play")
@@ -121,7 +159,15 @@ async def set_volume(req: VolumeRequest, request: Request, user: dict = Depends(
 
 @router.get("/status")
 async def get_status(request: Request, user: dict = Depends(auth.get_current_user)):
-    status = await dlna.get_status(_session_key(user, request))
+    sk = _session_key(user, request)
+    status = await dlna.get_status(sk)
     if not status:
+        # A session the server gave up on says why — once.
+        why = dlna.take_abandoned(sk)
+        if why:
+            return {"active": False, "abandoned": why}
+        if dlna.is_resuming(sk):
+            # Back after a restart and still reconnecting: do not end the cast yet.
+            return {"active": False, "resuming": True}
         return {"active": False}
     return {"active": True, **status}
