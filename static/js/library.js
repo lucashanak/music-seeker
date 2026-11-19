@@ -6,6 +6,7 @@ import { apiJson, libraryWritesInFlight } from './api.js';
 import { renderSongList } from './search.js';
 import { renderCollRows, collSkeleton } from './collrow.js';
 import { fetchPlaylistBpm, addBpmBadges, createBpmFilter, addScanButton } from './bpm.js';
+import { mountEnergySort, applyEnergySort, renderEnergySummary, clearEnergySummary, inViewOrder, energySortMode, playViewThroughUpNext, energySortFor, viewRange } from './plenergy.js';
 import { attachContextMenu, buildActionsFor, showContextMenu, wasLongPress, makeKebabButton, playNext } from './contextmenu.js';
 import { getPlayerModule } from './player_active.js';
 import { loadLikes, getLikedTracks, likedCount } from './likes.js';
@@ -463,12 +464,16 @@ async function loadLibraryDetail(id) {
       $('#libDetailImg').style.background = '';
     }
     _setLibDetailCount();
+    clearEnergySummary('#libDetailCount');
+    energySortFor(id);
     _renderLibDetailTracks(id);
     // BPM: filter bar with scan button, fetch cached BPM, add badges
     const bpmFilter = _initBpmFilter(id);
+    mountEnergySort('#libraryTracks', id, () => _refreshEnergyView(id));
     fetchPlaylistBpm(id).then(() => {
       addBpmBadges('#libraryTracks');
       if (bpmFilter && bpmFilter._refreshCoverage) bpmFilter._refreshCoverage();
+      _refreshEnergyView(id);
     });
   } catch (e) {
     tracksEl.innerHTML = `<div class="empty-state"><p>Failed to load playlist</p></div>`;
@@ -499,6 +504,15 @@ function _renderLibDetailTracks(id) {
   // Restore BPM badges from cache (fetchPlaylistBpm populates it on first load;
   // a local re-render after reorder would otherwise drop them).
   addBpmBadges('#libraryTracks');
+  applyEnergySort('#libraryTracks');
+}
+
+// The energy order and the header summary read the BPM cache; call once it holds
+// this playlist (a later playlist may have been opened meanwhile).
+function _refreshEnergyView(id) {
+  if (id !== currentLibPlaylistId) return;
+  applyEnergySort('#libraryTracks');
+  renderEnergySummary(currentLibPlaylistTracks, '#libDetailCount');
 }
 
 // ── Drag-to-reorder (mouse + touch via Pointer Events) ──
@@ -731,10 +745,9 @@ function _addSelectListeners() {
         e.preventDefault();
         e.stopImmediatePropagation();
         if (e.shiftKey && _lastSelectIdx >= 0) {
-          // Range select
-          const lo = Math.min(_lastSelectIdx, i);
-          const hi = Math.max(_lastSelectIdx, i);
-          for (let j = lo; j <= hi; j++) _selectSet.add(j);
+          // Range select — between the two rows as SHOWN (an energy order moves
+          // rows on screen only; DOM indices stay playlist positions).
+          for (const j of viewRange($$('#libraryTracks .card'), _lastSelectIdx, i)) _selectSet.add(j);
         } else {
           // Cmd/Ctrl toggle
           if (_selectSet.has(i)) _selectSet.delete(i); else _selectSet.add(i);
@@ -769,9 +782,9 @@ function _updateSelectUI() {
 
 function _buildMultiSelectMenu(playlistId, playlistName) {
   const cards = $$('#libraryTracks .card');
-  const selectedItems = [..._selectSet]
-    .filter(i => cards[i])
-    .map(i => { try { return JSON.parse(cards[i].dataset.item); } catch { return null; } })
+  // In the order shown (an energy order moves rows on screen only).
+  const selectedItems = inViewOrder(cards.filter((c, i) => _selectSet.has(i)))
+    .map(c => { try { return JSON.parse(c.dataset.item); } catch { return null; } })
     .filter(Boolean);
   if (!selectedItems.length) return null;
   const count = selectedItems.length;
@@ -1040,10 +1053,12 @@ async function _quietReloadDetail(id) {
     // Same as loadLibraryDetail: a fresh filter bar over the fresh rows (the
     // old one was "All" — _detailBusy saw to that) and BPM for new tracks.
     const bpmFilter = _initBpmFilter(id);
+    mountEnergySort('#libraryTracks', id, () => _refreshEnergyView(id));   // same playlist: keeps the chosen order
     fetchPlaylistBpm(id).then(() => {
       if (currentLibPlaylistId !== id) return;
       addBpmBadges('#libraryTracks');
       if (bpmFilter && bpmFilter._refreshCoverage) bpmFilter._refreshCoverage();
+      _refreshEnergyView(id);
     });
   } catch {}
 }
@@ -1345,6 +1360,12 @@ export function init() {
   if (playBtn) playBtn.addEventListener('click', () => {
     const tracks = getLibTracksForPlayer();
     if (tracks.length) {
+      if (energySortMode() !== 'playlist') {
+        // An energy order is not the playlist's order: play it through Up Next, so a
+        // later drag in the queue cannot mirror that order into the playlist.
+        playViewThroughUpNext(tracks);
+        return;
+      }
       store.playlistMode = currentLibPlaylistId ? { id: currentLibPlaylistId, name: currentLibPlaylistName } : null;
       import('./upnext.js').then(m => m.playTracks(tracks));
     }
@@ -1455,6 +1476,7 @@ export function init() {
 function getLibTracksForPlayer() {
   // Respect the active BPM filter: hidden cards (display:none) are excluded so
   // Play All / Queue All only act on the currently-visible (filtered) set.
-  const cards = $$('#libraryTracks .card').filter(c => c.style.display !== 'none');
+  // In the order shown: an energy order plays as it is listed.
+  const cards = inViewOrder($$('#libraryTracks .card').filter(c => c.style.display !== 'none'));
   return cards.map(c => { try { return JSON.parse(c.dataset.item); } catch { return null; } }).filter(Boolean);
 }
