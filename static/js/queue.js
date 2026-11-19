@@ -101,6 +101,20 @@ export function shufflePrev() {
   return _idx(prev);
 }
 
+/** The server's cast follower moved on to queue[idx] by itself (cast.js adoptTrack):
+ *  book it as if shuffleNext() had returned it — the current track goes to the played
+ *  history, idx leaves the tail. Call BEFORE store.playerIndex is set to idx. */
+export function adoptShuffleIndex(idx) {
+  const q = store.playerQueue;
+  const it = q[idx];
+  if (!it) return;
+  _syncShuffleOrder();
+  const cur = store.playerIndex >= 0 ? q[store.playerIndex] : null;
+  _shufTail = _shufTail.filter((x) => x !== it);
+  _shufPlayed = _shufPlayed.filter((x) => x !== it);
+  if (cur && cur !== it && _shufPlayed[_shufPlayed.length - 1] !== cur) _shufPlayed.push(cur);
+}
+
 /** Drop the order — on toggle, and when a finished one has to start over. */
 export function resetShuffleOrder() {
   _shufPlayed = [];

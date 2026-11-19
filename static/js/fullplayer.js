@@ -3,6 +3,7 @@
 import { store } from './store.js';
 import { $, fmtTime, showToast, historyBack, setArt} from './utils.js';
 import { apiJson } from './api.js';
+import { castDuration, castToggle } from './cast.js';
 import { renderQueueInto, renderQueue, openFpQueuePanel, closeFpQueuePanel, closeQueuePanel, scrollToNowPlaying, resetShuffleOrder } from './queue.js';
 import { toggleLike, isLiked } from './likes.js';
 import * as djPanel from './djpanel.js';
@@ -369,8 +370,7 @@ export function init() {
   // Full player controls
   $('#fpPlayPause').addEventListener('click', () => {
     if (store.castDevice) {
-      if (store.playerPlaying) apiJson('/api/dlna/pause', { method: 'POST' }).then(() => updatePlayPauseIcon(false)).catch(() => {});
-      else apiJson('/api/dlna/play', { method: 'POST' }).then(() => updatePlayPauseIcon(true)).catch(() => {});
+      castToggle();
     } else {
       const a = audio();
       if (a.paused) a.play().catch(() => {}); else a.pause();
@@ -389,7 +389,9 @@ export function init() {
     // The DJ engine knows durations this element does not (a stream served while its
     // file is still being built reports Infinity) and how to seek in such a stream.
     if (!store.castDevice && _engineSeek) { _engineSeek(pct); return; }
-    const dur = a.duration && isFinite(a.duration) && a.duration > 0
+    // While casting, the element holds another track (or nothing): the length is the
+    // receiver's — a 50 % tap on a 2 h mix used to land at ~2:00.
+    const dur = store.castDevice ? (castDuration() || null) : a.duration && isFinite(a.duration) && a.duration > 0
       ? a.duration
       : (() => { const item = store.playerQueue[store.playerIndex]; return item?.duration_ms > 0 ? item.duration_ms / 1000 : null; })();
     if (!dur) return;

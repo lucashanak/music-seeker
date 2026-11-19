@@ -116,6 +116,7 @@ export const store = {
   // handlePopstate se na ni ptá).
   genreOpen: false,
   playerSaveTimer: null,
+  playerSavePending: false, // a queue save is due (saveQueueDebounced) and has not gone out yet
 
   // ── Playlist Mode ──
   playlistMode: null, // { id, name } or null

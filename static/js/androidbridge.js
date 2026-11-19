@@ -43,6 +43,15 @@ export function abPause() {
   }, PAUSE_GRACE_MS);
 }
 
+// Position for the notification. On the native side it also re-takes the service's
+// 1 h wake lock (ACTION_PROGRESS), which matters for a cast: no local deck reports
+// progress then, and a mix outlives an hour.
+export function abProgress(positionMs, durationMs) {
+  const b = ab();
+  if (!b || typeof b.onProgress !== 'function') return;
+  try { b.onProgress(positionMs, durationMs); } catch {}
+}
+
 // Stop is deliberate and final — report it at once, and drop any pause still waiting.
 export function abStop() {
   _cancelPendingPause();

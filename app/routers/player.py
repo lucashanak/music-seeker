@@ -18,9 +18,22 @@ _prewarm_tasks: set[asyncio.Task] = set()
 
 def _mime_for_path(path: str) -> str:
     """Return correct MIME type based on file extension."""
-    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-    return {"flac": "audio/flac", "opus": "audio/ogg", "ogg": "audio/ogg", "m4a": "audio/mp4",
-            "mp4": "audio/mp4", "aac": "audio/aac", "wav": "audio/wav"}.get(ext, "audio/mpeg")
+    return player.mime_for_path(path)
+
+
+class _ServedFile(FileResponse):
+    """A cache file that counts as in use for as long as it is being SENT, not only at
+    the moment it was chosen: a receiver reads a two-hour mix through one GET, and the
+    eviction sweep must not unlink it meanwhile (player.serving_begin). Only for cache
+    files — the end of a response bumps the file's atime, which a library file does
+    not need."""
+
+    async def __call__(self, scope, receive, send):
+        player.serving_begin(self.path)
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            player.serving_end(self.path)
 
 
 async def _resolve_alive(name: str, artist: str) -> dict | None:
@@ -77,7 +90,8 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
             headers["Content-Length"] = str(os.path.getsize(path))
     elif result["source"] == "navidrome":
         cached = await player.cache_navidrome_stream(result["song_id"], lossless=lossless,
-                                                     raw_ext=result.get("raw_ext"))
+                                                     raw_ext=result.get("raw_ext"),
+                                                     ext=result.get("ext"))
         if cached:
             player.touch_cache_file(cached)
             mime = _mime_for_path(cached)   # flac, mp3, or the song's own compact format
@@ -117,7 +131,7 @@ async def _file_or_follow(build, cache_path: str, progressive: bool, mime: str,
     if not cached:
         return None
     player.touch_cache_file(cached)
-    return FileResponse(cached, media_type=mime, headers=file_headers)
+    return _ServedFile(cached, media_type=mime, headers=file_headers)
 
 
 @router.get("/stream-duration")
@@ -135,7 +149,7 @@ async def player_stream_duration(name: str, artist: str = "", quality: str = "st
     path = None
     if result and result["source"] == "navidrome":
         path = player.navidrome_cache_path(result["song_id"], lossless=lossless,
-                                           raw_ext=result.get("raw_ext"))
+                                           raw_ext=result.get("raw_ext"), ext=result.get("ext"))
     elif result and result["source"] == "local":
         path = result["path"] if os.path.exists(result["path"]) else None
     elif result is None or result["source"] == "youtube":
@@ -160,7 +174,7 @@ async def player_stream(request: Request, name: str, artist: str = "", quality: 
         cached = player.youtube_cache_path(name, artist, "320k" if lossless else "192k")
         if cached:
             player.touch_cache_file(cached)
-            return FileResponse(cached, media_type="audio/mpeg",
+            return _ServedFile(cached, media_type="audio/mpeg",
                                 headers={"X-Stream-Source": "youtube-cache",
                                          "Cache-Control": "private, max-age=86400"})
         raise HTTPException(404, "Could not resolve stream for this track")
@@ -185,7 +199,7 @@ async def player_stream(request: Request, name: str, artist: str = "", quality: 
             cached = player.local_transcode_cached_path(path)
             if cached and not player.raw_pinned(path):
                 player.touch_cache_file(cached)
-                return FileResponse(cached, media_type="audio/mpeg", headers=file_headers)
+                return _ServedFile(cached, media_type="audio/mpeg", headers=file_headers)
             # Cold path: build the compact MP3 cache in the background (so a LATER
             # play gets the smaller cached MP3) but serve the RAW file NOW via
             # FileResponse. A raw file carries a Content-Length + Range support, so
@@ -210,21 +224,24 @@ async def player_stream(request: Request, name: str, artist: str = "", quality: 
         return FileResponse(path, media_type=mime, headers=file_headers)
     elif source == "navidrome":
         # Try cached file first (supports Range requests, seeking, correct duration)
-        raw_ext = result.get("raw_ext")
-        nav_path, _ = player.nav_cache_target(result["song_id"], lossless, raw_ext)
+        raw_ext, ext = result.get("raw_ext"), result.get("ext")
+        nav_path, _ = player.nav_cache_target(result["song_id"], lossless, raw_ext, ext)
         mime = _mime_for_path(nav_path)
         # A song served untouched needs no "while it is built" treatment: copying it
         # takes a second or two, and the plain file gives the deck a real duration and
         # Range from the first byte.
         resp = await _file_or_follow(
-            player.cache_navidrome_stream(result["song_id"], lossless=lossless, raw_ext=raw_ext),
+            player.cache_navidrome_stream(result["song_id"], lossless=lossless, raw_ext=raw_ext,
+                                          ext=ext),
             nav_path, progressive and ".raw." not in nav_path, mime, file_headers, headers)
         if resp is not None:
             return resp
         # Resolved, but the song cannot be fetched: forget it so the next play
         # resolves afresh instead of failing for the rest of the 4 h TTL.
         player.invalidate_cache(name, artist)
-        mime = "audio/flac" if lossless else "audio/mpeg"
+        # Lossless asks Navidrome for the original: its type is the target's (flac or
+        # the song's own format). Otherwise it is a live MP3 transcode.
+        mime = mime if lossless else "audio/mpeg"
         return StreamingResponse(player.stream_navidrome(result["song_id"], lossless=lossless),
                                   media_type=mime, headers=headers)
     else:
@@ -265,7 +282,8 @@ async def _prewarm_track(track: dict, lossless: bool) -> None:
         if source == "navidrome":
             # Idempotent + locked: builds the transcoded/cached file if missing.
             if not await player.cache_navidrome_stream(result["song_id"], lossless=lossless,
-                                                       raw_ext=result.get("raw_ext")):
+                                                       raw_ext=result.get("raw_ext"),
+                                                       ext=result.get("ext")):
                 player.invalidate_cache(name, artist)
         elif source == "youtube":
             bitrate = "320k" if lossless else "192k"
@@ -314,20 +332,27 @@ async def get_player_queue(request: Request, user: dict = Depends(bind_navidrome
 @router.put("/queue")
 async def save_player_queue(state: QueueState, request: Request, user: dict = Depends(bind_navidrome_creds)):
     device_id = _get_device_id(request)
-    player.save_queue(user["username"], state.model_dump(), device_id)
+    # save_queue takes a threading lock the cast follower also holds while it moves
+    # the queue pointer: wait for it on a worker thread, never on the event loop.
+    await asyncio.to_thread(player.save_queue, user["username"], state.model_dump(), device_id)
     return {"status": "saved"}
 
 
 @router.post("/queue/add")
 async def add_to_queue(req: AddToQueueRequest, request: Request, user: dict = Depends(bind_navidrome_creds)):
     device_id = _get_device_id(request)
-    state = player.load_queue(user["username"], device_id)
-    state["queue"].extend(req.tracks)
-    if req.play_now or state["current_index"] < 0:
-        state["current_index"] = len(state["queue"]) - len(req.tracks)
-        state["position_seconds"] = 0.0
-    player.save_queue(user["username"], state, device_id)
-    return state
+    out = {}
+
+    def add(state: dict):
+        # Read, extend and write under the queue lock: a save landing in between
+        # (the page's PUT, the cast follower's pointer move) would otherwise be lost.
+        state.setdefault("queue", []).extend(req.tracks)
+        if req.play_now or state.get("current_index", -1) < 0:
+            state["current_index"] = len(state["queue"]) - len(req.tracks)
+            state["position_seconds"] = 0.0
+        out.update(state)
+    await asyncio.to_thread(player.update_queue, user["username"], device_id, add, False)
+    return out
 
 
 @router.delete("/queue")
