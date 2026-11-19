@@ -318,6 +318,12 @@ async function lendAndLoad(i, { dur = 180 } = {}) {
   assert.equal(await p, true, 'deskLoad resolves true');
   return key;
 }
+/** The track name the ACTIVE deck element is really loaded with ('' for a blob). Not
+ *  deskInfo().items, which is derived from store.playerIndex and cannot tell. */
+function activeSrcName() {
+  const src = el(P.deskInfo().active).src;
+  try { return new URL(src).searchParams.get('name') || ''; } catch { return ''; }
+}
 /** Let an engine load that waits on the incoming deck finish. */
 async function finishLoad(key, dur = 200) { await flush(); if (el(key).src && el(key).readyState === 0) ready(el(key), dur); await flush(); }
 /** Put the active deck `secLeft` seconds before its end and fire its timeupdate. */
@@ -964,7 +970,10 @@ test('nextTrack during a hand mix with the fader below half then moves on from t
   P.nextTrack({ reason: 'user' });
   await flush();
   await finishLoad('A'); await finishLoad('B');
-  assert.notEqual(store.playerIndex, 0, 'the engine moved on — it did not load the track it was leaving');
+  assert.equal(store.playerIndex, 3, 'next after the track the index named when Next was pressed');
+  assert.equal(activeSrcName(), store.playerQueue[3].name, 'the live deck element really holds queue[3]');
+  assert.equal(el(P.deskInfo().active).paused, false, 'and plays');
+  assert.equal(P.deskInfo().busy, false, 'the load finished');
 });
 
 test('nextTrack during a hand mix with the fader at half or more: committed', async () => {
@@ -988,7 +997,8 @@ test('a queue row picked during a hand mix (fader below half) plays THAT row', a
   await flush();
   await finishLoad('A'); await finishLoad('B'); await p;
   assert.equal(store.playerIndex, 4, 'the take-back must not rewrite the index the caller chose');
-  assert.equal(P.deskInfo().items[P.deskInfo().active], store.playerQueue[4]);
+  assert.equal(activeSrcName(), store.playerQueue[4].name, 'the live deck element really holds queue[4]');
+  assert.equal(el(P.deskInfo().active).paused, false, 'and plays');
 });
 
 // 3. A deck failing during a hand mix.
@@ -1021,6 +1031,33 @@ test('the OLD deck failing during a hand mix commits to the new one, no skip', a
   assert.equal(lastEvent('mixend').commit, true);
   assert.equal(info.busy, false);
   assert.equal(gainOf(key).value, 1);
+});
+
+test('double failure: the new deck errors while the old one already ended — committed, and the skip starts', async () => {
+  const { oldKey, key } = await beginMix(2);
+  P.deskMixLevel(0.3);
+  const o = el(oldKey); o.ended = true; o.paused = true; // ended; its `ended` event already handled or lost
+  el(key).error = { code: 4 };
+  el(key).dispatchEvent(new Event('error'));
+  // This test's own listener errors are reported here, not by the file-wide check below.
+  const thrown = errors.map(e => String(e && e.message || e));
+  for (const e of errors) allErrors.splice(allErrors.indexOf(e), 1);
+  assert.deepEqual(thrown, [], 'the error handler did not throw');
+  const info = P.deskInfo();
+  assert.equal(info.active, key, 'nothing to go back to: the failing deck is the live one');
+  assert.equal(info.mixing, false);
+  assert.equal(info.loan, null);
+  assert.equal(lastEvent('mixend').commit, true);
+  assert.equal(info.busy, true, 'the error skip/backoff started (_skipAfterError)');
+});
+
+test('a take-back leaves the cue deck\'s levelGain at 1 (as deskLend leaves it)', async () => {
+  const { key } = await beginMix(2);
+  G.nodes[key].levelGain.gain.value = 0.5; // a level match applied while it was live
+  P.deskMixLevel(0.3);
+  assert.equal(P.deskEndMix(false), true);
+  assert.equal(P.deskInfo().loan, key);
+  assert.equal(G.nodes[key].levelGain.gain.value, 1);
 });
 
 // 4. Shuffle: a jump made by hand is recorded in the shuffle history.
@@ -1077,6 +1114,45 @@ test('shuffle: a forced next to an already-played track records the jump', async
   assert.equal(Q.shufflePrev(), left, 'Previous goes back to it');
 });
 
+test('shuffle: taking back a hand mix INTO an already-played track does not deal that track next', async () => {
+  await shuffled(6);
+  const inKey = other(P.deskInfo().active);
+  P.nextTrack({ reason: 'user' });
+  await finishLoad(inKey);
+  const cur = store.playerIndex;
+  assert.notEqual(cur, 0, 'precondition: queue[0] is history now');
+  mock.timers.tick(6000); // the engine's crossfade completes
+  await flush();
+  assert.equal(P.deskInfo().crossfading, false, 'precondition: transition over');
+  await lendAndLoad(0); // mix back into the track already played
+  assert.equal(P.deskBeginMix(), true);
+  P.deskMixLevel(0.2);
+  assert.equal(P.deskEndMix(false), true);
+  assert.equal(store.playerIndex, cur);
+  const s = Q.serializeShuffleOrder();
+  assert.ok(!s.tail.includes(0), `queue[0] was never in the tail and is not put there: tail ${s.tail}`);
+  assert.notEqual(Q.peekShuffleNext(), 0);
+  assert.ok(s.played.includes(0), 'it stays history');
+  assert.ok(!s.played.includes(cur), 'the current track is not in its own history');
+});
+
+test('shuffle: a take-back restores the shuffle order exactly, also when the current track already topped the history', async () => {
+  await shuffled(6);
+  // The state a forced jump into an already-played track leaves: the current track is
+  // also the last entry of the played history.
+  Q.restoreShuffleOrder({ played: [1, 0], tail: [2, 3, 4, 5] });
+  const before = Q.serializeShuffleOrder();
+  await lendAndLoad(3);
+  assert.equal(P.deskBeginMix(), true);
+  P.deskMixLevel(0.2);
+  assert.equal(P.deskEndMix(false), true);
+  const after = Q.serializeShuffleOrder();
+  assert.deepEqual(after.played, before.played, 'the history is as it was: undo pops only what the jump pushed');
+  assert.deepEqual([...after.tail].sort(), [...before.tail].sort(), 'the same tracks are still to come');
+  // Not asserted: the taken-back track returns at the HEAD of the tail (unshift), not at
+  // its old place — a reorder the take-back introduces (see the report).
+});
+
 // 5. A cue point belongs to the desk's own load only.
 test('deskMixNow refused: nothing is armed, the next row load starts at 0', async () => {
   const active = await fresh({ n: 5 });
@@ -1104,6 +1180,25 @@ test('a queue-row load started before deskMixNow\'s own load does not take its c
   assert.equal(store.playerQueue[3].name, P.deskInfo().items[P.deskInfo().active]?.name, 'precondition: the row load ran first');
   assert.equal(el(inKey).currentTime, 0, 'the row\'s track starts at 0, not at the desk\'s cue point');
   await flush(); await finishLoad('A'); await finishLoad('B'); await p;
+});
+
+test('playRecTrack disarms a pending desk cue point', async () => {
+  await fresh({ n: 5 });
+  await cache(1);
+  assert.equal(P.deskMixNow({ startAt: 42.5 }), true); // armed for queue[1]; its load waits on an import()
+  P.playRecTrack({ name: `rec-${++seq}`, artist: 'r' }); // a recommendation is started at that moment
+  await flush();
+  for (const d of [deckA, deckB]) if (d.src && d.readyState === 0) ready(d, 200);
+  await flush();
+  mock.timers.tick(600);
+  const inKey = other(P.deskInfo().active);
+  store.playerIndex = 1; // later the user plays queue[1] from its row
+  const p = P.loadAndPlay();
+  await flush();
+  assert.ok(el(inKey).src.startsWith('blob:'), 'precondition: a cached transition, where a cue point would apply');
+  ready(el(inKey), 200);
+  await flush(); await p;
+  assert.equal(el(inKey).currentTime, 0, 'not the desk\'s 42.5');
 });
 
 // 6. A quick listen does not download.

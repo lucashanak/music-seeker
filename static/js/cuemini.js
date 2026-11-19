@@ -13,6 +13,7 @@ let bar = null;
 let raf = 0;
 let dragging = false;
 let poll = 0;          // the 1.5 s check; runs only while there is something to keep up to date
+let badArt = '';       // a cover URL that failed to load: not asked for again
 const POLL_MS = 1500;
 const QUEUE_LISTS = '#queueList, #fpQueuePanelList, #fpQueueList';
 
@@ -58,8 +59,13 @@ function sameItem(a, b) {
 // Called by queue.js after it builds rows. Button on every row, always visible on the
 // next-up row, revealed on hover for the rest (CSS), and reachable from the kebab menu.
 export function decorateQueueRows(root) {
-  if (!root) return;
-  const avail = cueAvailable();
+  if (decorate(root, cueAvailable())) ensurePoll();   // a queue list is on screen: keep it current
+  paintRows();
+}
+
+// Buttons on one list's rows, without painting; true when the list has rows.
+function decorate(root, avail) {
+  if (!root) return false;
   const rows = root.querySelectorAll('.queue-item');
   for (const row of rows) {
     const old = row.querySelector('.cue-btn');
@@ -77,8 +83,7 @@ export function decorateQueueRows(root) {
     const anchor = row.querySelector('.like-btn') || row.querySelector('.kebab-btn') || row.querySelector('.qi-remove');
     if (anchor) row.insertBefore(btn, anchor); else row.appendChild(btn);
   }
-  paintRows();
-  if (rows.length) ensurePoll();     // a queue list is on screen: keep it current
+  return rows.length > 0;
 }
 
 function paintRows() {
@@ -123,7 +128,10 @@ function buildBar() {
   bar.hidden = true;
   bar.addEventListener('error', (e) => {
     // A cover URL that fails to load: the app's srcless placeholder, not a broken image.
-    if (e.target && e.target.classList && e.target.classList.contains('cm-img')) e.target.removeAttribute('src');
+    if (e.target && e.target.classList && e.target.classList.contains('cm-img')) {
+      badArt = e.target.getAttribute('src') || '';
+      e.target.removeAttribute('src');
+    }
   }, true);
   bar.innerHTML = `
     <img class="cm-img" alt="">
@@ -163,8 +171,8 @@ function updateBar() {
   document.body.classList.add('cue-mini-active');
   const it = st.item || {};
   const img = bar.querySelector('.cm-img');
-  const src = it.image || '';
-  if (img.getAttribute('src') !== src) { if (src) img.src = src; else img.removeAttribute('src'); }
+  const src = it.image && it.image !== badArt ? it.image : '';
+  if ((img.getAttribute('src') || '') !== src) { if (src) img.setAttribute('src', src); else img.removeAttribute('src'); }
   bar.querySelector('.cm-title').textContent = it.name || '';
   bar.querySelector('.cm-artist').textContent = it.artist || '';
   const play = bar.querySelector('.cm-play');
@@ -193,16 +201,28 @@ function onChange() {
 // cast / remote / engine switches carry no event of their own, so a check runs — but
 // only while a preview plays or a queue list is open; otherwise it stops itself.
 function wanted() {
-  const pv = !!(bus && bus.previewState && bus.previewState());
+  if (!cueAvailable()) return false;          // classic engine, cast, remote, no cue here
+  const pv = !!(bus.previewState && bus.previewState());
   return pv || !!(store.queuePanelOpen || store.fpQueuePanelOpen || store.fullPlayerOpen);
+}
+
+function refreshLists() {
+  const avail = cueAvailable();
+  for (const l of document.querySelectorAll(QUEUE_LISTS)) decorate(l, avail);
+  paintRows();                                // once, over every list
 }
 
 function ensurePoll() {
   if (poll || !bus || !wanted()) return;
   poll = setInterval(() => {
-    if (!wanted()) { clearInterval(poll); poll = 0; updateBar(); return; }
+    if (!wanted()) {
+      clearInterval(poll); poll = 0;
+      refreshLists();                         // cue just went away: take the buttons off
+      updateBar();
+      return;
+    }
     refreshNext();
-    for (const l of document.querySelectorAll(QUEUE_LISTS)) decorateQueueRows(l);
+    refreshLists();
     updateBar();
   }, POLL_MS);
 }
@@ -218,6 +238,6 @@ export async function init() {
   document.addEventListener('desk:engine', () => { refreshNext(); onChange(); });
   window.addEventListener('storage', onChange);
   refreshNext();
-  for (const l of document.querySelectorAll(QUEUE_LISTS)) decorateQueueRows(l);
+  refreshLists();
   ensurePoll();
 }

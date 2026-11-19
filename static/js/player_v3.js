@@ -2048,6 +2048,7 @@ export async function playRecTrack(item) {
   _currentRecItem = item;
   _loadGen++; // a queue load still waiting on cache/canplay must not fade this track out
   _deskOnLoad();
+  _deskStartAt = null;
   _rearmedSrc = '';
   _cancelErrorBackoff(); // this track supersedes whatever the backoff was waiting to skip
   _crossfadeTriggered = false; // fresh track — re-arm the auto-crossfade trigger
@@ -2492,8 +2493,12 @@ export function init() {
       // A hand mix decides by which deck failed: the new one failing keeps the old track
       // live (it is still what the audience hears), the old one failing commits the new.
       if (_deskMix && _deskMixValid()) {
-        if (deck === _deskMix.inEl) { _deskEndMixImpl(false, { fromLoad: true }); _deskRevoke('error'); return; }
-        if (deck === _deskMix.outEl) { _deskEndMixImpl(true, { fromLoad: true }); return; }
+        if (deck === _deskMix.inEl) {
+          _deskEndMixImpl(false, { fromLoad: true });
+          // Promoted to a commit (the old deck was dead too): the failing deck is the live one now.
+          if (deck !== _activeDeckEl()) { _deskRevoke('error'); return; }
+        }
+        if (_deskMix && deck === _deskMix.outEl) { _deskEndMixImpl(true, { fromLoad: true }); return; }
       }
       if (deck !== _activeDeckEl() && !_crossfading) return;
       if (_advanceInFlight) return; // an advance is already resolving — don't double-fire
@@ -3286,7 +3291,7 @@ export function deskBeginMix() {
   if (_djSetting('smart_queue', 'off') !== 'off' && prevItem) markPlayed(prevItem);
   _predictedNextIdx = null; _predictedNextKey = null;
   if (_deskNext && _deskForcedIdx() === idx) _deskNext = null;
-  noteShuffleJump(prevItem, store.playerQueue[idx]);
+  _deskMix.shuffleNote = noteShuffleJump(prevItem, store.playerQueue[idx]);
   store.playerIndex = idx;
   _crossfadeTriggered = false; _noNextLatch = false;
   _deskTrackItem(loan.item);
@@ -3348,17 +3353,21 @@ function _deskEndMixImpl(commit, { fromLoad = false, keepIndex = false } = {}) {
   _activeDeck = _deskKeyOf(m.outEl);
   _fadingOutDeck = null;
   _crossfading = false;
-  _loadGen++; _analyzeGen++;
+  // Outside a load: a load still waiting must not carry on over the restored track. Inside
+  // one (keepIndex) the load has just taken its generation — bumping it would void that
+  // very load, and the track the user asked for would never play.
+  if (!keepIndex) { _loadGen++; _analyzeGen++; }
   gOut.cancelScheduledValues(0); gOut.value = 1;
   gIn.cancelScheduledValues(0); gIn.value = 0;
   const back = _deskQueueIndex(m.prevItem, m.prevIdx);
   // Inside a load the caller has already chosen the index it is about to play; the
   // decks are put back, the queue position is the load's.
-  if (!keepIndex) { undoShuffleJump(m.prevItem, m.item); if (back != null) store.playerIndex = back; }
+  if (!keepIndex) { undoShuffleJump(m.prevItem, m.item, m.shuffleNote); if (back != null) store.playerIndex = back; }
   _outDjData = m.prevOut || _deskData(m.prevItem);
   _inDjData = null;
   _predictedNextIdx = null; _predictedNextKey = null;
   m.inEl.volume = 1;
+  { const n = _deskNodes(_deskKeyOf(m.inEl)); if (n) n.levelGain.gain.value = 1; } // as deskLend leaves it
   _deskLoan = { key: _deskKeyOf(m.inEl), el: m.inEl, item: m.item, index: _deskQueueIndex(m.item, m.index), gen: 0 };
   if (!keepIndex) {
     _deskTrackItem(m.prevItem);

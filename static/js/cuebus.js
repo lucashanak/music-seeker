@@ -136,7 +136,7 @@ async function _readOutputs() {
   const md = navigator.mediaDevices;
   if (!md || !md.enumerateDevices) return [];
   const all = await md.enumerateDevices();
-  return all.filter((d) => d.kind === 'audiooutput').map((d) => ({ deviceId: d.deviceId, label: d.label || '' }));
+  return all.filter((d) => d.kind === 'audiooutput').map((d) => ({ deviceId: d.deviceId, label: d.label || '', groupId: d.groupId || '' }));
 }
 
 /**
@@ -390,6 +390,7 @@ async function _build() {
     if (r.masterOff) { try { r.merger.disconnect(); } catch {} }
     undoOwn();
     _stopStream(r);
+    if (!_owners.size) _dropTaps();
     if (r.destPrev) { try { Object.assign(dest, r.destPrev); } catch {} }
     if (r.masterOff) master.connect(dest);
     if (plan.output === 'stream') showToast(_sinkMessage(e), true);
@@ -404,6 +405,7 @@ async function _build() {
     }
   }
   try { if (ctx.state !== 'running' && ctx.resume) ctx.resume().catch(() => {}); } catch {}
+  r.live = true;
   return { ok: true };
 }
 
@@ -551,13 +553,16 @@ function _rmsOf(an) {
 }
 
 export function cueLevels() {
-  if (!_route) return { master: 0, cue: 0 };
+  // Not while a build still waits for its output: meter taps made then would hang off
+  // the engine master after a failed build.
+  if (!_route || !_route.live) return { master: 0, cue: 0 };
   const t = _ensureTaps();
   if (!t) return { master: 0, cue: 0 };
   return { master: _rmsOf(t.master), cue: _rmsOf(_route && _route.cueTap) };
 }
 
 export function _debugTaps() {
+  if (_route && !_route.live) return null;      // a build still opening its output (see cueLevels)
   const t = _ensureTaps();
   if (!t) return null;
   return { master: t.master, cue: _route ? _route.cueTap : null, post: { ...t.post } };

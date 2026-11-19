@@ -74,17 +74,23 @@ function _syncShuffleOrder() {
  *  leaves the tail — otherwise the left track is dealt in again as unplayed and comes
  *  round a second time, and Previous skips it. Call BEFORE store.playerIndex changes. */
 export function noteShuffleJump(fromItem, toItem) {
-  if (!store.shuffleEnabled) return;
+  if (!store.shuffleEnabled) return null;
   _syncShuffleOrder();
-  if (fromItem && _shufPlayed[_shufPlayed.length - 1] !== fromItem) _shufPlayed.push(fromItem);
-  const i = _shufTail.indexOf(toItem);
-  if (i >= 0) _shufTail.splice(i, 1);
+  let pushed = false, spliced = false;
+  if (fromItem && _shufPlayed[_shufPlayed.length - 1] !== fromItem) { _shufPlayed.push(fromItem); pushed = true; }
+  const at = _shufTail.indexOf(toItem);
+  if (at >= 0) { _shufTail.splice(at, 1); spliced = true; }
+  return { pushed, spliced, at };
 }
-/** Undo of noteShuffleJump: a hand mix taken back. */
-export function undoShuffleJump(backItem, leftItem) {
+/** Undo of noteShuffleJump (a hand mix taken back) — only what that jump changed. */
+export function undoShuffleJump(backItem, leftItem, note = null) {
   if (!store.shuffleEnabled) return;
-  if (_shufPlayed[_shufPlayed.length - 1] === backItem) _shufPlayed.pop();
-  if (leftItem && !_shufTail.includes(leftItem)) _shufTail.unshift(leftItem);
+  const n = note || { pushed: true, spliced: true };
+  if (n.pushed && _shufPlayed[_shufPlayed.length - 1] === backItem) _shufPlayed.pop();
+  // Back to the place it had in the order, not to the head (that would make it play next).
+  if (n.spliced && leftItem && !_shufTail.includes(leftItem)) {
+    _shufTail.splice(Math.min(Number.isInteger(n.at) ? n.at : 0, _shufTail.length), 0, leftItem);
+  }
 }
 
 function _idx(item) {

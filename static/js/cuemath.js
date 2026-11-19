@@ -110,19 +110,30 @@ export function configuredCueMode(settings, modes) {
 }
 
 /**
- * Is `deviceId` the output the master plays on? `mainSinkId` is the engine context's
- * sinkId ('' = it follows the system default). For a context on the default, Chromium
- * lists the default as id 'default' labelled "Default - <label of the real device>";
- * that label is the only link between the two ids. Unknown (no labels, Linux's bare
- * "Default") answers false — the route is then built and the user hears where it went.
+ * Is `deviceId` the output the master plays on — or can we not rule it out? true =
+ * refuse. `mainSinkId` is the engine context's sinkId ('' = it follows the system
+ * default). Chromium lists the default as id 'default', in the same group (groupId) as
+ * the real device and labelled "Default - <its label>"; either links the two ids.
+ *
+ * When in doubt this answers TRUE (refuse): a wrong refusal costs one tap on "Show
+ * device names" (which gives labels and lifts the doubt), a wrong acceptance plays the
+ * pre-listen on the dance floor. "In doubt" = the list is empty or unlabelled, so the
+ * default cannot be told apart from the chosen id. A labelled list that names no
+ * default at all (Firefox lists no 'default' alias) and a device absent from a
+ * labelled list (unplugged: opening it fails on its own) are not doubt. A labelled
+ * default that matches neither by group nor by label (Linux's bare "Default" with
+ * distinct groups) is taken as another device.
  */
 export function sameAsMainOutput(deviceId, mainSinkId, outputs) {
   if (!isExplicitDevice(deviceId)) return true;
   if (isExplicitDevice(mainSinkId)) return deviceId === mainSinkId;
-  const list = Array.isArray(outputs) ? outputs : [];
-  const def = list.find((o) => o && o.deviceId === 'default');
-  const mine = list.find((o) => o && o.deviceId === deviceId);
-  if (!def || !mine || !def.label || !mine.label) return false;
+  const list = (Array.isArray(outputs) ? outputs : []).filter((o) => o && o.deviceId);
+  if (!list.length || !list.some((o) => o.label)) return true;            // cannot tell
+  const def = list.find((o) => o.deviceId === 'default');
+  const mine = list.find((o) => o.deviceId === deviceId);
+  if (!def || !mine) return false;
+  if (def.groupId && mine.groupId && def.groupId === mine.groupId) return true;
+  if (!def.label || !mine.label) return true;                              // cannot tell
   return def.label === mine.label || def.label.endsWith(' - ' + mine.label);
 }
 

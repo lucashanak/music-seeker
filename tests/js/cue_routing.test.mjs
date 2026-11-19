@@ -127,8 +127,24 @@ test('same as the main output: an explicit main sink by id, the system default b
   assert.equal(M.sameAsMainOutput('usb', 'usb', outs), true, 'the context was moved onto it');
   assert.equal(M.sameAsMainOutput('spk', 'usb', outs), false);
   assert.equal(M.sameAsMainOutput('', 'usb', outs), true, 'no device = the default = never a cue output');
-  assert.equal(M.sameAsMainOutput('spk', '', [{ deviceId: 'default', label: 'Default' }, { deviceId: 'spk', label: 'X' }]), false, 'unknown is not refused');
-  assert.equal(M.sameAsMainOutput('spk', '', []), false);
+  // Chromium puts 'default' in the group of the real device it stands for.
+  assert.equal(M.sameAsMainOutput('spk', '', [{ deviceId: 'default', label: 'Default', groupId: 'g1' },
+    { deviceId: 'spk', label: 'X', groupId: 'g1' }, { deviceId: 'usb', label: 'Y', groupId: 'g2' }]), true, 'same group');
+  assert.equal(M.sameAsMainOutput('usb', '', [{ deviceId: 'default', label: 'Default', groupId: 'g1' },
+    { deviceId: 'usb', label: 'Y', groupId: 'g2' }]), false, 'another group, another label');
+  assert.equal(M.sameAsMainOutput('spk', '', [{ deviceId: 'default', label: 'Default' }, { deviceId: 'spk', label: 'X' }]), false,
+    'a labelled default that names another device');
+});
+
+test('same as the main output: in doubt, refuse (a wrong yes plays the pre-listen on the speakers)', () => {
+  assert.equal(M.sameAsMainOutput('spk', '', []), true, 'nothing listed');
+  assert.equal(M.sameAsMainOutput('spk', '', null), true, 'enumeration failed');
+  assert.equal(M.sameAsMainOutput('spk', '', [{ deviceId: 'default', label: '' }, { deviceId: 'spk', label: '' }]), true, 'ids without labels');
+  // Not doubt: Firefox lists no 'default' alias; an unplugged device fails to open on its own.
+  assert.equal(M.sameAsMainOutput('spk', '', [{ deviceId: 'spk', label: 'Headphones' }]), false, 'no default alias');
+  assert.equal(M.sameAsMainOutput('gone', '', [{ deviceId: 'default', label: 'Default - Spk' }, { deviceId: 'spk', label: 'Spk' }]), false, 'not connected');
+  // An explicit main sink is compared by id, labels or not.
+  assert.equal(M.sameAsMainOutput('spk', 'usb', []), false);
 });
 
 // ── 2. cuebus over a fake graph ────────────────────────────────────────────
@@ -301,7 +317,12 @@ beforeEach(() => {
   makeEngine();
   B._internals.setEngine(engine);
   sinks = []; sinkFail = false; toasts = []; streamTracks = [];
-  navigator.mediaDevices.enumerateDevices = async () => [];
+  // A labelled list (as after the "Show device names" step): the default is the speakers.
+  navigator.mediaDevices.enumerateDevices = async () => [
+    { kind: 'audiooutput', deviceId: 'default', label: 'Default - Speakers', groupId: 'gs' },
+    { kind: 'audiooutput', deviceId: 'spk', label: 'Speakers', groupId: 'gs' },
+    { kind: 'audiooutput', deviceId: 'phones', label: 'Headphones (USB)', groupId: 'gp' },
+  ];
   store.castDevice = null; store.remoteTarget = null;
 });
 
@@ -638,4 +659,45 @@ test('preview refused by a recommendation says so, not "during a transition"', a
   assert.ok(toastText().some((t) => /recommendation/i.test(t)), toastText().join(' | '));
   assert.ok(!toastText().some((t) => /transition/i.test(t)));
   assert.equal(B.cueStatus().active, false, 'the route taken for the preview was given back');
+});
+
+test('devices: hidden device names = cannot tell the default apart = refused', async () => {
+  navigator.mediaDevices.enumerateDevices = async () => [
+    { kind: 'audiooutput', deviceId: 'default', label: '' }, { kind: 'audiooutput', deviceId: 'phones', label: '' },
+  ];
+  const before = snapshot();
+  B.setCueSettings({ mode: 'devices', deviceId: 'phones' });
+  const res = await B.acquireCue('desk');
+  assert.equal(res.error, 'samedevice');
+  assert.deepEqual([...edges].sort(), [...before].sort());
+});
+
+test('meters read while the output is still opening make no taps; a failed build leaves none', async () => {
+  const before = snapshot();
+  let open;
+  const gate = new Promise((r) => { open = r; });
+  const saved = globalThis.HTMLMediaElement.prototype.setSinkId;
+  sinkFail = false;
+  B.setCueSettings({ mode: 'devices', deviceId: 'phones' });
+  // Hold the output open until the meters have been read, then fail it.
+  const realCreate = document.createElement;
+  document.createElement = (t) => {
+    const e = realCreate(t);
+    if (t === 'audio') e.setSinkId = async () => { await gate; const x = new Error('nf'); x.name = 'NotFoundError'; throw x; };
+    return e;
+  };
+  try {
+    const p = B.acquireCue('desk');
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+    assert.ok(B._internals.route(), 'the build is waiting for its output');
+    assert.deepEqual(B.cueLevels(), { master: 0, cue: 0 });
+    assert.equal(B._debugTaps(), null);
+    open();
+    const res = await p;
+    assert.equal(res.ok, false);
+    assert.deepEqual([...edges].sort(), [...before].sort(), 'nothing left on the engine master');
+  } finally {
+    document.createElement = realCreate;
+    globalThis.HTMLMediaElement.prototype.setSinkId = saved;
+  }
 });

@@ -17,6 +17,7 @@ import { $, esc, showToast, historyBack, setArt } from './utils.js';
 import { apiJson } from './api.js';
 import { getPlayerEngine, getPlayerModule } from './player_active.js';
 import { playOrder } from './queue.js';
+import { getCachedUrl } from './prefetch.js';
 import { getDjData, displayBpm, energyLevel, hydrateBpmByName, fetchTrackBpm } from './bpm.js';
 import * as cuebus from './cuebus.js';
 import * as cuemath from './cuemath.js';
@@ -647,11 +648,11 @@ function _waveFor(item) {
   if (_wave.size >= WAVE_CACHE_MAX) _wave.delete(_wave.keys().next().value);
   w = { state: 'loading', at: Date.now() };
   _wave.set(k, w);
-  _loadWave(item, w, 0);
+  _loadWave(item, w);
   return w;
 }
 
-async function _loadWave(item, w, attempt) {
+async function _loadWave(item, w) {
   try {
     const mc = await import('./mixcut.js');
     const q = new URLSearchParams({ name: item.name || '', artist: item.artist || '' });
@@ -663,10 +664,6 @@ async function _loadWave(item, w, attempt) {
       w.barsFor = mc.barsFor;
       w.state = w.peaks.length ? 'ok' : 'none';
       w.at = Date.now();
-      return;
-    }
-    if (d && (d.building || d.pending) && attempt < 15) {
-      setTimeout(() => _loadWave(item, w, attempt + 1), 4000);
       return;
     }
   } catch { /* no endpoint / no audio: the lane shows the beat grid only */ }
@@ -825,6 +822,7 @@ function _mixNow() {
   }
   let startAt = null;
   let rebound = false;
+  let fromStart = false;      // the cue position cannot be used (see below)
   const prevNext = fresh.deskNext;
   const prep = fresh.loan;
   if (prep && fresh.items[prep]) {
@@ -834,6 +832,10 @@ function _mixNow() {
       try { rebound = !!_eng.deskSetNext(idx); } catch { rebound = false; }
       const el = _el(prep);
       if (el && el.currentTime > 0.5) startAt = el.currentTime;
+      // The engine starts the incoming track at startAt only from a downloaded copy. A
+      // headphone preview does not download (warm:false); Load does.
+      const it = fresh.items[prep];
+      if (startAt != null && !getCachedUrl(_decode(it.name || ''), _decode(it.artist || ''), it.id)) fromStart = true;
     }
   }
   let ok = false;
@@ -843,9 +845,18 @@ function _mixNow() {
     showToast(fresh.next == null && !rebound ? 'Nothing to mix into — the queue ends here' : 'The player cannot mix right now', true);
     return false;
   }
-  _status('Mixing into the next track…');
+  _status(fromStart ? 'Mixing in from the track’s start — the cue position needs the track downloaded (Load downloads it)'
+    : 'Mixing into the next track…', fromStart ? 6000 : 3500);
   _listDirty = true;
   return true;
+}
+
+/** The engine keys its download cache by the decoded name (player_v3 _decodeEntities). */
+function _decode(s) {
+  if (!s || !s.includes('&')) return s;
+  const t = document.createElement('textarea');
+  t.innerHTML = s;
+  return t.value;
 }
 
 function _togglePhrase() {
