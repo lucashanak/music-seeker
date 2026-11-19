@@ -1371,3 +1371,112 @@ async def artist_latest_album(artist_id: str, provider: str = "deezer") -> dict 
     if _canonical_provider(provider) == "itunes":
         return await itunes_artist_latest_album(artist_id)
     return await deezer_artist_latest_album(artist_id)
+
+
+# ── Cover art for rows that came without any ─────────────────────────
+# Last.fm no longer serves real images for tracks and artists: every one is the
+# grey-star placeholder, which `lastfm._pick_image` drops. So a Discover page of
+# tracks or artists arrived with no art at all (GitHub #9; measured 2026-11-19 on
+# "zouk": 0 of 20 tracks, 0 of 20 artists, 16 of 20 albums). The detail view never
+# had the problem because it resolves through Deezer — this does the same, per row.
+#
+# A wrong cover is worse than none, so a hit counts only when Deezer credits it to
+# the same artist. Misses are remembered too, or every scroll would ask again.
+_ART_CACHE_TTL = 6 * 3600
+_ART_CACHE_MAX = 2000
+_ART_CONCURRENCY = 6
+_ART_BUDGET_S = 4.0
+_art_cache: dict[str, tuple[str, float]] = {}
+
+
+def _same_artist(wanted: str, credit: str) -> bool:
+    want = _normalize(wanted)
+    return bool(want) and want in _credit_names(credit)
+
+
+def _bare_title(title: str) -> str:
+    """The title without a trailing version note: "(Live)", "[Remastered]", "- Live 1991"."""
+    t = _normalize(title)
+    t = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]\s*$", "", t)
+    t = re.sub(r"\s+-\s+.*$", "", t)
+    return t.strip()
+
+
+def _closest_title(name: str, rows: list[dict]) -> str:
+    """The image of the row that is this title, or this title in another version.
+
+    "Same artist" alone is not enough: an artist's other album has a cover too,
+    and it would be a confident wrong answer. So the exact title first, then the
+    same bare title ("Siwo" for "Siwo (Live)", either way round), else nothing.
+    """
+    want = _normalize(name)
+    for r in rows:
+        if _normalize(r.get("name", "")) == want:
+            return r["image"]
+    bare = _bare_title(name)
+    if bare:
+        for r in rows:
+            if _bare_title(r.get("name", "")) == bare:
+                return r["image"]
+    return ""
+
+
+async def _art_for(item: dict) -> str:
+    kind = item.get("type", "track")
+    name = (item.get("name") or "").strip()
+    artist = (item.get("artist") or "").strip()
+    if not name:
+        return ""
+    key = f"{kind}|{_normalize(artist)}|{_normalize(name)}"
+    cached, found = _cache_get(_art_cache, key, _ART_CACHE_TTL)
+    if found:
+        return cached
+    image = ""
+    try:
+        if kind == "artist":
+            hit = await _deezer_artist_by_name(name)
+            image = (hit or {}).get("image", "")
+        elif kind in ("track", "album") and artist:
+            # A plain query: Deezer's advanced form (artist:"…" track:"…") answered
+            # nothing at all for tracks when measured. The exact title wins over a
+            # remix of it; any row of the same artist is better than no cover.
+            rows = [r for r in await deezer_search(f"{artist} {name}", kind, 10, 0)
+                    if r.get("image") and _same_artist(artist, r.get("artist", ""))]
+            image = _closest_title(name, rows)
+    except Exception as e:  # a Deezer hiccup must not cost the page its rows
+        logger.debug("cover lookup failed for %s: %s", key, e)
+        return ""  # not cached: the next page view may get through
+    _cache_put(_art_cache, key, image, _ART_CACHE_MAX)
+    return image
+
+
+async def fill_missing_art(items: list[dict]) -> None:
+    """Give every row without an image the Deezer cover of the same thing, in place.
+
+    Bounded twice: at most `_ART_CONCURRENCY` lookups at a time (all of them also
+    queue behind the shared Deezer token bucket) and `_ART_BUDGET_S` in total.
+    Rows still unresolved by then go out without art rather than holding the
+    page; their lookups finish in the background only to fill the cache, so the
+    next view of the page has them. If the request itself is cancelled (the
+    client went away), the lookups are cancelled with it.
+    """
+    todo = [it for it in items if not it.get("image")]
+    if not todo:
+        return
+    sem = asyncio.Semaphore(_ART_CONCURRENCY)
+    answered = False
+
+    async def one(it: dict) -> None:
+        async with sem:
+            img = await _art_for(it)
+        if img and not answered and not it.get("image"):
+            it["image"] = img
+
+    tasks = [asyncio.ensure_future(one(it)) for it in todo]
+    try:
+        await asyncio.wait(tasks, timeout=_ART_BUDGET_S)
+    except BaseException:
+        for t in tasks:
+            t.cancel()
+        raise
+    answered = True   # the rows are the response's now; late lookups only cache

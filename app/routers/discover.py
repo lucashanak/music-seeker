@@ -67,6 +67,9 @@ async def discover_tag(
         except Exception:
             pass
 
+    # Last.fm gives tracks and artists only its placeholder star (GitHub #9).
+    await search_providers.fill_missing_art(results)
+
     return {"results": results, "tag": tag_name, "type": type}
 
 
