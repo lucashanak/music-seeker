@@ -1517,6 +1517,9 @@ def backfill_in_background(name: str, artist: str) -> bool:
     if (entry is None or not _needs_features(entry) or key in _bg_backfills
             or entry.get("features_unavailable") == FEATURE_VERSION):
         return False
+    from app.services import mixes
+    if mixes.is_mix(name, artist):          # a set is never analysed, like in the sweep
+        return False
     _bg_backfills.add(key)
 
     async def run():

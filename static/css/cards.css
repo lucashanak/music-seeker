@@ -214,3 +214,30 @@
 .bpm-filter-disabled .bpm-preset,
 .bpm-filter-disabled .bpm-range-input,
 .bpm-filter-disabled .bpm-lowconf-label { opacity: .45; cursor: not-allowed; }
+
+/* ── Playlist energy view (plenergy.js) ── */
+.energy-sort { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 12px; }
+.energy-sort .es-label { color: var(--text-dim); font-size: 12px; margin-right: 2px; }
+.es-btn {
+  background: var(--bg-elevated); color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: 16px;
+  padding: 5px 12px; font-size: 12px; cursor: pointer; min-height: 30px;
+}
+.es-btn:hover { border-color: var(--accent); color: var(--text); }
+.es-btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+/* Rows sit in playlist order in the DOM; dragging a row in a re-ordered view
+   would name positions the user cannot see. */
+#libraryTracks.energy-sorted .card-drag-handle { display: none; }
+
+.pl-energy-summary { display: flex; align-items: flex-end; gap: 10px; margin-top: 8px; min-width: 0; }
+.pl-energy-summary[hidden] { display: none; }
+.pes-bars { display: inline-flex; align-items: flex-end; gap: 3px; height: 30px; flex: none; }
+.pes-bar { position: relative; width: 8px; height: 100%; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; display: flex; align-items: flex-end; }
+.pes-bar i { display: block; width: 100%; border-radius: 2px; }
+.pes-bar[data-level="1"] i { background: #4a9fd0; }
+.pes-bar[data-level="2"] i { background: #45b3a0; }
+.pes-bar[data-level="3"] i { background: #d0b23c; }
+.pes-bar[data-level="4"] i { background: #e58a35; }
+.pes-bar[data-level="5"] i { background: #e5534b; }
+.pes-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 12px; color: var(--text-muted); line-height: 1.3; }
+.pes-text > span { overflow-wrap: anywhere; }

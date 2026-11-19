@@ -334,8 +334,12 @@ export function createBpmFilter(tracksContainerId, opts = {}) {
   const _visibleTracks = () => {
     const container = $(tracksContainerId);
     if (!container) return [];
+    // In the order shown: a list ordered by CSS `order` (plenergy.js) plays as listed.
     return $$('.card', container)
       .filter(card => card.style.display !== 'none' && card.dataset.item)
+      .map((card, i) => ({ card, i, o: Number(card.style.order) || 0 }))
+      .sort((a, b) => a.o - b.o || a.i - b.i)
+      .map(x => x.card)
       .map(card => { try { return JSON.parse(card.dataset.item); } catch { return null; } })
       .filter(Boolean);
   };
@@ -363,6 +367,12 @@ export function createBpmFilter(tracksContainerId, opts = {}) {
   el.querySelector('#bpmPlayFiltered').addEventListener('click', async () => {
     const tracks = _applyUnknownPolicy(_visibleTracks());
     if (!tracks.length) { showToast('No tracks to play'); return; }
+    const box = $(tracksContainerId);
+    if (box && box.classList.contains('energy-sorted')) {
+      // An energy order is a view (plenergy.js): never bind it to the playlist.
+      (await import('./plenergy.js')).playViewThroughUpNext(tracks);
+      return;
+    }
     const u = await import('./upnext.js');
     u.playTracks(tracks);
   });
@@ -510,6 +520,7 @@ export function addScanButton(heroActions, playlistId, tracksContainerId) {
     }
 
     showToast(`Analyzed ${done} tracks`);
+    window.dispatchEvent(new CustomEvent('ms-bpm-scanned', { detail: { playlistId } }));
     btn.disabled = false;
     btn.textContent = 'Analyze BPM';
   });
