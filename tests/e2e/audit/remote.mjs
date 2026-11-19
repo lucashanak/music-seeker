@@ -874,7 +874,7 @@ async function localRegression(browser) {
     R.check('LOCAL', 'Add to queue on a search row grows the queue by exactly 1', picked === 'ok' && b.q === a.q + 1, `${picked}; queue ${a.q} -> ${b.q}`);
     R.check('LOCAL', '... and the search list itself does not grow', a.list !== null && b.list === a.list, `list ${a.list} -> ${b.list}`);
 
-    // Album: Play all (replace Up Next), then Add all to queue — within 2 s, page responsive.
+    // Album: Play all (replace Up Next), then Add all to queue — within 5 s (a freeze never finishes; network time counts too), page responsive.
     await page.fill('#searchInput', 'Discovery Daft Punk');
     await page.keyboard.press('Enter');
     await sleep(3000);
@@ -900,7 +900,7 @@ async function localRegression(browser) {
     }
     await sleep(2000);
     const fin = await page.evaluate(() => window.__t.store.playerQueue.length);
-    R.check('LOCAL', 'album Play all + Add all: the queue doubles within 2 s', p1 === 'ok' && p2 === 'ok' && n > 0 && done !== null && done <= 2000 && fin === 2 * n,
+    R.check('LOCAL', 'album Play all + Add all: the queue doubles within 5 s', p1 === 'ok' && p2 === 'ok' && n > 0 && done !== null && done <= 5000 && fin === 2 * n,
       `${p1}/${p2}; album ${n} tracks, queue ${fin} after, doubled in ${done} ms`);
     R.check('LOCAL', '... and the page stays responsive meanwhile', lag < 1000, `slowest evaluate round trip ${lag} ms`);
     R.check('LOCAL', 'no uncaught page errors', page.__errors.length === 0, J(page.__errors.slice(0, 5)));
