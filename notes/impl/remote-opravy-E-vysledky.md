@@ -23,6 +23,20 @@ tests/e2e/audit/remote_backend.sh stop             # smaže scratch kopii i záz
 ```
 Po nasazení stačí první příkaz (bez `MS_URL`). Běh trvá ~12 min pro dva viewporty.
 
+## Po opravách A (hold queue) a C1 (1 s reconnect, retry 404) — 2026-11-20 01:45–01:58
+
+Sada teď před každým krokem a stiskem čeká, až mají všechny stránky otevřený SSE (`readyState 1`)
+a ovladač vidí cíl online; loguje `net::ERR_NETWORK_CHANGED` per stránka; krok, ve kterém něco padlo
+A zároveň do něj padla změna sítě, zopakuje jednou a řádky označí „(retried after network change: …)“.
+Pád bez změny sítě zůstává pádem. Diagnóza příčiny: `notes/impl/remote-opravy-prod-diag.md`.
+
+- **Strom end-to-end (lokální backend), phone + desktop + tablet + SENDTO + LOCAL: 150 prošlo, 0 padlo,
+  2 přeskočeno.** Změny sítě: 2 záznamy (01:51:28), žádný opakovaný krok.
+- **Produkce (nasazené 17e22d3, BEZ oprav A/C1), totéž: 150 prošlo, 0 padlo, 2 přeskočeno.** Změny sítě:
+  16 záznamů ve 4 okamžicích (01:52:29, 01:53:31, 01:55:34, 01:56:36). Jeden krok opakovaný:
+  `B1 [phone]` Space (v prvním pokusu padlo „Space again resumes it“, změna sítě 01:52:29.505 na obou
+  stránkách) — 3 řádky s popiskem, ve druhém pokusu všechny zelené.
+
 ## Poslední běh nad kompletním stromem (18:53–19:15)
 
 Harness znovu spuštěný nad stromem se všemi koly oprav (SSE ping 10 s, rotace tokenu, odmítnutí Send-to pro

@@ -28,6 +28,7 @@
 // Browser suites one at a time:  flock /home/lucas/music-seeker/notes/impl/.prejimka.lock node …
 // Data: zz-audit-fixture is only READ (and checked unchanged at the end). The Up Next
 // playlists of the two test devices are deleted at the end; likes made here are undone.
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pw from '/home/lucas/music-seeker/node_modules/playwright/index.js';
@@ -45,7 +46,14 @@ const SKIP_SENDTO = argv.includes('--no-sendto');
 const SKIP_LOCAL = argv.includes('--no-local');
 const TGT_ID = 'e2e-remote-b';
 const FIXTURE = 'zz-audit-fixture';
-const R = makeReport(`remote (${BASE}${TREE ? ', frontend from tree' : ''})`);
+const R0 = makeReport(`remote (${BASE}${TREE ? ', frontend from tree' : ''})`);
+// Every row carries its wall-clock time, so a failure can be laid next to the diagnostics.
+const R = {
+  rows: R0.rows,
+  check(id, popis, ok, detail) { const r = R0.check(id, popis, ok, detail); R0.rows[R0.rows.length - 1].at = Date.now(); return r; },
+  skip(id, popis, why) { R0.skip(id, popis, why); R0.rows[R0.rows.length - 1].at = Date.now(); },
+  done: () => R0.done(),
+};
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const J = (x) => JSON.stringify(x);
 
@@ -107,11 +115,114 @@ async function newContext(browser, vp) {
   return context;
 }
 
+// ── Network changes and connection readiness ──
+// NETCHG: every net::ERR_NETWORK_CHANGED a page saw. LIVE: the pages whose SSE must be
+// open before an action (a command sent while a device reconnects is refused).
+const NETCHG = [];
+const LIVE = new Set();
+const netChangesBetween = (a, b) => NETCHG.filter(n => n.at >= a && n.at <= b);
+
+/** Wait until every live page's EventSource is open and each controller sees its
+ *  target online. Gives up after `ms` (the step then runs and reports what it sees). */
+async function ready(ms = 15000) {
+  const end = Date.now() + ms;
+  for (;;) {
+    let ok = true;
+    for (const p of LIVE) {
+      if (p.isClosed()) continue;
+      const v = await p.evaluate(() => {
+        const st = window.__t?.store; if (!st) return true;
+        const es = st.remoteEventSource;
+        if (!es || es.readyState !== 1) return false;
+        if (st.remoteTarget) return !!st.remoteDevices?.[st.remoteTarget]?.online;
+        return true;
+      }).catch(() => true);
+      if (!v) { ok = false; break; }
+    }
+    if (ok || Date.now() > end) return ok;
+    await sleep(250);
+  }
+}
+
+// ── Diagnostics (MS_DIAG=<file.json>): observation only, no app code is replaced ──
+// Every SSE event a page receives (EventSource wrapped before the app loads), the page's
+// state 1.5 s after each inbound command, every /api/remote/state body and every
+// /api/remote/command request + response, all with wall-clock times, go to MS_DIAG.
+const DIAG = process.env.MS_DIAG || null;
+const DIAGLOG = [];
+let _pageSeq = 0;
+function diagInit() {
+  const ES = window.EventSource;
+  const push = (r) => { try { window.__diagPush && window.__diagPush(r); } catch {} };
+  let off = null;
+  const st = () => {
+    try {
+      const s = window.__t.store; const decks = [...document.querySelectorAll('audio')];
+      return { idx: s.playerIndex, len: s.playerQueue.length, playing: decks.some(a => !a.paused), rt: s.remoteTarget || null, tab: s.tabId || null };
+    } catch { return null; }
+  };
+  function Wrapped(url, opts) {
+    const es = new ES(url, opts);
+    const tab = decodeURIComponent((String(url).match(/tab_id=([^&]+)/) || [])[1] || '');
+    push({ k: 'open', at: Date.now(), tab });
+    for (const type of ['devices', 'ping', 'command']) {
+      es.addEventListener(type, (e) => {
+        const at = Date.now();
+        let d = null; try { d = JSON.parse(e.data || '{}'); } catch {}
+        if (d && typeof d.server_time === 'number') { const o = d.server_time - at / 1000; if (off === null || o > off) off = o; }
+        if (type === 'command') {
+          const current = (() => { try { return window.__t?.store?.remoteEventSource === es; } catch { return null; } })();
+          const rec = { k: 'cmd', at, tab, id: d && d.id, epoch: d && d.epoch, ts: d && d.ts, action: d && d.action,
+            value: d && d.value !== undefined ? String(JSON.stringify(d.value)).slice(0, 80) : null,
+            age: off !== null && d && typeof d.ts === 'number' ? +(at / 1000 + off - d.ts).toFixed(2) : null, off, current, before: st() };
+          push(rec);
+          setTimeout(() => push({ k: 'after', at: Date.now(), tab, id: rec.id, epoch: rec.epoch, state: st() }), 1500);
+        } else {
+          push({ k: type, at, tab, server_time: d && d.server_time, off });
+        }
+      });
+    }
+    es.addEventListener('error', () => push({ k: 'error', at: Date.now(), tab, rs: es.readyState }));
+    return es;
+  }
+  Wrapped.prototype = ES.prototype;
+  Wrapped.CONNECTING = 0; Wrapped.OPEN = 1; Wrapped.CLOSED = 2;
+  window.EventSource = Wrapped;
+}
+
 async function openPage(context, device, { login = true } = {}) {
   const page = await context.newPage();
+  page.__label = `${device}#${++_pageSeq}`;
+  if (DIAG) {
+    const label = page.__label;
+    await page.exposeFunction('__diagPush', (r) => { DIAGLOG.push({ page: label, ...r }); });
+    await page.addInitScript(diagInit);
+    page.on('request', (rq) => {
+      const u = rq.url();
+      if (rq.method() !== 'POST' || !/\/api\/remote\/(state|command)/.test(u)) return;
+      let b = null; try { b = JSON.parse(rq.postData() || 'null'); } catch {}
+      const at = Date.now();
+      if (u.includes('/state')) DIAGLOG.push({ page: label, k: 'state', at, tab: b && b.tab_id, ack: b && b.ack, playing: b && b.playing, index: b && b.index, cur: b && b.track && b.track.name, controlling: b && b.controlling });
+      else {
+        const rec = { page: label, k: 'send', at, action: b && b.action, target: b && b.target_device_id, value: b && b.value !== undefined ? String(JSON.stringify(b.value)).slice(0, 80) : null };
+        DIAGLOG.push(rec);
+        rq.response().then(async (r) => {
+          rec.status = r ? r.status() : null; rec.respAt = Date.now();
+          try { const j = r && await r.json(); rec.id = j && j.id; rec.epoch = j && j.epoch; rec.detail = j && j.detail; } catch {}
+        }).catch(() => {});
+      }
+    });
+  }
   page.__errors = [];
   page.__cmds = [];
   page.on('pageerror', (e) => page.__errors.push(String(e.message).slice(0, 200)));
+  // A host network change resets every HTTP/2 connection in Chromium, the SSE stream
+  // included (see notes/impl/remote-opravy-prod-diag.md). Record when it happens.
+  const noteNet = (txt) => { if (/ERR_NETWORK_CHANGED/.test(txt || '')) NETCHG.push({ page: page.__label, at: Date.now() }); };
+  page.on('requestfailed', (rq) => noteNet(rq.failure()?.errorText));
+  page.on('console', (m) => noteNet(m.text()));
+  LIVE.add(page);
+  page.on('close', () => LIVE.delete(page));
   page.on('request', (rq) => {
     if (rq.method() === 'POST' && rq.url().includes('/api/remote/command')) {
       let a = '?'; try { a = JSON.parse(rq.postData() || '{}').action; } catch {}
@@ -238,6 +349,7 @@ function ui(vp) {
     : { next: '#playerNext', play: '#playerPlayPause', bar: '#playerProgressBar', shuffle: '#playerShuffle', repeat: '#playerRepeat', mute: '#playerMute', like: '#playerLike', devices: '#playerDevicesBtn', full: false };
 }
 async function press(page, vp, sel) {
+  await ready();
   // A full-player control needs the full player on screen (a step before may have
   // navigated away, e.g. to the Library).
   if (sel.startsWith('#fp')) await page.evaluate(() => { if (!window.__t.store.fullPlayerOpen) window.__t.fp.openFullPlayer(); });
@@ -323,9 +435,45 @@ const queueRows = (page) => page.evaluate((QLIST) => {
 // ── Checks ─────────────────────────────────────────────────────────────────
 // One step that throws (a selector the old code does not have, a timeout) is reported
 // and the run goes on: against the deployed code most steps are EXPECTED to misbehave.
-async function block(id, fn) {
+// A step's rows are held until it ends. If one of them failed AND a host network change
+// fell inside the step, the step runs once more and the second attempt's rows are the
+// ones reported, labelled. A failure with no network change in its window is reported
+// as it is — the retry exists for the host, not for the app.
+const CUR = { T: null, C: null };
+async function _runStep(id, fn) {
+  const rows = [];
+  const real = { check: R.check, skip: R.skip };
+  R.check = (i, popis, ok, detail) => { rows.push({ kind: 'check', i, popis, ok: !!ok, detail }); return !!ok; };
+  R.skip = (i, popis, why) => { rows.push({ kind: 'skip', i, popis, why }); };
   try { await fn(); } catch (e) {
-    R.check(id, 'step ran without a harness error', false, String(e && e.message || e).split('\n').slice(0, 3).join(' | '));
+    rows.push({ kind: 'check', i: id, popis: 'step ran without a harness error', ok: false, detail: String(e && e.message || e).split('\n').slice(0, 3).join(' | ') });
+  } finally { Object.assign(R, real); }
+  return rows;
+}
+async function block(id, fn) {
+  await ready();
+  const t0 = Date.now();
+  const tPlaying = CUR.T ? (await state(CUR.T).catch(() => null))?.playing : null;
+  let rows = await _runStep(id, fn);
+  const changes = netChangesBetween(t0, Date.now());
+  let label = '';
+  if (rows.some(r => r.kind === 'check' && !r.ok) && changes.length) {
+    const first = rows.filter(r => r.kind === 'check' && !r.ok).map(r => r.popis).join('; ');
+    console.log(`  (network change during step at ${changes.map(c => new Date(c.at).toISOString().slice(11, 23) + ' ' + c.page).join(', ')}; retrying once — failed: ${first})`);
+    // Put the pages back where the step expects them: panels closed, target playing
+    // if it was (a target-side click on its own play button).
+    if (CUR.C) { await closeQueue(CUR.C).catch(() => {}); await CUR.C.keyboard.press('Escape').catch(() => {}); }
+    if (CUR.T && tPlaying && !(await state(CUR.T).catch(() => ({ playing: true }))).playing) {
+      await CUR.T.click('#playerPlayPause', { timeout: 5000 }).catch(() => {});
+      await poll(async () => ({ ok: (await state(CUR.T)).playing }), 8000);
+    }
+    await ready(20000);
+    rows = await _runStep(id, fn);
+    label = ` (retried after network change: ${first})`;
+  }
+  for (const r of rows) {
+    if (r.kind === 'skip') R.skip(r.i, r.popis, r.why);
+    else R.check(r.i, r.popis, r.ok, (r.detail === undefined ? '' : String(r.detail)) + label);
   }
 }
 async function checkSilent(id, label, C) {
@@ -927,6 +1075,7 @@ const TGT_VOL = 0.8;
 try {
   Tctx = await newContext(browser, 'desktop');
   T = await openPage(Tctx, TGT_ID);
+  CUR.T = T;
   tgtUpnextId = (await upnextOf(TGT_ID))?.id || null;
   ctlUpnextId = (await upnextOf(CTRL_ID))?.id || null;
 
@@ -950,6 +1099,7 @@ try {
     // Controller: plays a queue of its own first (so its decks hold a source), at 0.3.
     const Cctx = await newContext(browser, vp);
     const C = await openPage(Cctx, CTRL_ID);
+    CUR.C = C;
     try {
       await C.evaluate(() => { for (const s of ['#playerVolume', '#fpVolume']) { const el = document.querySelector(s); if (el) { el.value = 30; el.dispatchEvent(new Event('input', { bubbles: true })); } } });
       await C.evaluate((tr) => window.__t.upnext.playTracks(tr, 0), [fx[3], fx[2]]);
@@ -1022,7 +1172,14 @@ try {
   R.check('FIXTURE', `${FIXTURE} is unchanged`, fxAfter && J(fxAfter.tracks.map(t => t.id)) === J(fx.map(t => t.id)), fxAfter ? `${fxAfter.tracks.length} tracks` : 'unreadable');
 }
 
+console.log(`\nnetwork changes seen: ${NETCHG.length}${NETCHG.length ? ' — ' + [...new Set(NETCHG.map(n => new Date(n.at).toISOString().slice(11, 19)))].join(' ') : ''}`);
+const retried = R.rows.filter(r => /retried after network change/.test(r.detail || '')).length;
+if (retried) console.log(`rows from a retried step: ${retried}`);
 const ok = R.done();
+if (DIAG) {
+  fs.writeFileSync(DIAG, JSON.stringify({ rows: R.rows, log: DIAGLOG, netchg: NETCHG }, null, 0));
+  console.log(`diagnostics: ${DIAGLOG.length} records -> ${DIAG}`);
+}
 const failed = R.rows.filter(r => r.ok === false);
 if (failed.length) console.log('\nFailed:\n' + failed.map(r => `  ${r.id}  ${r.popis}`).join('\n'));
 process.exit(ok ? 0 : 1);
