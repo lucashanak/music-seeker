@@ -365,7 +365,12 @@ async def send_command(req: RemoteCommandRequest, request: Request, user: dict =
 
     # Gate on liveness BEFORE any side effect, so an offline target never has its
     # persisted queue clobbered by a transfer that then returns 404.
-    if not remote.is_online(username, req.target_device_id):
+    # A device reconnecting right now (its stream dropped seconds ago) counts as
+    # live: its commands wait for the reconnect (remote.RECONNECT_GRACE). Not a
+    # transfer: it would merge into the file of a tab that may never apply it.
+    may_wait = req.action != "transfer"
+    if not (remote.is_online(username, req.target_device_id)
+            or (may_wait and remote.reconnecting(username, req.target_device_id))):
         raise HTTPException(404, "Device offline")
     # A target that is itself controlling would relay the command onwards; two
     # devices controlling each other ping-ponged a transfer forever (B2).
@@ -382,11 +387,14 @@ async def send_command(req: RemoteCommandRequest, request: Request, user: dict =
             value = await asyncio.to_thread(_apply_transfer, username, controller_id,
                                             req.target_device_id, req.value)
         cmd = remote.send_command(username, req.target_device_id, req.action, value,
-                                  from_device=controller_id)
+                                  from_device=controller_id, may_wait=may_wait)
+        queued = bool(cmd and cmd.get("queued"))
     if not cmd:
+        if may_wait and remote.reconnecting(username, req.target_device_id):
+            raise HTTPException(503, "Device is reconnecting; too many commands waiting")
         raise HTTPException(404, "Device offline")
     return JSONResponse(status_code=202, content={"ok": True, "status": "sent", "id": cmd["id"],
-                                                 "epoch": cmd["epoch"]})
+                                                 "epoch": cmd["epoch"], "queued": queued})
 
 
 @router.post("/state")

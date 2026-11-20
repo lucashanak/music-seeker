@@ -28,6 +28,13 @@ MAX_STATE_TABS = 8            # tabs with a remembered state, per device
 _STATE_TTL = 3600.0           # evict tab states not refreshed within this window
 _SWEEP_EVERY = 60.0           # how often idle users' leftovers are swept
 COMMAND_MAX_AGE = 5.0         # a command that waited longer than this is dropped
+# A device whose stream dropped (phone switching Wi-Fi <-> mobile, Chromium's
+# ERR_NETWORK_CHANGED) reconnects ~5 s later. Commands sent in that gap used to be
+# refused with 404 and lost; within this grace they wait for the reconnect.
+RECONNECT_GRACE = 15.0
+PENDING_MAX = 32              # commands waiting for one reconnecting device
+QUEUED_MAX_AGE = 10.0         # how long such a command may wait (sent with queued: true)
+HOLD_FOR_TAB = 2.0            # how long the waiting list waits for the tab it is meant for
 PING_INTERVAL = 10.0          # SSE keep-alive (clients report on it), token re-check
 STR_CAP = 300                 # every string in a reported state is cut to this
 # A tab silent longer than this ranks below every fresh one. Generous: a hidden
@@ -44,6 +51,13 @@ _ACK_RE = re.compile(r'^[A-Za-z0-9_-]{1,32}:\d{1,15}$')
 _seq = itertools.count(1)     # connection age: a higher number is a newer connection
 _cmd_ids: dict[str, int] = {}  # {username: last command id}
 _last_sweep = 0.0
+# {(username, device_id): last time it had a connection or reported state}
+_last_seen: dict[tuple[str, str], float] = {}
+# {(username, device_id): commands waiting for the device to reconnect}
+_pending: dict[tuple[str, str], collections.deque] = {}
+# {(username, device_id): when a connection came back that was not the tab the
+# waiting commands are meant for}
+_held_since: dict[tuple[str, str], float] = {}
 
 
 class Conn:
@@ -102,9 +116,13 @@ def register_listener(username: str, device_id: str, tab_id: str = DEFAULT_TAB) 
     conns = _listeners.setdefault(username, {}).setdefault(device_id, [])
     # A reconnect of the same tab replaces its old connection: the old one is
     # usually a half-open TCP the browser already gave up on. Its pending
-    # commands (already answered 202) move to the new connection.
+    # commands (already answered 202) move to the new connection, marked
+    # `queued`: they waited for a reconnect like any held command (10 s, and the
+    # client skips its own 5 s check for them).
     for old in [c for c in conns if c.tab_id == tab_id]:
         conns.remove(old)
+        for cmd in old.cmds:
+            cmd["queued"] = True
         conn.cmds.extend(old.cmds)
         old.cmds.clear()
         old.close()
@@ -112,8 +130,66 @@ def register_listener(username: str, device_id: str, tab_id: str = DEFAULT_TAB) 
     while len(conns) >= _MAX_QUEUES_PER_DEVICE:
         conns.pop(0).close()
     conns.append(conn)
+    key = (username, device_id)
+    if _pending.get(key):
+        # Commands sent while the device was reconnecting belong to the tab that
+        # was playing (`_state_best_tab`), not to whichever tab is back first.
+        best = _state_best_tab(username, device_id)
+        if best is None or best == tab_id:
+            _drain(key, conn)
+        else:
+            _held_since.setdefault(key, time.time())
+            _schedule_drain(key)
     _broadcast_devices(username)
     return conn
+
+
+def _state_best_tab(username: str, device_id: str) -> str | None:
+    """The tab commands would go to if every tab were connected — ranked by the
+    remembered states alone, as `_tab_rank` ranks connections."""
+    tabs = _states.get(username, {}).get(device_id, {})
+    if not tabs:
+        return None
+    now = time.time()
+
+    def rank(item):
+        tid, s = item
+        fresh = now - s.get("updated_at", 0.0) <= FRESH_FOR
+        when = s.get("_playing_since", 0.0) if s.get("playing") else s.get("_played_at", 0.0)
+        return (fresh, bool(s.get("playing")), when, s.get("updated_at", 0.0))
+    return max(tabs.items(), key=rank)[0]
+
+
+def _drain(key: tuple[str, str], conn: Conn | None = None):
+    """Hand the waiting commands, in order, to `conn` (else the best connected
+    tab). A command past QUEUED_MAX_AGE is dropped here."""
+    _held_since.pop(key, None)
+    if conn is None:
+        order = _delivery_order(*key)
+        if not order:
+            return                  # all gone again; the list keeps waiting
+        conn = order[0]
+    pending = _pending.pop(key, None) or ()
+    now = time.time()
+    for cmd in pending:
+        if now - cmd.get("ts", 0) <= QUEUED_MAX_AGE:
+            _push_command(conn, cmd)
+
+
+def _schedule_drain(key: tuple[str, str]):
+    """After HOLD_FOR_TAB, give the waiting list to the best connected tab if the
+    tab it was meant for has not come back by then."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return                      # no loop (a direct call in a test): send_command checks
+    loop.call_later(HOLD_FOR_TAB, _drain_if_held, key)
+
+
+def _drain_if_held(key: tuple[str, str]):
+    since = _held_since.get(key)
+    if since is not None and time.time() - since >= HOLD_FOR_TAB - 0.05:
+        _drain(key)
 
 
 def unregister_listener(conn: Conn):
@@ -125,6 +201,9 @@ def unregister_listener(conn: Conn):
     if not conns or conn not in conns:
         return          # already evicted/replaced; whoever did that broadcast
     conns.remove(conn)
+    # Only a connection that was open and closed opens the reconnect window — a
+    # device that reports state but cannot stream gets 404, not a black hole.
+    _seen(conn.username, conn.device_id)
     if not conns:
         user_listeners.pop(conn.device_id, None)
     if not user_listeners:
@@ -134,6 +213,16 @@ def unregister_listener(conn: Conn):
 
 def is_online(username: str, device_id: str) -> bool:
     return bool(_listeners.get(username, {}).get(device_id))
+
+
+def _seen(username: str, device_id: str):
+    _last_seen[(username, device_id)] = time.time()
+
+
+def reconnecting(username: str, device_id: str) -> bool:
+    """No open connection now, but one closed within RECONNECT_GRACE."""
+    return (not is_online(username, device_id)
+            and time.time() - _last_seen.get((username, device_id), 0.0) <= RECONNECT_GRACE)
 
 
 def _push_command(conn: Conn, cmd: dict) -> bool:
@@ -177,7 +266,8 @@ async def listen(conn: Conn, token: str, ping_interval: float = PING_INTERVAL):
                 # A command that sat in the queue (a frozen tab, a stalled proxy) is
                 # stale by the time it would arrive; replaying a burst of them on wake
                 # skipped several tracks at once (B20).
-                if time.time() - cmd.get("ts", 0) > COMMAND_MAX_AGE:
+                if time.time() - cmd.get("ts", 0) > (
+                        QUEUED_MAX_AGE if cmd.get("queued") else COMMAND_MAX_AGE):
                     continue
                 yield "command", cmd
             if conn.closed.is_set():
@@ -357,6 +447,10 @@ def _sweep(now: float):
             _states.pop(user, None)
     for user in [u for u in _cmd_ids if u not in _states and u not in _listeners]:
         _cmd_ids.pop(user, None)
+    for key in [k for k, t in _last_seen.items() if now - t > RECONNECT_GRACE]:
+        _last_seen.pop(key, None)
+        _pending.pop(key, None)
+        _held_since.pop(key, None)
 
 
 def _tab_rank(conn: Conn, tabs: dict, now: float):
@@ -397,13 +491,42 @@ def device_state(username: str, device_id: str) -> dict | None:
 
 
 def send_command(username: str, device_id: str, action: str, value=None,
-                 from_device: str = "") -> dict | None:
-    """Queue a command for ONE tab of the device. Returns the command, or None
-    when no connection could take it."""
+                 from_device: str = "", may_wait: bool = True) -> dict | None:
+    """Queue a command for ONE tab of the device — or, while the device is
+    reconnecting (`may_wait`), for its next connection, marked `queued: true`.
+    Returns the command, or None when nothing could take it (offline past the
+    grace, a command that may not wait, or PENDING_MAX waiting)."""
     cmd_id = _cmd_ids.get(username, 0) + 1
+    now = time.time()
     cmd = {"id": cmd_id, "epoch": EPOCH, "action": action, "value": value,
-           "ts": time.time(), "from": from_device}
-    for conn in _delivery_order(username, device_id):
+           "ts": now, "from": from_device}
+    key = (username, device_id)
+    held = key in _held_since
+    if held and now - _held_since[key] >= HOLD_FOR_TAB:
+        _drain(key)                           # the timer did not run (no loop)
+        held = key in _held_since
+    conns = _delivery_order(username, device_id)
+    if held and not may_wait:
+        # A transfer replaces the whole queue: the held commands are moot, and
+        # draining them now would put them in a tab they were not meant for.
+        _pending.pop(key, None)
+        _held_since.pop(key, None)
+        held = False
+    if not conns or held:
+        # Held for the tab it is meant for: a new command joins the list, so it
+        # cannot overtake the older ones or land in another tab.
+        if not may_wait or not (held or reconnecting(username, device_id)):
+            return None
+        waiting = _pending.setdefault(key, collections.deque())
+        while waiting and now - waiting[0].get("ts", 0) > QUEUED_MAX_AGE:
+            waiting.popleft()                 # stale already; make room
+        if len(waiting) >= PENDING_MAX:
+            return None
+        cmd["queued"] = True
+        waiting.append(cmd)
+        _cmd_ids[username] = cmd_id
+        return cmd
+    for conn in conns:
         if _push_command(conn, cmd):
             _cmd_ids[username] = cmd_id
             return cmd
@@ -452,5 +575,8 @@ def _reset_for_tests():
     global _last_sweep
     _last_sweep = 0.0
     _listeners.clear()
+    _last_seen.clear()
+    _pending.clear()
+    _held_since.clear()
     _states.clear()
     _cmd_ids.clear()

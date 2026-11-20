@@ -1152,3 +1152,220 @@ def test_two_transfers_to_one_target_land_in_order(monkeypatch):
     got = [c["value"]["queue"][0]["name"] for c in commands(pc)]
     assert got == ["first", "second"]
     assert player.load_queue("alice", "pc")["queue"] == [{"name": "second"}]
+
+
+# ── a device that is reconnecting keeps its commands (prod diag 2026-11-20) ──
+
+def _cmd(user, target, action="toggle", value=None):
+    return client_for(user).post("/api/remote/command",
+                                 json={"target_device_id": target, "action": action, "value": value},
+                                 headers={"X-Device-ID": "phone"})
+
+
+def _drop(conn):
+    """The stream ends (ERR_NETWORK_CHANGED, Wi-Fi -> mobile): what listen()'s
+    finally does."""
+    remote.unregister_listener(conn)
+
+
+def test_a_command_sent_while_the_target_reconnects_arrives_after_it():
+    old = remote.register_listener("alice", "pc", "t")
+    _drop(old)
+    assert not remote.is_online("alice", "pc")
+
+    r = _cmd("alice", "pc", "toggle")
+    assert r.status_code == 202 and r.json()["queued"] is True
+    r2 = _cmd("alice", "pc", "next")
+    assert r2.json()["queued"] is True
+
+    new = remote.register_listener("alice", "pc", "t")
+    got = commands(new)
+    assert [c["action"] for c in got] == ["toggle", "next"]          # in order
+    assert [c["id"] for c in got] == [r.json()["id"], r2.json()["id"]]
+    assert not remote._pending                                       # drained once
+    assert _cmd("alice", "pc", "pause").json()["queued"] is False
+
+
+def test_a_device_gone_longer_than_the_grace_gets_404(monkeypatch, tmp_path):
+    _drop(remote.register_listener("alice", "pc", "t"))
+    later = time.time() + remote.RECONNECT_GRACE + 1
+    monkeypatch.setattr(remote.time, "time", lambda: later)
+    assert _cmd("alice", "pc").status_code == 404
+    r = _transfer({"queue": [{"name": "a"}], "current_index": 0})
+    assert r.status_code == 404
+    assert not (tmp_path / "users" / "alice" / "pc.json").exists()
+    assert not remote._pending
+
+
+def test_the_waiting_list_is_capped():
+    _drop(remote.register_listener("alice", "pc", "t"))
+    for i in range(remote.PENDING_MAX):
+        assert _cmd("alice", "pc", "seek", i).status_code == 202
+    r = _cmd("alice", "pc", "seek", 999)
+    assert r.status_code == 503
+    new = remote.register_listener("alice", "pc", "t")
+    assert [c["value"] for c in commands(new)] == [float(i) for i in range(remote.PENDING_MAX)]
+
+
+def test_waiting_commands_stay_with_their_user():
+    _drop(remote.register_listener("alice", "pc", "t"))
+    assert _cmd("bob", "pc").status_code == 404      # bob never had a "pc"
+    assert _cmd("alice", "pc", "next").status_code == 202
+    bobs = remote.register_listener("bob", "pc", "t")
+    assert commands(bobs) == []
+    alices = remote.register_listener("alice", "pc", "t")
+    assert [c["action"] for c in commands(alices)] == ["next"]
+
+
+def test_a_waiting_command_reaches_the_target_through_the_stream():
+    token = auth.create_remote_token("alice", "pc")
+    _drop(remote.register_listener("alice", "pc", "t"))
+    remote.send_command("alice", "pc", "pause")
+
+    async def scenario():
+        conn = remote.register_listener("alice", "pc", "t")
+        return await collect(conn, token, ping=0.05, limit=0.3)
+
+    events, _ = asyncio.run(scenario())
+    assert [d["action"] for e, d in events if e == "command"] == ["pause"]
+
+
+
+def test_a_waiting_command_may_wait_10_s_not_more(monkeypatch):
+    t0 = time.time()
+    _drop(remote.register_listener("alice", "pc", "t"))
+    assert _cmd("alice", "pc", "next").status_code == 202
+    monkeypatch.setattr(remote.time, "time", lambda: t0 + remote.COMMAND_MAX_AGE + 1)
+    assert _cmd("alice", "pc", "pause").status_code == 202
+    monkeypatch.setattr(remote.time, "time", lambda: t0 + remote.QUEUED_MAX_AGE + 0.5)
+    new = remote.register_listener("alice", "pc", "t")
+    got = commands(new)
+    assert [c["action"] for c in got] == ["pause"]       # 6 s old kept, 10.5 s old dropped
+    assert got[0]["queued"] is True
+
+
+def test_the_reconnect_itself_drops_a_command_that_waited_too_long(monkeypatch):
+    """Nothing else touched the waiting list in between: the drain must check."""
+    _drop(remote.register_listener("alice", "pc", "t"))
+    assert _cmd("alice", "pc", "next").status_code == 202
+    later = time.time() + remote.QUEUED_MAX_AGE + 1
+    monkeypatch.setattr(remote.time, "time", lambda: later)
+    new = remote.register_listener("alice", "pc", "t")
+    assert commands(new) == []
+
+
+def test_the_stream_lets_a_queued_command_be_older_than_5_s():
+    token = auth.create_remote_token("alice", "pc")
+    _drop(remote.register_listener("alice", "pc", "t"))
+    queued = remote.send_command("alice", "pc", "next")
+    queued["ts"] -= remote.COMMAND_MAX_AGE + 2                 # 7 s old, queued
+    direct_late = {"id": 99, "epoch": remote.EPOCH, "action": "pause", "value": None,
+                   "ts": time.time() - remote.COMMAND_MAX_AGE - 2, "from": "x"}
+
+    async def scenario():
+        conn = remote.register_listener("alice", "pc", "t")
+        conn.cmds.append(direct_late)                          # 7 s old, not queued
+        return await collect(conn, token, ping=0.05, limit=0.3)
+
+    events, _ = asyncio.run(scenario())
+    got = [d for e, d in events if e == "command"]
+    assert [d["action"] for d in got] == ["next"] and got[0]["queued"] is True
+
+
+def test_a_state_report_alone_does_not_open_the_reconnect_window():
+    report("alice", "pc", "t", playing=True)       # reports, but no stream ever opened
+    assert _cmd("alice", "pc").status_code == 404
+    assert not remote._pending
+
+
+def test_a_transfer_is_never_queued(tmp_path):
+    _drop(remote.register_listener("alice", "pc", "t"))
+    r = _transfer({"queue": [{"name": "a"}], "current_index": 0})
+    assert r.status_code == 404
+    assert not (tmp_path / "users" / "alice" / "pc.json").exists()
+    assert not remote._pending
+
+
+def _two_tabs_dropped():
+    a = remote.register_listener("alice", "pc", "A")
+    b = remote.register_listener("alice", "pc", "B")
+    report("alice", "pc", "A", playing=True)
+    report("alice", "pc", "B", playing=False)
+    _drop(a), _drop(b)
+
+
+def test_waiting_commands_wait_for_the_tab_that_was_playing():
+    _two_tabs_dropped()
+    assert _cmd("alice", "pc", "pause").json()["queued"] is True
+    b = remote.register_listener("alice", "pc", "B")          # the idle tab is back first
+    assert commands(b) == []
+    r = _cmd("alice", "pc", "next")                           # joins the list, not B
+    assert r.status_code == 202 and r.json()["queued"] is True
+    assert commands(b) == []
+    a = remote.register_listener("alice", "pc", "A")
+    assert [c["action"] for c in commands(a)] == ["pause", "next"]
+    assert commands(b) == []
+    assert _cmd("alice", "pc", "prev").json()["queued"] is False
+
+
+def test_if_that_tab_does_not_come_back_the_best_connected_one_gets_them(monkeypatch):
+    monkeypatch.setattr(remote, "HOLD_FOR_TAB", 0.1)
+    _two_tabs_dropped()
+
+    async def scenario():
+        assert _cmd("alice", "pc", "pause").status_code == 202
+        b = remote.register_listener("alice", "pc", "B")
+        early = commands(b)
+        await asyncio.sleep(0.3)                              # the hold timer fires
+        return early, commands(b)
+
+    early, late = asyncio.run(scenario())
+    assert early == []
+    assert [c["action"] for c in late] == ["pause"]
+
+
+def test_without_a_timer_the_next_command_releases_the_held_list(monkeypatch):
+    _two_tabs_dropped()
+    assert _cmd("alice", "pc", "pause").status_code == 202
+    b = remote.register_listener("alice", "pc", "B")
+    assert commands(b) == []
+    later = time.time() + remote.HOLD_FOR_TAB + 0.1
+    monkeypatch.setattr(remote.time, "time", lambda: later)
+    assert _cmd("alice", "pc", "next").json()["queued"] is False
+    assert [c["action"] for c in commands(b)] == ["pause", "next"]
+
+
+def test_a_transfer_while_commands_are_held_supersedes_them():
+    _two_tabs_dropped()
+    assert _cmd("alice", "pc", "pause").status_code == 202
+    b = remote.register_listener("alice", "pc", "B")
+    r = _transfer({"queue": [{"name": "a"}], "current_index": 0})
+    assert r.status_code == 202 and r.json()["queued"] is False
+    assert [c["action"] for c in commands(b)] == ["transfer"]
+    assert not remote._pending and not remote._held_since
+    a = remote.register_listener("alice", "pc", "A")
+    assert commands(a) == []
+
+
+def test_commands_of_a_replaced_connection_are_marked_queued():
+    """A half-open TCP keeps the device online, so commands land in the dead
+    connection as ordinary ones; the reconnect hands them over as waited-for."""
+    dead = remote.register_listener("alice", "pc", "t")
+    remote.send_command("alice", "pc", "next")
+    new = remote.register_listener("alice", "pc", "t")
+    [cmd] = commands(new)
+    assert cmd["action"] == "next" and cmd["queued"] is True
+
+
+def test_a_moved_command_survives_the_5_s_check_on_the_stream():
+    token = auth.create_remote_token("alice", "pc")
+    remote.register_listener("alice", "pc", "t")
+    cmd = remote.send_command("alice", "pc", "pause")
+    cmd["ts"] -= remote.COMMAND_MAX_AGE + 2                    # 7 s in the dead connection
+
+    async def scenario():
+        conn = remote.register_listener("alice", "pc", "t")
+        return await collect(conn, token, ping=0.05, limit=0.3)
+
+    events, _ = asyncio.run(scenario())
+    assert [d["action"] for e, d in events if e == "command"] == ["pause"]

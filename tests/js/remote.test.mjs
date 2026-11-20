@@ -128,10 +128,12 @@ function memStorage(init = {}) {
 const calls = [];
 let cmdSeq = 100;
 let serverQueue = null;   // what GET /api/player/queue answers
+let failCommands = 0;     // the next N POST /api/remote/command answer 404 "Device offline"
+let queueCommands = false; // POST /api/remote/command answers 202 {queued: true} (target reconnecting)
 function route(url, method) {
   if (url.startsWith('/api/player/stream-token')) return { token: 'st' };
   if (url.startsWith('/api/remote/token')) return { token: 'rt', expires_in: 3600 };
-  if (url.startsWith('/api/remote/command')) return { id: ++cmdSeq };
+  if (url.startsWith('/api/remote/command')) return queueCommands ? { id: ++cmdSeq, queued: true } : { id: ++cmdSeq };
   if (url.startsWith('/api/player/queue') && method === 'GET') return serverQueue || {};
   if (url.startsWith('/api/remote/queue')) return { queue: [], current_index: -1 };
   return {};
@@ -198,6 +200,14 @@ before(async () => {
     let body = null;
     try { body = opts.body ? JSON.parse(opts.body) : null; } catch { body = opts.body; }
     calls.push({ url: String(url), method, body });
+    if (String(url).startsWith('/api/remote/command') && failCommands > 0) {
+      failCommands--;
+      const detail = { detail: 'Device offline' };
+      return {
+        ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null },
+        json: async () => detail, text: async () => JSON.stringify(detail),
+      };
+    }
     const resp = route(String(url), method);
     return {
       ok: true, status: 200, statusText: 'OK',
@@ -820,3 +830,172 @@ test('mute overlay: switching control to another device drops it', async () => {
   assert.equal(last.body.target_device_id, 'dev-two');
   assert.equal(last.body.value, true, 'the press on dev-tgt does not decide dev-two’s mute');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Short gaps: a dropped stream comes back fast, a 404 in the gap is retried once
+// ═════════════════════════════════════════════════════════════════════════════
+/** Run `fn` with this device's clock `ms` ahead. */
+function withClockAhead(ms, fn) {
+  const realNow = Date.now;
+  Date.now = () => realNow() + ms;
+  try { return fn(); } finally { Date.now = realNow; }
+}
+
+test('reconnect: a stream that had worked comes back after ~1 s, not after 5 s', async () => {
+  failCommands = 0;
+  await startAsTarget();          // its first `devices` arrived: the stream worked
+  const before = sources.length;
+  // …for over 30 s, then a network change on this device drops it.
+  withClockAhead(31000, () => es().onerror());
+  await tick(1300); await settle();
+  assert.equal(sources.length, before + 1, 'a new EventSource within 1.3 s');
+  assert.match(es().url, /token=rt&device_id=dev-self&tab_id=/);
+});
+
+test('reconnect: a stream that drops again right after the fast retry backs off', async () => {
+  failCommands = 0;
+  await startAsTarget();
+  es().onerror();
+  await tick(1300); await settle();
+  const before = sources.length;
+  es().emit('devices', devicesEvent()); await settle();   // the fast retry worked…
+  es().onerror();                                          // …and dropped at once
+  await tick(1300); await settle();
+  assert.equal(sources.length, before, 'no second 1 s retry within 30 s');
+});
+
+test('a 404 on a command is retried once after 1.5 s while the target looks reachable', async () => {
+  await startControlling();
+  failCommands = 1;
+  document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'next' } }));
+  await settle();
+  assert.equal(remoteCmds().length, 1, 'the first attempt');
+  await tick(1700); await settle();
+  assert.deepEqual(remoteCmds().map(c => c.body.action), ['next', 'next'], 'exactly one retry');
+  await tick(1700); await settle();
+  assert.equal(remoteCmds().length, 2, 'no further retries');
+});
+
+test('a 404 is not retried when the target is gone from the device list', async () => {
+  await startControlling();
+  failCommands = 1;
+  document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'toggle' } }));
+  await settle();
+  const ev = devicesEvent(); delete ev.devices['dev-tgt'];
+  es().emit('devices', ev); await settle();
+  await tick(1700); await settle();
+  assert.equal(remoteCmds().length, 1);
+});
+
+test('a 404 on a transfer is not retried', async () => {
+  await startControlling();
+  failCommands = 1;
+  document.dispatchEvent(new Event('remote:play'));
+  await tick(1700); await settle();
+  assert.equal(remoteCmds().filter(c => c.body.action === 'transfer').length, 1);
+  failCommands = 0;
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// R2 of the reconnect-gap delta
+// ═════════════════════════════════════════════════════════════════════════════
+test('m5: a stream that delivers and drops at once backs off instead of reconnecting fast', async () => {
+  failCommands = 0;
+  await startAsTarget();          // delivered its first event…
+  const before = sources.length;
+  es().onerror();                 // …and dropped right away
+  await tick(1300); await settle();
+  assert.equal(sources.length, before, 'no reconnect within 1.3 s');
+});
+
+test('m1: a command the server held across this tab’s reconnect is applied though older than 5 s', async () => {
+  await startAsTarget();
+  es().emit('command', { id: 31, action: 'volume', value: 0.33, ts: nowS() - 8, queued: true, from: 'dev-x' });
+  await settle();
+  assert.equal(store.playerVolume, 0.33);
+  es().emit('command', { id: 32, action: 'volume', value: 0.66, ts: nowS() - 8, from: 'dev-x' });
+  await settle();
+  assert.equal(store.playerVolume, 0.33, 'an unheld 8 s old command is still dropped');
+});
+
+test('m2: a 404 retry is skipped when a newer command to the target was accepted meanwhile', async () => {
+  await startControlling();
+  failCommands = 1;
+  document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'next' } }));
+  await settle();
+  document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'toggle' } }));
+  await settle();
+  await tick(1700); await settle();
+  assert.deepEqual(remoteCmds().map(c => c.body.action), ['next', 'toggle'], 'the old next is not retried after the newer press');
+});
+
+test('M2: a queued Next holds the lock beyond 2 s until the target acknowledges it', async () => {
+  await startControlling();
+  queueCommands = true;
+  try {
+    const next = () => document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'next' } }));
+    next(); await settle();
+    await tick(2300); await settle();
+    next(); await settle();
+    assert.equal(remoteCmds().length, 1, 'still locked while the command waits in the server queue');
+    es().emit('devices', devicesEvent(targetDev({ ack: cmdSeq })));
+    await settle();
+    next(); await settle();
+    assert.equal(remoteCmds().length, 2, 'the ack opens it');
+  } finally { queueCommands = false; }
+});
+
+test('M2: play/pause sends an explicit pause, not toggle, while the target is reconnecting', async () => {
+  await startControlling(targetDev({ playing: true }));
+  es().emit('devices', devicesEvent(targetDev({ playing: true, online: false })));
+  await settle();
+  document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'toggle' } }));
+  await settle();
+  assert.deepEqual(remoteCmds().map(c => c.body.action), ['pause']);
+});
+
+test('M2: a queued command shows "Waiting for …" until its ack', async () => {
+  await startControlling();
+  queueCommands = true;
+  try {
+    document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'toggle' } }));
+    await settle();
+    assert.equal(R.remoteStatusText(), 'Waiting for Target…');
+    es().emit('devices', devicesEvent(targetDev({ ack: cmdSeq })));
+    await settle();
+    assert.equal(R.remoteStatusText(), 'Controlling Target');
+  } finally { queueCommands = false; }
+});
+
+test('M2: a queued command without an ack for 11 s ends in "<device> didn’t respond"', async () => {
+  await startControlling();
+  queueCommands = true;
+  elFor('#toastMsg').textContent = '';
+  try {
+    document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'toggle' } }));
+    await settle();
+    assert.equal(R.remoteStatusText(), 'Waiting for Target…');
+    const realNow = Date.now;
+    Date.now = () => realNow() + 11500;
+    try { await tick(1200); await settle(); } finally { Date.now = realNow; }
+    assert.equal(elFor('#toastMsg').textContent, "Target didn't respond");
+    assert.notEqual(R.remoteStatusText(), 'Waiting for Target…');
+  } finally { queueCommands = false; }
+});
+
+test('F1a: an accepted (not queued) Next stays locked until its ack, and "Waiting for …" shows after 3 s', async () => {
+  await startControlling();
+  const next = () => document.dispatchEvent(new CustomEvent('remote:cmd', { detail: { action: 'next' } }));
+  next(); await settle();
+  assert.equal(R.remoteStatusText(), 'Controlling Target', 'no warning in the first seconds');
+  await tick(3300); await settle();
+  next(); await settle();
+  assert.equal(remoteCmds().length, 1, 'still locked: a half-open stream may be holding the command');
+  assert.equal(R.remoteStatusText(), 'Waiting for Target…');
+  es().emit('devices', devicesEvent(targetDev({ ack: cmdSeq })));
+  await settle();
+  assert.equal(R.remoteStatusText(), 'Controlling Target', 'the ack clears it');
+  next(); await settle();
+  assert.equal(remoteCmds().length, 2, 'and opens the lock');
+});
+

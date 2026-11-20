@@ -160,13 +160,27 @@ function _noteQuickDrop(openedAt) {
 // Connections that failed before delivering anything (no token, 401, 429 "Too many
 // devices online", server down) back off 5 → 10 → 20 → 40 → 60 s; an EventSource
 // cannot read the status, so a 429 is not told apart — it just ends up at 60 s
-// instead of hammering every 5 s. A connection that worked and then dropped (token
-// expiry after 1 h, a deploy) comes back after 5 s.
+// instead of hammering every 5 s.
+// A connection that WORKED (delivered its first `devices`) and then dropped — a
+// network change, a deploy, the token's hourly end — comes back after 1 s: every
+// second without a stream is a second in which commands to this device are lost. Only
+// one such fast retry per 30 s; a stream that keeps dropping right after it worked
+// falls into the backoff above instead of a 1 s loop.
+const FAST_RECONNECT_MS = 1000;
+const STREAM_OK_MS = 30000;
+const FAST_RECONNECT_EVERY_MS = 30000;
 let _connFails = 0;
-function _scheduleReconnect() {
+let _lastFastReconnect = 0;
+function _scheduleReconnect(fast = false) {
   clearTimeout(store.remoteReconnectTimer);
   if (_stopped) return;
-  const delay = Math.min(60000, 5000 * 2 ** Math.max(0, _connFails - 1));
+  let delay;
+  if (fast && Date.now() - _lastFastReconnect >= FAST_RECONNECT_EVERY_MS) {
+    _lastFastReconnect = Date.now();
+    delay = FAST_RECONNECT_MS;
+  } else {
+    delay = Math.min(60000, 5000 * 2 ** Math.max(0, _connFails - 1));
+  }
   store.remoteReconnectTimer = setTimeout(connectSSE, delay);
 }
 
@@ -256,7 +270,7 @@ async function connectSSE() {
       try {
         const d = JSON.parse(e.data);
         if (!delivered && _retiring) _closeRetiring();   // the new connection is live
-        delivered = true; _connFails = 0;
+        delivered = true;
         _noteServerTime(d.server_time);
         store.remoteDevices = d.devices || {};
         _onDevices();
@@ -287,11 +301,15 @@ async function connectSSE() {
         return;
       }
       _noteQuickDrop(openedAt);
-      if (!delivered) _connFails++;
+      // Worked = delivered AND lived over STREAM_OK_MS. A stream that delivers its
+      // first event and drops at once (a proxy cutting it, a server rejecting it right
+      // after the handshake) counts as a failure, or it would reconnect forever.
+      const worked = delivered && Date.now() - openedAt > STREAM_OK_MS;
+      if (worked) _connFails = 0; else _connFails++;
       es.close();
       store.remoteEventSource = null;
       // Reconnect with a fresh token (connectSSE re-mints it) unless we've stopped.
-      _scheduleReconnect();
+      _scheduleReconnect(worked);
     };
   } catch {
     _connFails++;
@@ -317,7 +335,9 @@ function _onCommand(c) {
   // connection is `devices` with server_time, and a connection's events arrive in
   // order. Only a server that sends no server_time leaves it null — then the server's
   // own rule (a command queued > 5 s is not sent) is the protection.
-  if (typeof c.ts === 'number' && _offset !== null && _nowServer() - c.ts > COMMAND_MAX_AGE_S) return;
+  // A command the server HELD across this tab's reconnect (`queued: true`) is older
+  // by design; the server sends those only within its own 10 s limit.
+  if (!c.queued && typeof c.ts === 'number' && _offset !== null && _nowServer() - c.ts > COMMAND_MAX_AGE_S) return;
   if (typeof c.id === 'number') {
     // With epoch and timestamp: ids restart from 1 when the server restarts.
     const key = `${c.epoch ?? ''}:${c.id}:${c.ts}`;
@@ -518,6 +538,7 @@ function _tick() {
   if (key !== _staleKey) { _staleKey = key; renderDevicesPanel(); }
   if (store.remoteTarget) {
     _checkTarget();
+    _checkPending(_targetDev());
     if (store.remoteTarget) { showControllingBanner(); renderRemoteNowPlaying(); }
   }
 }
@@ -526,17 +547,108 @@ function _tick() {
 /** POST a command. Resolves to `{id, epoch}` (id 0 when the server does not return
  *  one, epoch null from a server without epochs), or null when it failed — then the
  *  user has already been told. */
+// A 404 "device offline" while the target's stream is being re-established (a
+// network change on the target: its SSE is gone for a second or two) is retried ONCE
+// after RETRY_404_MS — if the target still looks reachable (online, or within the
+// reconnect grace while we still control it). The server now holds commands across
+// short gaps and answers 202 `queued`, so this only covers the old 404 window; a 404
+// means the command was not queued, so the retry cannot duplicate it. Transfers are
+// never retried (the user sees "Transfer failed" and decides). The retry is skipped
+// when ANY command to that target sent after this one was accepted meanwhile: a
+// retried `next` must not land after a newer `pause`, an old volume not after a newer
+// one. One sequence per target, not per action.
+const RETRY_404_MS = 1500;
+const RETRY_404_ACTIONS = new Set(['play', 'pause', 'toggle', 'next', 'prev', 'seek', 'volume',
+  'mute', 'shuffle', 'repeat', 'queue_op', 'enqueue']);
+const _sendSeq = {};       // target → sequence number of the last command sent
+const _acceptedSeq = {};   // target → highest sequence number the server accepted
+
+// M2: a 202 with `queued: true` means the server holds the command for a target whose
+// stream is down (≤ 10 s); it has not been applied. Until the target acknowledges it
+// (or QUEUED_WAIT_MS pass) the banner says "Waiting for <device>…", the Next lock and
+// the optimistic play/pause state are held, and a play/pause press sends an explicit
+// play or pause — two toggles queued together would cancel out.
+const QUEUED_WAIT_MS = 11000;
+// F1a: a 202 WITHOUT `queued` is no proof either — behind nginx a half-open TCP
+// connection leaves the server believing the target's stream is up, and the command
+// waits in a buffer nobody reads. So every accepted command (with an id to match)
+// is pending until its ack: the Next lock and the optimistic play/pause state are
+// held up to ACK_WAIT_MS, and after WAITING_SHOW_MS without an ack the banner says
+// "Waiting for <device>…" (at once for a queued one).
+const ACK_WAIT_MS = 6000;
+const WAITING_SHOW_MS = 3000;
+let _pending = null;   // { target, sent: {id, epoch, queued}, since, until }
+
+/** How long to wait for the ack of a command the server accepted. */
+function _ackWaitMs(sent) {
+  if (!sent || !(sent.id > 0)) return 0;   // nothing to match an ack against
+  return sent.queued ? QUEUED_WAIT_MS : ACK_WAIT_MS;
+}
+
+function _notePending(target, sent) {
+  const wait = _ackWaitMs(sent);
+  if (!wait) return;
+  const now = Date.now();
+  _pending = { target, sent, since: now, until: now + wait };
+  showControllingBanner();
+}
+
+/** Clear the pending command on its ack; on expiry tell the user. */
+function _checkPending(dev) {
+  const p = _pending;
+  if (!p) return;
+  if (p.target !== store.remoteTarget) { _pending = null; return; }
+  if (dev && _ackCovers(dev.ack, p.sent)) { _pending = null; showControllingBanner(); return; }
+  if (Date.now() >= p.until) {
+    _pending = null;
+    showToast(`${_devName(p.target)} didn't respond`, true);
+    showControllingBanner();
+  }
+}
+
+/** The target has no stream right now: offline in the list, in our reconnect grace,
+ *  or a command to it is still waiting in the server's queue. */
+function _targetReconnecting() {
+  const dev = _targetDev();
+  return !dev || !dev.online || !!_offlineSince
+    || !!(_pending && _pending.target === store.remoteTarget && _pending.sent.queued);
+}
+
+function _looksReachable(target) {
+  if (store.remoteTarget !== target) return false;
+  const dev = store.remoteDevices[target];
+  return !!dev && (!!dev.online || !!_offlineSince);
+}
+
+async function _postCommand(target, action, value) {
+  const body = { target_device_id: target, action };
+  if (value !== undefined) body.value = value;
+  const r = await apiJson('/api/remote/command', { method: 'POST', body });
+  return {
+    id: r && typeof r.id === 'number' ? r.id : 0,
+    epoch: r && r.epoch !== undefined && r.epoch !== null ? r.epoch : null,
+    queued: !!(r && r.queued),
+  };
+}
+
 async function sendCommand(action, value, target = store.remoteTarget) {
   if (!target) return null;
+  const seq = (_sendSeq[target] = (_sendSeq[target] || 0) + 1);
+  const accepted = (sent) => {
+    _acceptedSeq[target] = Math.max(_acceptedSeq[target] || 0, seq);
+    _notePending(target, sent);
+    return sent;
+  };
   try {
-    const body = { target_device_id: target, action };
-    if (value !== undefined) body.value = value;
-    const r = await apiJson('/api/remote/command', { method: 'POST', body });
-    return {
-      id: r && typeof r.id === 'number' ? r.id : 0,
-      epoch: r && r.epoch !== undefined && r.epoch !== null ? r.epoch : null,
-    };
+    return accepted(await _postCommand(target, action, value));
   } catch (err) {
+    if (err && err.status === 404 && RETRY_404_ACTIONS.has(action)) {
+      await new Promise(r => setTimeout(r, RETRY_404_MS));
+      if ((_acceptedSeq[target] || 0) > seq) return null;   // a newer command landed first
+      if (_looksReachable(target)) {
+        try { return accepted(await _postCommand(target, action, value)); } catch (err2) { err = err2; }
+      }
+    }
     _commandFailed(err);
     return null;
   }
@@ -706,12 +818,22 @@ function _playIntent(action) {
   const dev = _targetDev();
   if (!dev) return;
   const want = action === 'toggle' ? !_effectivePlaying(dev) : action === 'play';
+  // The target decides a toggle by its own state — fine when it applies each press
+  // as it comes. Queued during a reconnect, two toggles cancel out; say what we want.
+  // F3: `want` comes from the LAST REPORT (plus our own optimistic presses), which may
+  // be up to a report interval old when the stream dropped; a target that changed
+  // state in that window (it ended a track, someone pressed pause there) gets the
+  // opposite of what a toggle would have done. Accepted: a stale explicit state is
+  // still better than two queued toggles that cancel out.
+  if (action === 'toggle' && _targetReconnecting()) action = want ? 'play' : 'pause';
   const o = { playing: want, sent: null, until: Date.now() + OPTIMISTIC_MS };
   _optimistic = o;
   renderRemoteNowPlaying();
   sendCommand(action).then(sent => {
     if (_optimistic !== o) return;
-    if (sent === null) { _optimistic = null; renderRemoteNowPlaying(); } else o.sent = sent;
+    if (sent === null) { _optimistic = null; renderRemoteNowPlaying(); return; }
+    o.sent = sent;
+    o.until = Math.max(o.until, Date.now() + _ackWaitMs(sent));   // held until the ack (F1a)
   });
 }
 
@@ -721,10 +843,18 @@ function _skipIntent(action) {
   const l = { index: dev ? dev.index : undefined, key: _trackKey(dev), sent: null, until: Date.now() + SKIP_LOCK_MS };
   _skipLock = l;
   _paintSkipLock();
-  setTimeout(() => { if (_skipLock === l) { _skipLock = null; _paintSkipLock(); } }, SKIP_LOCK_MS + 50);
+  const expire = () => {
+    if (_skipLock !== l) return;
+    // Held longer while the command waits in the server's queue (see below).
+    if (Date.now() < l.until) { setTimeout(expire, l.until - Date.now() + 50); return; }
+    _skipLock = null; _paintSkipLock();
+  };
+  setTimeout(expire, SKIP_LOCK_MS + 50);
   sendCommand(action).then(sent => {
     if (_skipLock !== l) return;
-    if (sent === null) { _skipLock = null; _paintSkipLock(); } else l.sent = sent;
+    if (sent === null) { _skipLock = null; _paintSkipLock(); return; }
+    l.sent = sent;
+    l.until = Math.max(l.until, Date.now() + _ackWaitMs(sent));   // held until the ack (F1a)
   });
 }
 
@@ -1023,6 +1153,7 @@ function enterRemoteMode(targetId, { transferred = false } = {}) {
   _rqKey = ''; _rqGen++;
   _offlineSince = 0;
   _optimistic = null; _skipLock = null; _paintSkipLock();
+  _pending = null;
   _lastPaintedKey = null;
   try { sessionStorage.setItem('ms_remote_target', targetId); } catch {}
   document.body.classList.add('remote-active');
@@ -1056,6 +1187,7 @@ function exitRemoteMode() {
   _rqGen++;
   clearTimeout(_rqLater); _rqLater = null;
   _offlineSince = 0;
+  _pending = null;
   _optimistic = null; _skipLock = null; _paintSkipLock();
   clearTimeout(_volTimer); _volTimer = null; _volPending = null;
   try { sessionStorage.removeItem('ms_remote_target'); } catch {}
@@ -1120,6 +1252,25 @@ function _checkTarget() {
   }
 }
 
+function _bannerState() {
+  const dev = _targetDev();
+  const name = _devName(store.remoteTarget);
+  const p = _pending;
+  if (p && p.target === store.remoteTarget && (p.sent.queued || Date.now() - p.since >= WAITING_SHOW_MS)) {
+    return { text: `Waiting for ${name}…`, warn: true };
+  }
+  if (_offlineSince || !dev || !dev.online) return { text: `Reconnecting to ${name}…`, warn: true };
+  if (_isStale(dev)) return { text: `${name} isn't responding`, warn: true };
+  if (dev.blocked) return { text: `Tap ${name} once to allow playback`, warn: true };
+  return { text: `Controlling ${name}`, warn: false };
+}
+
+/** The controlling banner's text ('' when not controlling) — for tests and other
+ *  modules that want to show the same status. */
+export function remoteStatusText() {
+  return store.remoteTarget ? _bannerState().text : '';
+}
+
 function showControllingBanner() {
   if (!store.remoteTarget) return;
   let banner = $('#remoteControllingBanner');
@@ -1135,12 +1286,7 @@ function showControllingBanner() {
     else document.body.appendChild(banner);
   }
   const dev = _targetDev();
-  const name = _devName(store.remoteTarget);
-  let text, warn = true;
-  if (_offlineSince || !dev || !dev.online) text = `Reconnecting to ${name}…`;
-  else if (_isStale(dev)) text = `${name} isn't responding`;
-  else if (dev.blocked) text = `Tap ${name} once to allow playback`;
-  else { text = `Controlling ${name}`; warn = false; }
+  const { text, warn } = _bannerState();
   const t = banner.querySelector('.rcb-text');
   if (t && t.textContent !== text) t.textContent = text;
   banner.classList.toggle('warn', warn);
@@ -1239,6 +1385,7 @@ function renderRemoteNowPlaying() {
 
 function _onDevices() {
   if (_skipLock && _skipReleased(_targetDev())) { _skipLock = null; _paintSkipLock(); }
+  _checkPending(_targetDev());
   renderDevicesPanel();
   _maybeRestoreTarget();
   if (store.remoteTarget) {
@@ -1473,6 +1620,7 @@ function wireUI() {
 export function initRemote() {
   _stopped = false;
   _connFails = 0;
+  _lastFastReconnect = 0;
   _loadMods();
   _setupTabChannel();
   try { _restoreWanted = sessionStorage.getItem('ms_remote_target') || null; } catch { _restoreWanted = null; }
