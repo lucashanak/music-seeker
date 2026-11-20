@@ -50,13 +50,55 @@ function _remoteCmd(action, value) {
 
 const _REPEAT_MODES = ['off', 'all', 'one'];
 
+// What was just asked of the target, per key (`muted`, `shuffle`, `repeat`), until its
+// report shows it. Without this a second press computed the next state from a report
+// older than the first press — a snapshot that arrived in between still carried the
+// old value (production: unmute 0.8 s after mute sent mute:true again, the target
+// stayed silent). remote.js writes the value into the CURRENT snapshot object too, so
+// only a snapshot that replaced it (another object) can confirm; one that still shows
+// the old value is a report from before the target applied the press.
+const _OVERLAY_MS = 4000;
+const _overlay = {}; // key -> { v, until, target, dev }
+
+function _remoteVal(key, dev) {
+  const p = _overlay[key];
+  const reported = dev ? dev[key] : undefined;
+  if (p) {
+    // Confirmation is judged on the snapshot in the store, never on `dev`: remote.js
+    // hands paintRemoteState a COPY ({...dev, playing}), which already carries the
+    // value it wrote at the press and would read as a confirmation at once.
+    const snap = _remoteDev();
+    const done = p.target !== store.remoteTarget || Date.now() > p.until
+      || (snap && snap !== p.dev && snap[key] === p.v);
+    if (done) delete _overlay[key];
+    else return p.v;
+  }
+  return reported;
+}
+
+// Out of remote mode nothing is pending: exitRemoteMode repaints the toggles with
+// store.remoteTarget already null, which lands here.
+function _dropOverlays() { for (const k in _overlay) delete _overlay[k]; }
+
+function _sendModeCmd(key, action, v) {
+  _overlay[key] = { v, until: Date.now() + _OVERLAY_MS, target: store.remoteTarget, dev: _remoteDev() };
+  _remoteCmd(action, v);
+  // Painted at once from the overlay (remote.js repaints too; the key may not change).
+  _remotePaintKey = '';
+  if (key === 'muted') syncMuteUI(); else syncShuffleRepeatUI();
+}
+
+function _remoteRepeat(dev) {
+  const r = _remoteVal('repeat', dev);
+  return _REPEAT_MODES.includes(r) ? r : 'off';
+}
+
 // ── Shared player-mode toggles (engine-agnostic: drive store, sync both UIs) ──
 // Behavior mirrors the original full-player handlers; the active engine reads
 // store.shuffleEnabled / store.repeatMode, so flipping the store is sufficient.
 export function toggleShuffle() {
   if (store.remoteTarget) {
-    const dev = _remoteDev();
-    _remoteCmd('shuffle', !(dev && dev.shuffle));
+    _sendModeCmd('shuffle', 'shuffle', !_remoteVal('shuffle', _remoteDev()));
     return;
   }
   _applyShuffle(!store.shuffleEnabled);
@@ -84,9 +126,8 @@ function _applyShuffle(on) {
 
 export function toggleRepeat() {
   if (store.remoteTarget) {
-    const dev = _remoteDev();
-    const cur = dev && _REPEAT_MODES.includes(dev.repeat) ? dev.repeat : 'off';
-    _remoteCmd('repeat', _REPEAT_MODES[(_REPEAT_MODES.indexOf(cur) + 1) % 3]);
+    const cur = _remoteRepeat(_remoteDev());
+    _sendModeCmd('repeat', 'repeat', _REPEAT_MODES[(_REPEAT_MODES.indexOf(cur) + 1) % 3]);
     return;
   }
   _restoreModes();
@@ -131,11 +172,10 @@ export function syncShuffleRepeatUI() {
   _restoreModes();
   // Under remote control the buttons show the TARGET's modes; this device's own
   // store values are left alone and come back on screen when control ends.
+  if (!store.remoteTarget) _dropOverlays();
   const dev = _remoteDev();
-  const shuffle = store.remoteTarget ? !!(dev && dev.shuffle) : store.shuffleEnabled;
-  const repeat = store.remoteTarget
-    ? (dev && _REPEAT_MODES.includes(dev.repeat) ? dev.repeat : 'off')
-    : store.repeatMode;
+  const shuffle = store.remoteTarget ? !!_remoteVal('shuffle', dev) : store.shuffleEnabled;
+  const repeat = store.remoteTarget ? _remoteRepeat(dev) : store.repeatMode;
   for (const id of ['#fpShuffle', '#playerShuffle']) {
     const b = $(id);
     if (b) b.classList.toggle('active', shuffle);
@@ -176,8 +216,7 @@ function _applyVolume(vol) {
 
 export function toggleMute() {
   if (store.remoteTarget) {
-    const dev = _remoteDev();
-    _remoteCmd('mute', !(dev && dev.muted));
+    _sendModeCmd('muted', 'mute', !_remoteVal('muted', _remoteDev()));
     return;
   }
   setMuted(!isMuted());
@@ -206,7 +245,8 @@ const _ICON_MUTED = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line 
 
 export function syncMuteUI() {
   const dev = _remoteDev();
-  const muted = store.remoteTarget ? !!(dev && dev.muted) : isMuted();
+  if (!store.remoteTarget) _dropOverlays();
+  const muted = store.remoteTarget ? !!_remoteVal('muted', dev) : isMuted();
   for (const [iconId, btnId] of [['#playerMuteIcon', '#playerMute'], ['#fpMuteIcon', '#fpMute']]) {
     const icon = $(iconId);
     if (icon) icon.innerHTML = muted ? _ICON_MUTED : _ICON_SPEAKER;
@@ -311,7 +351,7 @@ export function paintRemoteState(dev) {
   const tr = dev && dev.track, nx = dev && dev.next;
   const pm = store.remoteQueue && store.remoteQueue.playlist_mode;
   const key = [store.remoteTarget, dev && dev.name, tr && tr.id, tr && tr.name, tr && tr.artist,
-    tr ? isLiked(tr) : '', dev && dev.muted, dev && dev.shuffle, dev && dev.repeat,
+    tr ? isLiked(tr) : '', !!_remoteVal('muted', dev), !!_remoteVal('shuffle', dev), _remoteRepeat(dev),
     nx && nx.name, nx && nx.artist, pm && typeof pm === 'object' ? pm.name : ''].join('\u0001');
   if (key === _remotePaintKey) return;
   _remotePaintKey = key;

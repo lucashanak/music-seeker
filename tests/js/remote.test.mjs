@@ -720,3 +720,103 @@ test('exit remote mode restores the controller’s queue, index and playlist', a
   assert.equal(store.playerIndex, 1);
   assert.deepEqual(store.playlistMode, { id: 'myzouk', name: 'MyZouk' });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Mute / shuffle / repeat on the controller: a second press before the target's
+// report caught up must still send the NEXT state (production, 2026-11-20: unmute
+// 0.8 s after mute re-sent mute:true — the snapshot that arrived in between was the
+// target's report from before it applied the first press).
+// ═════════════════════════════════════════════════════════════════════════════
+let FP = null;
+const fpMod = async () => (FP ||= await import('../../static/js/fullplayer.js'));
+const sentValues = (action) => remoteCmds().filter(c => c.body.action === action).map(c => c.body.value);
+/** A devices snapshot carrying the target's state from BEFORE it applied the press. */
+const staleReport = async (extra = {}) => { es().emit('devices', devicesEvent(targetDev(extra))); await settle(); };
+/** Start controlling the way the app does after an earlier session ended: resetWorld()
+ *  nulls store.remoteTarget without exitRemoteMode, whose repaint is where the app
+ *  drops a press still waiting for its confirmation. */
+async function controlFresh(fp, target) {
+  store.remoteTarget = null;
+  fp.syncShuffleRepeatUI(); fp.syncMuteUI();
+  await startControlling(target);
+}
+
+for (const [label, between] of [['no report in between', null], ['a stale report in between', staleReport]]) {
+  test(`mute: two presses under remote send true, then false (${label})`, async () => {
+    const fp = await fpMod();
+    await controlFresh(fp, targetDev({ muted: false }));
+    fp.toggleMute(); await settle();
+    if (between) await between({ muted: false });
+    fp.toggleMute(); await settle();
+    assert.deepEqual(sentValues('mute'), [true, false]);
+    assert.equal(store.playerVolume, 1, 'the controller’s own volume is untouched');
+  });
+
+  test(`shuffle: two presses under remote send true, then false (${label})`, async () => {
+    const fp = await fpMod();
+    await controlFresh(fp, targetDev({ shuffle: false }));
+    fp.toggleShuffle(); await settle();
+    if (between) await between({ shuffle: false });
+    fp.toggleShuffle(); await settle();
+    assert.deepEqual(sentValues('shuffle'), [true, false]);
+    assert.equal(store.shuffleEnabled, false, 'the controller’s own shuffle is untouched');
+  });
+
+  test(`repeat: two presses under remote send all, then one (${label})`, async () => {
+    const fp = await fpMod();
+    await controlFresh(fp, targetDev({ repeat: 'off' }));
+    fp.toggleRepeat(); await settle();
+    if (between) await between({ repeat: 'off' });
+    fp.toggleRepeat(); await settle();
+    assert.deepEqual(sentValues('repeat'), ['all', 'one']);
+  });
+}
+
+test('mute overlay: the target’s confirming report ends it, a later change by the target shows', async () => {
+  const fp = await fpMod();
+  await controlFresh(fp, targetDev({ muted: false }));
+  fp.toggleMute(); await settle();
+  await staleReport({ muted: true });           // the target confirms
+  await staleReport({ muted: false });          // then someone unmutes it on the target itself
+  fp.toggleMute(); await settle();
+  assert.deepEqual(sentValues('mute'), [true, true], 'the second press acts on the reported false');
+});
+
+test('mute overlay: leaving remote mode drops it', async () => {
+  const fp = await fpMod();
+  await controlFresh(fp, targetDev({ muted: false }));
+  fp.toggleMute(); await settle();
+  store.remoteTarget = null;
+  fp.syncMuteUI();
+  await startControlling(targetDev({ muted: false }));
+  fp.toggleMute(); await settle();
+  assert.deepEqual(sentValues('mute'), [true], 'a fresh session starts from the report');
+});
+
+test('mute overlay: after 4 s without a confirmation the reported value shows again', async () => {
+  const fp = await fpMod();
+  await controlFresh(fp, targetDev({ muted: false }));
+  fp.toggleMute(); await settle();
+  await staleReport({ muted: false });          // the target never applied it
+  const realNow = Date.now;
+  Date.now = () => realNow() + 4100;
+  try {
+    fp.toggleMute(); await settle();
+  } finally { Date.now = realNow; }
+  assert.deepEqual(sentValues('mute'), [true, true], 'the expired press no longer decides the next one');
+});
+
+test('mute overlay: switching control to another device drops it', async () => {
+  const fp = await fpMod();
+  await controlFresh(fp, targetDev({ muted: false }));
+  fp.toggleMute(); await settle();
+  // Both devices report unmuted; control moves to the second one.
+  const ev = devicesEvent(targetDev({ muted: false }));
+  ev.devices['dev-two'] = targetDev({ name: 'Second', muted: false });
+  es().emit('devices', ev); await settle();
+  store.remoteTarget = 'dev-two';
+  fp.toggleMute(); await settle();
+  const last = remoteCmds().filter(c => c.body.action === 'mute').at(-1);
+  assert.equal(last.body.target_device_id, 'dev-two');
+  assert.equal(last.body.value, true, 'the press on dev-tgt does not decide dev-two’s mute');
+});
