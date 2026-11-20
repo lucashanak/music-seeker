@@ -16,6 +16,9 @@ globalThis.fetch = async (url) => {
 };
 globalThis.document = { createElement: () => ({ style: {}, classList: { add() {}, remove() {} }, appendChild() {}, addEventListener() {}, setAttribute() {} }), dispatchEvent() {}, getElementById: () => null, addEventListener() {}, querySelector: () => null };
 globalThis.window = globalThis;
+// downloads.js announces a finished job with window.dispatchEvent('librarychange') (GitHub #12)
+if (typeof globalThis.dispatchEvent !== 'function') globalThis.dispatchEvent = () => true;
+if (typeof globalThis.CustomEvent !== 'function') globalThis.CustomEvent = class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } };
 globalThis.addEventListener = () => {};
 globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
 globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
