@@ -588,3 +588,35 @@ test('the Tempo preference goes by the felt tempo, like the badge', async () => 
     assert.equal(queue[dj.pickSmartNext(queue, 0, tracks[0], 'bpm', false)].name, 'Ballad 64');
   } finally { globalThis.localStorage = saved; }
 });
+
+// A deck the DJ desk drives without key lock: gliding it would slide its key while it is
+// heard, and switching its key lock clicks — so a transition leaves both alone.
+test('a desk deck without key lock keeps its tempo and mode through a transition; the incoming deck matches it', () => {
+  const o = deck(1, 200), i = deck(0, 0);
+  o.element.playbackRate = 1.03; o.element.preservesPitch = false; o.element._deskVinyl = true;
+  const r = D.scheduleDjTransitionV3(ctx, o, i, OUT, { bpm: 86, camelot: '8A' }, { numBeats: 16, tempoRange: 8 });
+  if (r._tempoRamp) r._tempoRamp.cancelled = true;
+  assert.equal(o.element.playbackRate, 1.03);
+  assert.equal(o.element.preservesPitch, false);
+  assert.equal(r.outRate, 1.03);
+  assert.ok(Math.abs(i.element.playbackRate - (82 * 1.03) / 86) < 1e-9, `incoming rate ${i.element.playbackRate}`);
+  assert.ok(Math.abs(r.inRate - (82 * 1.03) / 86) < 1e-9);
+});
+
+test('a desk deck without key lock is not snapped to the original tempo when the tempos cannot be matched', () => {
+  const o = deck(1, 200), i = deck(0, 0);
+  o.element.playbackRate = 0.97; o.element.preservesPitch = false; o.element._deskVinyl = true;
+  const r = D.scheduleDjTransitionV3(ctx, o, i, OUT, { bpm: 104, camelot: '8A' }, { numBeats: 16, tempoRange: 8 });
+  if (r._tempoRamp) r._tempoRamp.cancelled = true;
+  assert.equal(o.element.playbackRate, 0.97);
+  assert.equal(o.element.preservesPitch, false);
+  assert.equal(i.element.playbackRate, 1);
+});
+
+test('an ordinary deck is tempo-matched from both sides with key lock, as before', () => {
+  const o = deck(1, 200), i = deck(0, 0);
+  const r = D.scheduleDjTransitionV3(ctx, o, i, OUT, { bpm: 86, camelot: '8A' }, { numBeats: 16, tempoRange: 8 });
+  if (r._tempoRamp) r._tempoRamp.cancelled = true;
+  assert.ok(Math.abs(r.outRate - 84 / 82) < 1e-9 && Math.abs(r.inRate - 84 / 86) < 1e-9, `${r.outRate} ${r.inRate}`);
+  assert.equal(o.element.preservesPitch, true);
+});

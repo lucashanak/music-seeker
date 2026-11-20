@@ -337,6 +337,20 @@ export function calculatePhaseOffset(outBeatGrid, inBeatGrid, crossfadeStartTime
 /*  Main DJ transition scheduler                                       */
 /* ------------------------------------------------------------------ */
 
+
+/** Key lock for an engine transition. A deck the DJ desk drives without key lock
+ *  (`_deskVinyl`, see deskSetKeyLock in player_v3.js) is special, because switching
+ *  `preservesPitch` clicks in Chromium even at rate 1 (measured 18 in 20):
+ *  - as the OUTGOING deck it is audible at full level, so its mode is never switched here
+ *    (and scheduleDjTransitionV3 holds its tempo — the incoming deck does the matching);
+ *  - as the incoming deck (silent) it is taken back when its rate is 1 and left alone
+ *    otherwise. Every other deck gets the lock, as it always did. */
+export function keyLockForTransition(el, outgoing = false) {
+  if (el._deskVinyl && (outgoing || el.playbackRate !== 1)) return;
+  if (el.preservesPitch !== true) el.preservesPitch = true;
+  el._deskVinyl = false; el._deskDriven = false;
+}
+
 /**
  * Schedule a DJ-quality transition between two decks.
  * This is the main entry point called by player_v2.js.
@@ -376,8 +390,8 @@ export function scheduleDjTransition(ctx, outDeck, inDeck, outData, inData, opts
     outRate = Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / outBpm));
     inRate = Math.max(1 - tempoRange, Math.min(1 + tempoRange, midBpm / inBpm));
   }
-  outDeck.element.preservesPitch = true;
-  inDeck.element.preservesPitch = true;
+  keyLockForTransition(outDeck.element, true);
+  keyLockForTransition(inDeck.element);
   inDeck.element.playbackRate = inRate;
   // Outgoing ramps gradually via requestAnimationFrame
   if (outRate !== 1.0 && outDeck.element.playbackRate !== outRate) {
@@ -991,8 +1005,8 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
     // No tempo stretch — force rate 1 on both decks (no rAF ramp, no PLL).
     outDeck.element.playbackRate = 1;
     inDeck.element.playbackRate = 1;
-    outDeck.element.preservesPitch = true;
-    inDeck.element.preservesPitch = true;
+    keyLockForTransition(outDeck.element, true);
+    keyLockForTransition(inDeck.element);
 
     // Beat-based duration at rate=1, else fallback; clamp to an audible range.
     // Uses the shared webkitCrossfadeDuration helper so player_v3's trigger lead
@@ -1063,6 +1077,18 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
       inRate = inRatio;
       tempoMatched = true;
     }
+    // A deck the DJ desk drives without key lock keeps the tempo the DJ gave it: gliding
+    // it would slide its key while it is still heard. The incoming deck (silent at the
+    // start) does all of the matching, or none when that does not fit the range.
+    if (outDeck.element._deskVinyl) {
+      const cur = outDeck.element.playbackRate || 1;
+      const need = (outBpm * cur) / inBpmFolded;
+      outRate = cur;
+      tempoMatched = need >= lo && need <= hi;
+      inRate = tempoMatched ? need : 1;
+    }
+  } else if (outDeck.element._deskVinyl) {
+    outRate = outDeck.element.playbackRate || 1;
   }
 
   /* ---- 2. Duration (based on the outgoing track's own tempo, independent of
@@ -1122,8 +1148,8 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
    * now delays starting the PLL until after the glide completes (glideDur), so
    * the two never fight over the same AudioElement.playbackRate.
    */
-  outDeck.element.preservesPitch = true;
-  inDeck.element.preservesPitch = true;
+  keyLockForTransition(outDeck.element, true);
+  keyLockForTransition(inDeck.element);
 
   const startOutRate = outDeck.element.playbackRate || 1;
   let inRate0 = inRate;
@@ -1169,9 +1195,11 @@ export function scheduleDjTransitionV3(ctx, outDeck, inDeck, outData, inData, op
   } else {
     // No tempo match (bail-out or missing bpm): force rate 1 on both decks —
     // nothing to glide, no PLL will be started (see player_v3).
-    outDeck.element.playbackRate = 1;
+    // (A desk deck without key lock stays at the DJ's tempo: see step 1.)
+    const outKeep = outDeck.element._deskVinyl ? startOutRate : 1;
+    if (outDeck.element.playbackRate !== outKeep) outDeck.element.playbackRate = outKeep;
     inDeck.element.playbackRate = 1;
-    _tempoRamp.outBase = 1;
+    _tempoRamp.outBase = outKeep;
     _tempoRamp.inBase = 1;
   }
 

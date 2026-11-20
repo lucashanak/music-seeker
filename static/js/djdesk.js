@@ -146,6 +146,7 @@ export async function openDesk() {
   _refreshInfo();
   _syncMode();
   _syncCueUi();
+  _applyKeyLock();
   _acquireCue();
   _hydrate();
   if (!_raf) _raf = requestAnimationFrame(_frame);
@@ -740,6 +741,24 @@ function _setRate(key, rate, quiet) {
   return ok;
 }
 
+// Key lock: off by default — with it Chromium clicks whenever the tempo leaves or returns
+// to the original (see deskSetKeyLock in player_v3.js). One setting for both decks.
+function _keyLockOn() { try { return localStorage.getItem('ms_desk_keylock') === '1'; } catch { return false; } }
+function _applyKeyLock() {
+  const on = _keyLockOn();
+  try { if (_eng && typeof _eng.deskSetKeyLock === 'function') _eng.deskSetKeyLock(on); } catch {}
+  for (const k of KEYS) {
+    const b = _ui[k] && _ui[k].keylock;
+    if (!b) continue;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
+function _toggleKeyLock() {
+  try { localStorage.setItem('ms_desk_keylock', _keyLockOn() ? '0' : '1'); } catch {}
+  _applyKeyLock();
+}
+
 function _setRange(key, r) {
   _range[key] = r;
   const ui = _ui[key];
@@ -1255,7 +1274,7 @@ function _buildDeck(key) {
     root, art: q('.dd-art'), name: q('.dd-name'), artist: q('.dd-artist'), badge: q('.dd-badge'),
     bpm: q('.dd-bpm'), keyEl: q('.dd-key'), energy: q('.dd-energy'), pitchRead: q('.dd-pitch-read'),
     zoom: q('.dd-zoom'), over: q('.dd-over'), elapsed: q('.dd-elapsed'), remain: q('.dd-remain'),
-    pitch: q('.dd-pitch-range'), rangeBtn: q('[data-act="range"]'), pfl: q('[data-act="pfl"]'),
+    pitch: q('.dd-pitch-range'), rangeBtn: q('[data-act="range"]'), keylock: q('[data-act="keylock"]'), pfl: q('[data-act="pfl"]'),
     play: q('[data-act="play"]'), sig: '', bpmHtml: null, playing: null, pitchDrag: false,
   };
   q('.dd-letter').textContent = key;
@@ -1274,6 +1293,7 @@ function _buildDeck(key) {
     else if (act === 'sync') _sync(key);
     else if (act === 'pitch0') { if (_canDrive(key, 'change its tempo')) _setRate(key, 1); }
     else if (act === 'range') _setRange(key, _range[key] === 8 ? 16 : 8);
+    else if (act === 'keylock') _toggleKeyLock();
   });
   for (const b of root.querySelectorAll('.dd-nudge')) {
     const dir = b.dataset.act === 'nudge+' ? 1 : -1;

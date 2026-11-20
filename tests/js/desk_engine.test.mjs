@@ -1238,6 +1238,64 @@ test('deskInfo().loanIndex follows the lent track after a queue insert above it'
   assert.equal(store.playerQueue[P.deskInfo().loanIndex], item);
 });
 
+// 8. Key lock is off unless asked for: Chromium clicks on every crossing of the original
+//    tempo while its time-stretcher is on (measured 18/20 with it, 0/20 without).
+test('the desk drives a deck without key lock by default, and with it when switched on', async () => {
+  await fresh();
+  await lendAndLoad(2);
+  const i = P.deskInfo(), live = el(i.active), lent = el(i.loan);
+  assert.equal(P.deskKeyLock(), false);
+  assert.equal(lent.preservesPitch, false, 'lent deck: no stretcher');
+  assert.equal(P.deskSetRate(i.active, 1.03), true);
+  assert.equal(live.playbackRate, 1.03);
+  assert.equal(live.preservesPitch, false, 'live deck: no stretcher once the desk sets its tempo');
+  assert.equal(P.deskSetKeyLock(true), true);
+  assert.equal(live.preservesPitch, true);
+  assert.equal(lent.preservesPitch, true);
+  assert.equal(P.deskSetRate(i.loan, 0.97), true);
+  assert.equal(lent.preservesPitch, true);
+  P.deskSetKeyLock(false);
+  assert.equal(live.preservesPitch, false);
+  assert.equal(lent.preservesPitch, false);
+});
+
+test('a deck the desk only shows keeps its key lock: opening, the KEY switch and "0" do not touch it', async () => {
+  await fresh();
+  const k = P.deskInfo().active, live = el(k);
+  P.deskSetKeyLock(false);
+  assert.equal(live.preservesPitch, true, 'KEY off on an untouched live deck');
+  assert.notEqual(live._deskVinyl, true);
+  assert.equal(P.deskSetRate(k, 1), true);
+  assert.equal(live.preservesPitch, true, '"0" on an untouched live deck');
+  P.deskSetKeyLock(true); P.deskSetKeyLock(false);
+  assert.equal(live.preservesPitch, true);
+});
+
+test('an engine transition never switches the mode of an audible desk deck; a silent one at the original tempo is taken back', async () => {
+  const { keyLockForTransition } = await import('../../static/js/djmix.js');
+  const mk = (rate) => ({ preservesPitch: false, _deskVinyl: true, _deskDriven: true, playbackRate: rate });
+  const outAt1 = mk(1); keyLockForTransition(outAt1, true);
+  assert.deepEqual([outAt1.preservesPitch, outAt1._deskVinyl], [false, true], 'outgoing at 1.0: switching would click at full level');
+  const outPitched = mk(1.03); keyLockForTransition(outPitched, true);
+  assert.deepEqual([outPitched.preservesPitch, outPitched._deskVinyl], [false, true]);
+  const inPitched = mk(1.03); keyLockForTransition(inPitched);
+  assert.deepEqual([inPitched.preservesPitch, inPitched._deskVinyl], [false, true]);
+  const inAt1 = mk(1); keyLockForTransition(inAt1);
+  assert.deepEqual([inAt1.preservesPitch, inAt1._deskVinyl, inAt1._deskDriven], [true, false, false]);
+  const plain = { preservesPitch: true, playbackRate: 0.96 }; keyLockForTransition(plain, true);
+  assert.equal(plain.preservesPitch, true);
+});
+
+test('an engine load gives a deck its key lock back (the rate is 1 again)', async () => {
+  await fresh();
+  const k = P.deskInfo().active;
+  P.deskSetRate(k, 1.04);
+  assert.equal(el(k).preservesPitch, false);
+  await fresh();
+  assert.equal(el(P.deskInfo().active).preservesPitch, true);
+  assert.equal(el(P.deskInfo().active)._deskVinyl, false);
+});
+
 test('no engine event listener threw during this file', () => {
   assert.deepEqual(allErrors.map(e => String(e && e.stack || e).split('\n').slice(0, 2).join(' | ')), []);
 });

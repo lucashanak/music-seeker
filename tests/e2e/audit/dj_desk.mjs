@@ -614,6 +614,37 @@ const scenarios = {
       await s.browser.close();
     }
   },
+
+  // Chromium clicks each time the tempo leaves or returns to the original while its
+  // time-stretcher is on, so the desk drives a deck without key lock unless asked.
+  async keylock() {
+    const s = await session('desktop', { ms_desk_keylock: '0' });
+    const { page } = s;
+    try {
+      await start(page, TRACKS.slice(0, 3));
+      await page.waitForFunction(() => { const g = window.__m.eng.deskGraph(), i = window.__m.eng.deskInfo(); return g && i.active && g.els[i.active].currentTime > 2; }, null, { timeout: 60000 });
+      await openDeskUi(page);
+      const key = await page.evaluate(() => window.__m.eng.deskInfo().active);
+      const state = () => page.evaluate((key) => { const e = window.__m.eng.deskGraph().els[key], b = document.querySelector(`#ddDeck${key} [data-act="keylock"]`);
+        return { rate: +e.playbackRate.toFixed(3), lock: e.preservesPitch, btn: !!b, pressed: b && b.getAttribute('aria-pressed'), on: b && b.classList.contains('on'), paused: e.paused }; }, key);
+      const move = (pct) => page.evaluate(([key, pct]) => { const r = document.querySelector(`#ddDeck${key} .dd-pitch-range`); r.value = String(pct); r.dispatchEvent(new Event('input', { bubbles: true })); }, [key, pct]);
+      const z = await state();
+      check('keylock: opening the desk leaves the playing deck as it was (key lock on, tempo 1)', z.lock === true && z.rate === 1 && z.btn, z);
+      await move(3); await sleep(300);
+      const a = await state();
+      check('keylock: a moved pitch fader changes the tempo without the time-stretcher', a.rate === 1.03 && a.lock === false && a.btn && a.pressed === 'false' && !a.paused, a);
+      await page.click(`#ddDeck${key} [data-act="keylock"]`); await sleep(300);
+      const b = await state();
+      check('keylock: the KEY button switches the stretcher on for the playing deck', b.lock === true && b.pressed === 'true' && b.on && b.rate === 1.03, b);
+      const saved = await page.evaluate(() => localStorage.getItem('ms_desk_keylock'));
+      check('keylock: the choice is remembered', saved === '1', saved);
+      await page.click(`#ddDeck${key} [data-act="keylock"]`); await sleep(300);
+      const c = await state();
+      check('keylock: switching it off again releases the stretcher', c.lock === false && c.pressed === 'false', c);
+      await move(0); await sleep(200);
+      check('keylock: no page errors', s.errors.length === 0, s.errors.slice(0, 4).join(' | '));
+    } finally { await s.browser.close(); }
+  },
 };
 
 for (const name of (want.length ? want : Object.keys(scenarios))) {

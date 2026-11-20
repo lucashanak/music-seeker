@@ -309,6 +309,12 @@ function _absUrl(src) {
 }
 let _restorePos = 0;     // position_seconds of the queue state loaded last
 let _restoreSeek = null; // loadQueueState's pending "seek to the saved position"
+/** An engine load puts the rate back to 1: a deck the desk drove without key lock gets
+ *  the lock back with it (see deskSetKeyLock). */
+function _resetPitchMode(deck) {
+  if (deck.preservesPitch !== true) deck.preservesPitch = true;
+  deck._deskVinyl = false; deck._deskDriven = false;
+}
 function _setDeckSrc(deck, src) {
   // Safety net: the engine is loading this deck — if the desk holds it, it comes back first.
   if (_deskLoan && _deskLoan.el === deck) _deskRevoke('advance', { handover: true });
@@ -316,6 +322,7 @@ function _setDeckSrc(deck, src) {
   const abs = _absUrl(src);
   if (deck === _deckA) _expectedSrcA = abs;
   else _expectedSrcB = abs;
+  _resetPitchMode(deck);
   deck.src = src;
   deck.load();
 }
@@ -426,6 +433,7 @@ function _canRearm(deck) {
 }
 function _rearmDeck(deck) {
   const old = deck.src, pos = deck.currentTime || 0, rate = deck.playbackRate || 1;
+  const mode = { lock: deck.preservesPitch, vinyl: deck._deskVinyl, driven: deck._deskDriven }; // the same stream comes back: so does the desk's pitch mode
   const gen = _loadGen;
   _rearmedSrc = old;
   _rearmPending = true; // the watchdog's error net must not skip what is being rescued
@@ -452,6 +460,7 @@ function _rearmDeck(deck) {
       deck.removeEventListener('loadedmetadata', onMeta);
       if (deck !== _activeDeckEl() || deck.src !== src) return;
       if (pos > 0.05) { try { deck.currentTime = pos; } catch {} }
+      if (mode.vinyl || mode.driven) { deck.preservesPitch = mode.lock; deck._deskVinyl = !!mode.vinyl; deck._deskDriven = !!mode.driven; }
       deck.playbackRate = rate; // load() reset it
       go();
     };
@@ -2512,6 +2521,7 @@ function _primeDeck(item, pos) {
   const restoreSrc = `/api/player/stream?${params}&quality=${streamQuality()}`;
   if (deck === _deckA) _expectedSrcA = _absUrl(restoreSrc);
   else _expectedSrcB = _absUrl(restoreSrc);
+  _resetPitchMode(deck);
   deck.src = restoreSrc;
   deck.preload = 'none';
   _restorePos = pos > 0 ? pos : 0;
@@ -3504,7 +3514,8 @@ export function deskLend() {
   resetDeckAfterTransitionV3(_deckDesc(el)); // crossfade gain 0 = nothing of it in the master
   _inactiveLevel().gain.value = 1;
   el.volume = 1;            // its level is the cue bus's business, not the master fader's
-  el.preservesPitch = true; // pitch changes on the desk are tempo changes (key lock)
+  el._deskDriven = true; // the lent deck is the desk's: its mode is set now, while it is silent
+  _deskPitchMode(el);
   _deskLoan = { key: _deskKeyOf(el), el, item: null, index: null, gen: 0 };
   return _deskLoan.key;
 }
@@ -3733,10 +3744,36 @@ export function deskSetRate(key, rate) {
     clearTimeout(_beatSyncStartTimer); _beatSyncStartTimer = null;
     if (_beatSync) { _beatSync.stop(); _beatSync = null; }
   } else if (!(_deskLoan && el === _deskLoan.el)) return false;
-  el.preservesPitch = true;
+  // The live deck becomes the desk's only when its tempo really leaves the original:
+  // opening the desk, or pressing "0" on an untouched deck, changes nothing about it.
+  if (r !== 1 || el._deskDriven) { el._deskDriven = true; _deskPitchMode(el); }
   el.playbackRate = r;
   return true;
 }
+
+/** Key lock on the desk. OFF (the default) = the pitch fader works like a turntable: the
+ *  key moves with the tempo. ON = the browser time-stretches, and Chromium clicks every
+ *  time the rate enters or leaves the narrow zone around 1.0 (measured: 18 clicks in 20
+ *  crossings with it, 0 without) — i.e. on every touch of a fader resting at zero and on
+ *  every nudge. Switching `preservesPitch` itself clicks too (18 in 20, even at rate 1),
+ *  so it is switched as rarely as possible: on a deck the desk DRIVES (`_deskDriven`: the
+ *  lent deck, and a live deck once the desk moved its tempo off 1), never on a deck it
+ *  merely shows. Without key lock such a deck is `_deskVinyl`; the engine's transitions
+ *  leave it alone while its rate is not 1 (djmix.js `keyLockForTransition`) and every
+ *  engine load gives the lock back (`_resetPitchMode`). */
+let _deskKeyLock = false;
+function _deskPitchMode(el) {
+  if (el.preservesPitch !== _deskKeyLock) el.preservesPitch = _deskKeyLock;
+  el._deskVinyl = !_deskKeyLock;
+}
+export function deskSetKeyLock(on) {
+  _deskKeyLock = !!on;
+  if (_crossfading && !_deskMixValid()) return _deskKeyLock; // an engine transition owns both decks; the next desk move applies it
+  const els = new Set([_deskLoan && _deskLoan.el, _activeDeckEl(), _deskMix && _deskMix.outEl, _deskMix && _deskMix.inEl]);
+  for (const el of els) if (el && el._deskDriven) _deskPitchMode(el);
+  return _deskKeyLock;
+}
+export function deskKeyLock() { return _deskKeyLock; }
 
 /** Seek a deck: the live one through seekLocal (it handles progressive streams). */
 export function deskSeek(key, t) {

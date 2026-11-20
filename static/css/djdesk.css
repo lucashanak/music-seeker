@@ -114,6 +114,7 @@
 .dd-primary { background: var(--accent); border-color: var(--accent); color: #0a0a0f; }
 .dd-primary:active:not(:disabled) { background: #8fcc35; }
 .dd-pfl.on { background: #ff9f43; border-color: #ff9f43; color: #111; }
+.dd-btn[data-act="keylock"].on { background: #ff9f43; border-color: #ff9f43; color: #111; }
 .dd-nudge { touch-action: none; -webkit-touch-callout: none; min-width: 40px; }
 .dd-mini { min-height: 30px; padding: 4px 8px; font-size: 11px; }
 .dd-ic { padding: 4px 7px; }
