@@ -25,6 +25,10 @@ class CastRequest(BaseModel):
     next: dict | None = None
     repeat: str = "off"
     shuffle: bool = False
+    # What the page's recommender would play once the queue is over ([{name, artist,
+    # album, image, duration_ms, id?}], sent only when this is the queue's last track):
+    # the follower appends these to the saved queue one at a time. Absent = none.
+    autoplay: list[dict] | None = None
 
 
 class NextHintRequest(BaseModel):
@@ -32,6 +36,7 @@ class NextHintRequest(BaseModel):
     next: dict | None = None
     repeat: str = "off"
     shuffle: bool = False
+    autoplay: list[dict] | None = None
 
 
 class SeekRequest(BaseModel):
@@ -77,7 +82,7 @@ async def cast_to_device(req: CastRequest, request: Request, user: dict = Depend
             sk, req.device_id, req.name, req.artist, token,
             album=req.album, image=req.image, duration_ms=req.duration_ms,
             start_seconds=max(0.0, req.start_seconds or 0.0), queue_index=req.queue_index,
-            next_item=req.next, repeat=req.repeat, shuffle=req.shuffle,
+            next_item=req.next, repeat=req.repeat, shuffle=req.shuffle, autoplay=req.autoplay,
             username=user["username"], client_device=_get_device_id(request), by="client",
         ), timeout=40)
     except asyncio.TimeoutError:
@@ -109,7 +114,7 @@ async def next_hint(req: NextHintRequest, request: Request, user: dict = Depends
     """What the client would play after the track it believes is playing. Refused
     (409 stale) when the server has moved on — the client takes the status first."""
     res = await dlna.set_next_hint(_session_key(user, request), req.queue_index, req.next,
-                                   repeat=req.repeat, shuffle=req.shuffle)
+                                   repeat=req.repeat, shuffle=req.shuffle, autoplay=req.autoplay)
     if res == "no_session":
         raise HTTPException(400, "No active cast session")
     if res == "stale":

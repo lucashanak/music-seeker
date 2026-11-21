@@ -89,6 +89,10 @@ globalThis.fetch = async (url, opts = {}) => {
     if (server.queueDelay) await new Promise((r) => setTimeout(r, server.queueDelay));
     return reply(200, body);
   }
+  if (url === '/api/player/recommendations') {
+    if (server.recsFail) return reply(500, { detail: 'boom' });
+    return reply(200, { tracks: (server.recTracks || []).map((r) => ({ ...r })) });
+  }
   if (url === '/api/dlna/next-hint') return reply(server.hintStatus, server.hintStatus === 200 ? { ok: true } : { detail: { stale: true } });
   return reply(200, { ok: true });
 };
@@ -120,7 +124,7 @@ const calls = (method, url) => server.calls.filter(([m, u]) => m === method && u
 function setup(t, { follow = false } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
   cast._internals.reset();
-  Object.assign(server, { calls: [], statusDelay: 0, statusFail: false, statusHang: false, castSeq: 0, castFail: null, sessionId: undefined, savedQueue: null, queueDelay: 0, hintStatus: 200,
+  Object.assign(server, { calls: [], statusDelay: 0, statusFail: false, statusHang: false, castSeq: 0, castFail: null, sessionId: undefined, savedQueue: null, queueDelay: 0, hintStatus: 200, recTracks: [], recsFail: false,
     outstanding: 0, maxOutstanding: 0, status: () => ({ active: false }) });
   store.playerQueue = [A, B, C];
   store.playerIndex = 0;
@@ -1149,4 +1153,617 @@ test('castState carries the receiver\'s position, sample time, duration and play
     { position: cast.castState.position, duration: cast.castState.duration, playing: cast.castState.playing },
     { position: 0, duration: 0, playing: false });
   assert.equal(cast.castState.positionAt, Date.now());
+});
+
+// ── Autoplay past the end of the queue (2026-11-21) ──
+// Production: the phone's screen off, the cast on the queue's last row (174 of 175),
+// hint next null → the server ended the queue. The recommender lives in the page; the
+// page now hands its next picks to the server at the end of the queue, and adopts the
+// rows the server appended from them.
+const R = await import('../../static/js/recommendations.js');
+const R1 = { id: 'sp-r1', name: 'Rec One', artist: 'Reco A', album: 'LP', image: 'http://img/r1', duration_ms: 180000.4, bpm: 90 };
+const R2 = { name: 'Rec Two', artist: 'Reco B', duration_ms: 190000 };
+const R3 = { name: 'Rec Three', artist: 'Reco C' };
+const wire = (r) => r.map((x) => ({ name: x.name, artist: x.artist, album: x.album || '', image: x.image || '',
+  duration_ms: Math.round(x.duration_ms || 0), ...(x.id ? { id: x.id } : {}) }));
+const trC = { queue_index: 2, name: C.name, artist: C.artist, by: 'client' };
+const trR = (r, qi) => ({ queue_index: qi, name: r.name, artist: r.artist, album: r.album || '', image: r.image || '',
+  duration_ms: Math.round(r.duration_ms || 0), by: 'server', autoplay: true });
+
+// The engine's side as player_v3 / player wire it: the real recommender and queue.js.
+function setupAutoplay(t, { recs = [R1, R2, R3], atEnd = true } = {}) {
+  const eng = setup(t);
+  R._internals.reset();
+  Q.setAutoplayStartIndex(-1);
+  server.recTracks = recs;
+  store.radioMode = false;
+  store.remoteTarget = null;
+  eng.peeks = 0;
+  if (atEnd) { store.playerIndex = 2; eng.upcoming = null; }
+  cast.initCast({
+    peekAutoplay: (n) => { eng.peeks++; return R.peekNextRecs(n); },
+    appendAutoplayRows: (rows, at) => { Q.appendAutoplayRows(rows, at); R.markRecsPlayed(rows); },
+  });
+  t.after(() => { cast.initCast({ peekAutoplay: null, appendAutoplayRows: null }); R._internals.reset(); Q.setAutoplayStartIndex(-1); store.radioMode = false; store.remoteTarget = null; });
+  return eng;
+}
+const hintBodies = () => calls('POST', '/api/dlna/next-hint').map((c) => c[2]);
+const recLoads = () => calls('POST', '/api/player/recommendations').length;
+
+test('autoplay: a row the server appended is pushed into the same queue array, marked, never re-cast', async (t) => {
+  const eng = setupAutoplay(t);
+  const q = store.playerQueue;
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  assert.deepEqual(hintBodies().at(-1).autoplay, wire([R1, R2, R3]));
+  // The page sleeps; C ends; the server appends Rec One to the saved queue and casts it.
+  const rowR1 = wire([R1])[0];
+  server.savedQueue = { queue: [A, B, C, rowR1], current_index: 3, shuffle_order: null };
+  server.status = follow('PLAYING', 5, 180, 2, trR(R1, 3), { autoplay_left: 2 });
+  t.mock.timers.setTime(Date.now() + 600_000);
+  await run(t, 4000);
+  assert.equal(store.playerQueue, q, 'the SAME array (search.js tests its identity)');
+  assert.deepEqual(q.map((x) => x.name), [A.name, B.name, C.name, R1.name]);
+  assert.equal(q[3].id, 'sp-r1');
+  assert.equal(Q.autoplayStart(), 3, 'the "Autoplay" divider sits at the first appended row');
+  assert.deepEqual(eng.adopted, [[3, R1.name]]);
+  assert.equal(store.playerIndex, 3);
+  assert.equal(calls('POST', '/api/dlna/cast').length, 0, 'adopted, not cast');
+  assert.equal(eng.next, 0, 'and the engine did not advance on its own');
+  // The recommender moved past it, so the next hint offers what comes after.
+  assert.equal(R._internals.state().cursor, 0);
+  assert.deepEqual(R._internals.state().played.map((x) => x.name), [R1.name]);
+  await run(t, 4000);
+  const last = hintBodies().at(-1);
+  assert.equal(last.queue_index, 3);
+  assert.deepEqual(last.autoplay, wire([R2, R3]));
+});
+
+test('autoplay: several rows appended while the page slept all arrive; the divider stays at the first', async (t) => {
+  const eng = setupAutoplay(t);
+  const q = store.playerQueue;
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  const rows = wire([R1, R2]);
+  server.savedQueue = { queue: [A, B, C, ...rows], current_index: 4, shuffle_order: null };
+  server.status = follow('PLAYING', 5, 190, 3, trR(R2, 4));
+  t.mock.timers.setTime(Date.now() + 900_000);
+  await run(t, 4000);
+  assert.equal(store.playerQueue, q);
+  assert.deepEqual(q.map((x) => x.name), [A.name, B.name, C.name, R1.name, R2.name]);
+  assert.equal(Q.autoplayStart(), 3);
+  assert.deepEqual(eng.adopted, [[4, R2.name]]);
+  assert.equal(R._internals.state().cursor, 1, 'both picks count as played');
+  // The next one the server appends joins the same tail.
+  server.savedQueue = { queue: [A, B, C, ...rows, ...wire([R3])], current_index: 5, shuffle_order: null };
+  server.status = follow('PLAYING', 5, 0, 4, trR(R3, 5));
+  await run(t, 4000);
+  assert.equal(q.length, 6);
+  assert.equal(Q.autoplayStart(), 3);
+  assert.equal(store.playerIndex, 5);
+  assert.equal(calls('POST', '/api/dlna/cast').length, 0);
+});
+
+test('autoplay: with the saved queue unreadable, the row comes from the status', async (t) => {
+  const eng = setupAutoplay(t);
+  const q = store.playerQueue;
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  server.savedQueue = { queue: [B, A], current_index: 0 }; // not ours + rows: unusable
+  server.status = follow('PLAYING', 5, 180, 2, trR(R1, 3));
+  await run(t, 4000);
+  assert.equal(store.playerQueue, q);
+  assert.deepEqual(q.map((x) => x.name), [A.name, B.name, C.name, R1.name]);
+  assert.equal(Q.autoplayStart(), 3);
+  assert.deepEqual(eng.adopted, [[3, R1.name]]);
+  assert.equal(eng.saved.at(-1), null, 'no server order is taken from a queue that is not ours');
+});
+
+test('autoplay: a server track in no row WITHOUT the autoplay mark is still not adopted', async (t) => {
+  const eng = setupAutoplay(t);
+  t.mock.method(console, 'warn', () => {});
+  server.savedQueue = { queue: [A, B, C, wire([R1])[0]], current_index: 3 };
+  server.status = follow('PLAYING', 5, 180, 2, { ...trR(R1, 3), autoplay: undefined });
+  cast.startCastPoll();
+  await run(t, 4000);
+  assert.deepEqual(eng.adopted, []);
+  assert.equal(store.playerQueue.length, 3);
+});
+
+test('autoplay: an awake page does not advance beside the server (no double append)', async (t) => {
+  const eng = setupAutoplay(t);
+  const q = store.playerQueue;
+  server.status = follow('PLAYING', 290, 300, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  assert.ok(hintBodies().at(-1).autoplay, 'the server holds the list');
+  // The track ends. The server is appending and casting: STOPPED, but NOT queue_ended.
+  server.status = follow('STOPPED', 0, 300, 1, trC, { queue_ended: false, autoplay_left: 3 });
+  await run(t, 8000);
+  assert.equal(eng.next, 0, 'the page leaves the end of the queue to the server');
+  assert.equal(q.length, 3);
+  server.savedQueue = { queue: [A, B, C, wire([R1])[0]], current_index: 3 };
+  server.status = follow('PLAYING', 2, 180, 2, trR(R1, 3), { autoplay_left: 2 });
+  await run(t, 8000);
+  assert.equal(eng.next, 0);
+  assert.equal(calls('POST', '/api/dlna/cast').length, 0);
+  assert.deepEqual(q.map((x) => x.name), [A.name, B.name, C.name, R1.name], 'exactly one new row');
+  assert.deepEqual(eng.adopted, [[3, R1.name]]);
+});
+
+test('autoplay: when the server has no list, the end of the queue is still handed to the engine', async (t) => {
+  const eng = setupAutoplay(t, { recs: [] });
+  server.status = follow('PLAYING', 290, 300, 1, trC);
+  cast.startCastPoll();
+  await run(t, 4000);
+  server.status = follow('STOPPED', 0, 300, 1, trC, { queue_ended: true, queue_ended_ago: 1 });
+  await run(t, 6000);
+  assert.equal(eng.next, 1);
+  assert.deepEqual(eng.nextOpts[0], { reason: 'ended' });
+});
+
+// ── Review round 2 (2026-11-21): the list travels with EVERY cast and hint ──
+// M2: a phone locked for the whole queue reaches the last row by the server's own
+// advances — no page is awake to hand the list over then. M1: a body WITHOUT `autoplay`
+// means "not known" (the server keeps its list); only [] means "nothing".
+test('autoplay: every hint carries the picks, wherever in the queue the cast is; nothing is consumed', async (t) => {
+  setupAutoplay(t, { atEnd: false });
+  server.status = follow('PLAYING', 10, 300, 1, trA);
+  cast.startCastPoll();
+  await run(t, 10_000);
+  const bodies = hintBodies();
+  assert.ok(bodies.length >= 1);
+  assert.ok(bodies.every((b) => !Array.isArray(b.autoplay) || b.autoplay.length > 0),
+    'while the recommender loads, the hint says nothing about autoplay — never an emptying []');
+  assert.deepEqual(bodies.at(-1), { queue_index: 0, next: { queue_index: 1, name: B.name, artist: B.artist, album: '', image: '', duration_ms: 600000 },
+    repeat: 'off', shuffle: false, autoplay: wire([R1, R2, R3]) }, 'row 0 of 3, and the list is there');
+  assert.equal(recLoads(), 1, 'the picks are loaded once');
+  assert.equal(R._internals.state().cursor, -1, 'peeking consumed nothing');
+  assert.deepEqual(R._internals.state().played, []);
+  const sent = hintBodies().length;
+  await run(t, 30_000);
+  assert.equal(hintBodies().length, sent, 'an unchanged list is not sent again');
+  assert.equal(recLoads(), 1);
+});
+
+test('autoplay: repeat and radio say [] (nothing follows), a controller says nothing; a changed list is sent again', async (t) => {
+  setupAutoplay(t);
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 8000);
+  assert.deepEqual(hintBodies().at(-1).autoplay, wire([R1, R2, R3]));
+  store.repeatMode = 'all';
+  await run(t, 4000);
+  assert.deepEqual(hintBodies().at(-1).autoplay, [], 'repeat all wraps: no autoplay');
+  assert.equal(hintBodies().at(-1).repeat, 'all');
+  store.repeatMode = 'off';
+  await run(t, 4000);
+  assert.deepEqual(hintBodies().at(-1).autoplay, wire([R1, R2, R3]));
+  store.radioMode = true;
+  await run(t, 4000);
+  assert.deepEqual(hintBodies().at(-1).autoplay, [], 'radio refills itself');
+  store.radioMode = false;
+  await run(t, 4000);
+  assert.deepEqual(hintBodies().at(-1).autoplay, wire([R1, R2, R3]));
+  const n = hintBodies().length;
+  store.remoteTarget = 'other-device';
+  cast._internals.reset(); cast.startCastPoll(); // forget what was sent: a hint goes out again
+  await run(t, 4000);
+  assert.equal(hintBodies().length, n + 1);
+  assert.equal('autoplay' in hintBodies().at(-1), false, 'a controller has no say: the field is absent');
+  store.remoteTarget = null;
+  await run(t, 4000);
+  // The user dismisses the first pick in the panel: the list changed.
+  R.dismissRec(0);
+  await run(t, 4000);
+  assert.deepEqual(hintBodies().at(-1).autoplay, wire([R2, R3]));
+});
+
+test('autoplay: a cast before the recommender knows has NO autoplay field; later casts carry the list, mid-queue too', async (t) => {
+  const eng = setupAutoplay(t, { atEnd: false });
+  // App just reopened: nothing cached. The cast must not say "none" (M1).
+  await cast.castItem(A);
+  let body = calls('POST', '/api/dlna/cast').at(-1)[2];
+  assert.equal('autoplay' in body, false);
+  await flush(); // the load the peek started has answered
+  await cast.castItem(A);
+  body = calls('POST', '/api/dlna/cast').at(-1)[2];
+  assert.deepEqual(body.autoplay, wire([R1, R2, R3]), 'row 0 of 3');
+  assert.equal(body.next.name, B.name);
+  // The current track itself is never offered as its own continuation.
+  store.playerIndex = 2; eng.upcoming = null;
+  server.recTracks = [{ name: C.name.toUpperCase(), artist: C.artist }, R2];
+  R._internals.reset();
+  R.peekNextRecs(20);
+  await flush();
+  await cast.castItem(C);
+  assert.deepEqual(calls('POST', '/api/dlna/cast').at(-1)[2].autoplay, wire([R2]));
+  assert.equal(recLoads(), 2);
+});
+
+test('autoplay: up to 20 picks are sent', async (t) => {
+  const many = Array.from({ length: 30 }, (_, i) => ({ name: `Pick ${i}`, artist: 'Reco' }));
+  setupAutoplay(t, { recs: many });
+  R.peekNextRecs(20);
+  await flush();
+  await cast.castItem(C);
+  assert.equal(calls('POST', '/api/dlna/cast').at(-1)[2].autoplay.length, 20);
+});
+
+test('recommender: peek is null while unknown, the list once loaded, [] when it has nothing — and moves nothing', async (t) => {
+  setup(t);
+  R._internals.reset();
+  t.after(() => R._internals.reset());
+  server.recTracks = [R1, R2, R3];
+  assert.equal(R.peekNextRecs(10), null, 'nothing cached yet — a load starts, the answer is "not known"');
+  assert.equal(R.peekNextRecs(10), null);
+  await flush();
+  assert.equal(recLoads(), 1, 'one load for both calls');
+  assert.deepEqual(R.peekNextRecs(2).map((x) => x.name), [R1.name, R2.name]);
+  assert.deepEqual(R._internals.state().cursor, -1);
+  assert.deepEqual(R._internals.state().played, []);
+  // Rows played on the page's behalf move the cursor; unknown rows change nothing.
+  assert.equal(R.markRecsPlayed([{ name: 'Nobody', artist: 'X' }]), false);
+  assert.equal(R.markRecsPlayed([{ name: R2.name.toUpperCase(), artist: R2.artist }]), true);
+  assert.equal(R._internals.state().cursor, 1);
+  assert.deepEqual(R.peekNextRecs(10).map((x) => x.name), [R3.name]);
+  assert.equal(R.markRecsPlayed([R1]), true);
+  assert.equal(R._internals.state().cursor, 1, 'never backwards');
+  // Nothing at all comes back: [] — but only after the answer, and a failure stays null.
+  R._internals.reset();
+  server.recTracks = [];
+  assert.equal(R.peekNextRecs(10), null);
+  await flush();
+  assert.deepEqual(R.peekNextRecs(10), []);
+  R._internals.reset();
+  server.recsFail = true;
+  assert.equal(R.peekNextRecs(10), null);
+  await flush();
+  assert.equal(R.peekNextRecs(10), null, 'a failed load is not "nothing"');
+});
+
+// H1: the user starts another playlist while the adoption's GET is out and the new
+// cast's POST has not answered — the old autoplay row must not land in the new queue.
+test('autoplay: a new playlist started during the adoption keeps the old autoplay row out', async (t) => {
+  const eng = setupAutoplay(t);
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  server.savedQueue = { queue: [A, B, C, wire([R1])[0]], current_index: 3 };
+  server.queueDelay = 3000;
+  server.status = follow('PLAYING', 5, 180, 2, trR(R1, 3));
+  await run(t, 2500); // the poll saw seq 2; GET /api/player/queue is out
+  assert.equal(calls('GET', '/api/player/queue').length, 1);
+  // The user taps another playlist: a new queue array, and its cast is on its way.
+  const X = { name: 'New One', artist: 'Other' }, Y = { name: 'New Two', artist: 'Other' };
+  const fresh = [X, Y];
+  store.playerQueue = fresh; store.playerIndex = 0; eng.upcoming = { index: 1, item: Y };
+  let release;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (url === '/api/dlna/cast') await new Promise((r) => { release = r; });
+    return realFetch(url, opts);
+  };
+  t.after(() => { globalThis.fetch = realFetch; });
+  const p = cast.castTrack(X);
+  await run(t, 4000); // the GET answers while the POST is still out
+  assert.equal(store.playerQueue, fresh);
+  assert.deepEqual(fresh.map((x) => x.name), ['New One', 'New Two'], 'nothing of the old queue was added');
+  assert.equal(store.playerIndex, 0);
+  assert.deepEqual(eng.adopted, []);
+  release();
+  await p;
+});
+
+// M3: the user queued a track on the last row; the server had already moved on to a pick.
+test('autoplay: the pick the server played goes right after the row it followed — a track queued meanwhile stays ahead', async (t) => {
+  const eng = setupAutoplay(t);
+  const q = store.playerQueue;
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  const N = { name: 'Queued By Hand', artist: 'User' };
+  q.push(N); eng.upcoming = { index: 3, item: N };
+  // The page's save replaced the file after the server appended: the pick is in no file.
+  server.savedQueue = { queue: [A, B, C, N], current_index: 2 };
+  server.status = follow('PLAYING', 5, 180, 2, trR(R1, 3));
+  await run(t, 4000);
+  assert.equal(store.playerQueue, q);
+  assert.deepEqual(q.map((x) => x.name), [A.name, B.name, C.name, R1.name, N.name]);
+  assert.deepEqual(eng.adopted, [[3, R1.name]]);
+  assert.equal(store.playerIndex, 3, 'the pick is current, the queued track is the next row');
+  assert.equal(Q.autoplayStart(), -1, 'no "Autoplay" divider above a track the user queued');
+  assert.equal(calls('POST', '/api/dlna/cast').length, 0);
+});
+
+test('a queue change while casting saves and hints at once (not at the next poll)', async (t) => {
+  const eng = setupAutoplay(t);
+  const q = store.playerQueue;
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  const before = hintBodies().length;
+  assert.equal(hintBodies().at(-1).next, null);
+  // The user queues a track on the last row (the engine: push, saveQueueDebounced).
+  const N = { name: 'Queued By Hand', artist: 'User', duration_ms: 1000 };
+  q.push(N); eng.upcoming = { index: 3, item: N };
+  store.playerSavePending = true;
+  server.calls.length = 0;
+  cast.noteQueueChanged();
+  cast.noteQueueChanged(); // the engine saves more than once per edit
+  await flush(); // no timer runs: this is not the poll
+  const order = server.calls.map(([m, u]) => `${m} ${u}`);
+  assert.deepEqual(order, ['PUT /api/player/queue', 'POST /api/dlna/next-hint'], 'the save first — the hint names a row the file must hold');
+  assert.equal(server.calls[1][2].next.name, N.name);
+  assert.equal(server.calls[1][2].next.queue_index, 3);
+  assert.equal(hintBodies().length, 1);
+  void before;
+  // Nothing changed: nothing is sent.
+  cast.noteQueueChanged();
+  await flush();
+  assert.equal(server.calls.length, 2);
+});
+
+// H2, page side: the page is about to be frozen with a queue save still in its debounce.
+test('hiding the page while casting flushes a pending queue save; a stale page does not', async (t) => {
+  const eng = setupAutoplay(t);
+  const handlers = {};
+  const realAdd = document.addEventListener;
+  document.addEventListener = (ev, fn) => { handlers[ev] = fn; };
+  t.after(() => { document.addEventListener = realAdd; document.hidden = false; });
+  cast.wireControls();
+  assert.equal(typeof handlers.visibilitychange, 'function');
+  globalThis.__onVisibility = handlers.visibilitychange; // wired once per module: kept for the next test
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 4000);
+  store.playerSavePending = true;
+  document.hidden = true;
+  handlers.visibilitychange();
+  await flush();
+  assert.equal(eng.flushes, 1);
+  // Woken long after, hidden again before any status: what it holds is old.
+  document.hidden = false;
+  store.playerSavePending = true;
+  t.mock.timers.setTime(Date.now() + 600_000);
+  document.hidden = true;
+  handlers.visibilitychange();
+  await flush();
+  assert.equal(eng.flushes, 1);
+});
+
+// ── Review round 3 (2026-11-21) ──
+// N2: an empty recommender used to flip [] → null → [] at every reload (two hints and a
+// recommendations POST a minute for the whole cast).
+test('autoplay: an empty recommender says [] once, keeps saying it through reloads, and is asked ever more rarely', async (t) => {
+  setupAutoplay(t, { recs: [] });
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 30_000);
+  assert.equal(recLoads(), 1, 'fifteen polls, one load');
+  assert.deepEqual(hintBodies().at(-1).autoplay, [], 'asked, and it has nothing');
+  const h = hintBodies().length;
+  await run(t, 120_000); // t = 150 s: one reload, a minute after the first answer
+  assert.equal(recLoads(), 2);
+  await run(t, 80_000);  // t = 230 s: the next one came two minutes later, not one
+  assert.equal(recLoads(), 3);
+  assert.equal(hintBodies().length, h, 'no hint was re-sent while the answer stayed "nothing"');
+  // A reload that FAILS is not an answer: the previous one stands.
+  server.recsFail = true;
+  await run(t, 230_000); // t = 460 s: the reload due four minutes after the third
+  assert.equal(recLoads(), 4);
+  assert.equal(hintBodies().length, h);
+  assert.deepEqual(R.peekNextRecs(20), []);
+  // Picks at last: sent, and the back-off is over.
+  server.recsFail = false;
+  server.recTracks = [R1];
+  await run(t, 70_000);
+  assert.equal(recLoads(), 5, 'a failure is retried after a minute');
+  assert.deepEqual(hintBodies().at(-1).autoplay, wire([R1]));
+  await run(t, 300_000);
+  assert.equal(recLoads(), 5, 'a list in hand is not loaded again');
+});
+
+test('autoplay: a failed first load says nothing (the field is absent), and is retried a minute later', async (t) => {
+  setupAutoplay(t);
+  server.recsFail = true;
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 30_000);
+  assert.equal(recLoads(), 1);
+  assert.ok(hintBodies().every((b) => !('autoplay' in b)), '"not known": the server keeps what it has');
+  server.recsFail = false;
+  await run(t, 40_000);
+  assert.equal(recLoads(), 2);
+  assert.deepEqual(hintBodies().at(-1).autoplay, wire([R1, R2, R3]));
+});
+
+// N4: picks made for the queue the user left are not the new queue's.
+test('autoplay: a new queue array makes the cached picks "not known" until they are loaded for it', async (t) => {
+  const eng = setupAutoplay(t);
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  assert.deepEqual(hintBodies().at(-1).autoplay, wire([R1, R2, R3]));
+  assert.equal(recLoads(), 1);
+  // Another playlist: a fresh array (upnext.playTracks), and its own picks.
+  const X = { name: 'New One', artist: 'Other' }, Y = { name: 'New Two', artist: 'Other' };
+  store.playerQueue = [X, Y]; store.playerIndex = 0; eng.upcoming = { index: 1, item: Y };
+  const N1 = { name: 'For The New Queue', artist: 'Reco' };
+  server.recTracks = [N1];
+  assert.equal(R.peekNextRecs(20), null, 'the old picks are not offered for the new queue');
+  assert.equal(recLoads(), 2, 'a load for it starts at once, whatever the retry clock says');
+  assert.equal(R.peekNextRecs(20), null);
+  await cast.castItem(X);
+  assert.equal('autoplay' in calls('POST', '/api/dlna/cast').at(-1)[2], false, 'the cast of the new queue says "not known", not the old picks');
+  await flush();
+  assert.equal(recLoads(), 2);
+  assert.deepEqual(R.peekNextRecs(20).map((x) => x.name), [N1.name]);
+  await cast.castItem(X);
+  assert.deepEqual(calls('POST', '/api/dlna/cast').at(-1)[2].autoplay, wire([N1]));
+});
+
+// N1: the engine holds a debounced save while the view is stale. The hold must end with
+// the EVENT that makes the view fresh, not with a timer that happens to look in time.
+test('a held queue save is released by the poll itself: after the status is applied (and any adoption done)', async (t) => {
+  const eng = setupAutoplay(t);
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 4000);
+  cast._internals.reset(); // no poll chain: only what the test asks for
+  store.castDevice = { id: 'uuid:onkyo', name: 'Onkyo' };
+  // A hidden desktop tab: timers batched once a minute. The last status is a minute old.
+  t.mock.timers.setTime(Date.now() + 60_000);
+  store.playerSavePending = true; // an edit the engine is holding
+  assert.equal(cast.castStateFresh(), false);
+  assert.equal(cast.castMaySaveOnUnload(), true, 'an edit that waits is not dropped when the tab closes');
+  server.statusDelay = 500;
+  const p = cast.pollCastOnce();
+  await flush();
+  assert.equal(eng.flushes, 0, 'not before the status is in');
+  await run(t, 1000);
+  await p;
+  assert.equal(eng.flushes, 1, 'the poll released it');
+  assert.equal(store.playerSavePending, false);
+  // … and the minute after: the status has aged again, the next edit goes the same way.
+  t.mock.timers.setTime(Date.now() + 60_000);
+  store.playerSavePending = true;
+  const p2 = cast.pollCastOnce();
+  await run(t, 1000);
+  await p2;
+  assert.equal(eng.flushes, 2);
+});
+
+test('a held save is not released into an adoption that is still reading the server\'s queue', async (t) => {
+  const eng = setupAutoplay(t);
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 4000);
+  cast._internals.reset();
+  store.castDevice = { id: 'uuid:onkyo', name: 'Onkyo' };
+  t.mock.timers.setTime(Date.now() + 600_000);
+  store.playerSavePending = true;
+  server.savedQueue = { queue: [A, B, C, wire([R1])[0]], current_index: 3 };
+  server.queueDelay = 2000;
+  server.status = follow('PLAYING', 5, 180, 2, trR(R1, 3));
+  const p = cast.pollCastOnce();
+  await run(t, 1000);
+  assert.equal(calls('GET', '/api/player/queue').length, 1);
+  assert.equal(eng.flushes, 0, 'the page\'s old queue must not be written under the adoption');
+  assert.equal(cast.castMaySaveOnUnload(), false, 'nor by the unload save');
+  await run(t, 3000);
+  await p;
+  assert.deepEqual(eng.adopted, [[3, R1.name]]);
+  assert.equal(store.playerQueue.length, 4);
+  assert.equal(eng.flushes, 1, 'saved once the appended row is in');
+});
+
+test('the unload save: allowed when fresh or when an edit waits; refused for a page that merely woke up', async (t) => {
+  setupAutoplay(t);
+  store.castDevice = null;
+  assert.equal(cast.castMaySaveOnUnload(), true, 'not casting');
+  store.castDevice = { id: 'uuid:onkyo', name: 'Onkyo' };
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 4000);
+  assert.equal(cast.castMaySaveOnUnload(), true, 'fresh');
+  cast._internals.reset();
+  store.castDevice = { id: 'uuid:onkyo', name: 'Onkyo' };
+  t.mock.timers.setTime(Date.now() + 600_000);
+  store.playerSavePending = false;
+  assert.equal(cast.castMaySaveOnUnload(), false, 'woke up, nothing of its own to save: the file is the server\'s');
+  store.playerSavePending = true;
+  assert.equal(cast.castMaySaveOnUnload(), true);
+});
+
+test('noteQueueChanged: nothing without a followed cast; on a stale page it polls first, then saves and hints', async (t) => {
+  const eng = setupAutoplay(t);
+  store.playerSavePending = true;
+  cast.noteQueueChanged(); // no status seen yet
+  await flush();
+  assert.equal(eng.flushes, 0);
+  assert.equal(calls('GET', '/api/dlna/status').length, 0);
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  // A hidden tab gets a remote command: a row is inserted. Its last status is old.
+  const q = store.playerQueue;
+  const N = { name: 'Queued By Remote', artist: 'User' };
+  q.push(N); eng.upcoming = { index: 3, item: N };
+  t.mock.timers.setTime(Date.now() + 60_000);
+  store.playerSavePending = true;
+  server.calls.length = 0;
+  cast.noteQueueChanged();
+  await flush(); // no timer runs
+  assert.deepEqual(server.calls.map(([m, u]) => `${m} ${u}`),
+    ['GET /api/dlna/status', 'PUT /api/player/queue', 'POST /api/dlna/next-hint'],
+    'look, then save, then tell — never the page\'s queue written blind');
+  assert.equal(server.calls[2][2].next.name, N.name);
+});
+
+// N5: the two guards of H1, each on its own.
+test('adoption: a cast POST on its way stops an adoption even when the track is in the new queue', async (t) => {
+  const eng = setup(t);
+  server.status = follow('PLAYING', 10, 300, 1, trA);
+  cast.startCastPoll();
+  await run(t, 4000);
+  server.savedQueue = { queue: [A, B, C], current_index: 1 };
+  server.queueDelay = 3000;
+  server.status = follow('PLAYING', 5, 600, 2, { queue_index: 1, name: B.name, artist: B.artist, by: 'server' });
+  await run(t, 2500); // GET /api/player/queue is out
+  // A new playlist that happens to hold B too; its first track is being cast.
+  const X = { name: 'New One', artist: 'Other' };
+  store.playerQueue = [X, { ...B }]; store.playerIndex = 0; eng.upcoming = { index: 1, item: store.playerQueue[1] };
+  let release;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (url === '/api/dlna/cast') await new Promise((r) => { release = r; });
+    return realFetch(url, opts);
+  };
+  t.after(() => { globalThis.fetch = realFetch; });
+  const p = cast.castTrack(X);
+  await run(t, 4000);
+  assert.deepEqual(eng.adopted, [], 'the user\'s own cast owns the page now');
+  assert.equal(store.playerIndex, 0);
+  release();
+  await p;
+});
+
+test('adoption: an autoplay row is not added to a queue that was replaced meanwhile (no cast in flight)', async (t) => {
+  const eng = setupAutoplay(t);
+  t.mock.method(console, 'warn', () => {});
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  server.savedQueue = { queue: [A, B, C, wire([R1])[0]], current_index: 3 };
+  server.queueDelay = 3000;
+  server.status = follow('PLAYING', 5, 180, 2, trR(R1, 3));
+  await run(t, 2500);
+  // The queue is replaced without anything being cast (a playlist loaded paused, a transfer).
+  const fresh = [{ name: 'New One', artist: 'Other' }, { name: 'New Two', artist: 'Other' }];
+  store.playerQueue = fresh; store.playerIndex = 0; eng.upcoming = { index: 1, item: fresh[1] };
+  await run(t, 4000);
+  assert.deepEqual(fresh.map((x) => x.name), ['New One', 'New Two']);
+  assert.deepEqual(eng.adopted, []);
+});
+
+// N6: the save on hide asks for keepalive.
+test('hiding the page asks the engine for a keepalive save', async (t) => {
+  const eng = setupAutoplay(t);
+  const handlers = { visibilitychange: globalThis.__onVisibility };
+  t.after(() => { document.hidden = false; });
+  let got = null;
+  cast.initCast({ flushQueue: async (o) => { got = o; store.playerSavePending = false; } });
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 4000);
+  store.playerSavePending = true;
+  document.hidden = true;
+  handlers.visibilitychange();
+  await flush();
+  assert.deepEqual(got, { keepalive: true });
+  void eng;
 });

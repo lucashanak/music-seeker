@@ -29,6 +29,12 @@
 //             casting) → no "Cast failed" toast, no local deck plays
 //   abandoned status {"active": false, "abandoned": "..."} → that message as a toast,
 //             cast state off                                                 (finding 7)
+//   autoplay  the cast sits on the queue's LAST row: the page hands the recommender's next
+//             picks to the server (next-hint `autoplay`) without consuming them; the server
+//             appends them to the saved queue and casts them (track.autoplay) — awake and
+//             frozen, the page pushes those rows behind the "Autoplay" divider, shows them,
+//             and sends no POST /cast of its own; a queue save pending at the freeze does
+//             not overwrite the server's rows on wake            (screen-off stop, 2026-11-21)
 //
 // Oracle: production, account claude_test (never lucas). Must FAIL on the deployed code and
 // PASS over the tree:
@@ -48,7 +54,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TREE = process.env.MS_TREE || (process.argv.includes('--tree') ? path.resolve(HERE, '../../..') : null);
 const vpArg = process.argv.find(a => a.startsWith('--vp='));
 const VPS = (vpArg ? vpArg.slice(5) : (process.env.MS_VIEWPORTS || 'phone,tablet,desktop')).split(',').filter(Boolean);
-const ALL = ['restore', 'sleep', 'seek', 'handover', 'midstop', 'midstopmix', 'superseded', 'abandoned'];
+const ALL = ['restore', 'sleep', 'seek', 'handover', 'midstop', 'midstopmix', 'superseded', 'abandoned', 'autoplay'];
 const want = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const SCEN = want.length ? want : ALL;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -620,6 +626,113 @@ const scenarios = {
       await sleep(4500);
       R.check(`${tag}.poll-stops`, 'the status poll stops after the session ended', s.fake.ops('GET status', t).length === 0,
         `GET /status in the next 4.5 s: ${s.fake.ops('GET status', t).length}`);
+      routingChecks(s, tag);
+    } finally { await s.context.close(); }
+  },
+
+  // 6. The queue runs out while casting: the recommender's picks continue it, and it is
+  // the SERVER that plays them (the page may be frozen).
+  async autoplay(browser, vp) {
+    const tag = `${vp}.autoplay`;
+    const q = Q();
+    const last = q.length - 1;
+    const s = await session(browser, vp, { queue: q, index: last });
+    try {
+      // Fake picks: never streamed (the receiver is a fake, local decks stay paused).
+      const RECS = [1, 2, 3].map(n => ({ name: `zz-e2e autoplay ${n}`, artist: 'zz-e2e reco', album: '', image: '', duration_ms: 200000 + n, type: 'track' }));
+      let recReqs = 0;
+      await s.page.route('**/api/player/recommendations**', (r) => {
+        recReqs++;
+        return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ tracks: RECS }) });
+      });
+      const qstate = () => s.page.evaluate(async () => {
+        const { store } = await window.__mods();
+        const src = [...document.scripts].map(x => x.src).find(x => /\/app\.js/.test(x)) || '';
+        const v = src.includes('?v=') ? '?v=' + src.split('?v=')[1] : '';
+        const Qm = await import(`/static/js/queue.js${v}`);
+        if (!window.__q0) window.__q0 = store.playerQueue;
+        return { names: store.playerQueue.map(x => x.name), idx: store.playerIndex, sameArray: store.playerQueue === window.__q0,
+          autoAt: typeof Qm.autoplayStart === 'function' ? Qm.autoplayStart() : null,
+          seps: document.querySelectorAll('.qi-autoplay-sep').length };
+      });
+      await qstate(); // remember the queue array before anything is appended
+      if (!(await startCasting(s, tag))) return;
+      const withList = () => s.fake.log.filter(l => (l.op === 'POST cast' || l.op === 'POST next-hint') && l.body && Array.isArray(l.body.autoplay));
+      await waitFor(() => withList().length > 0, 15000);
+      const sent = withList()[0];
+      R.check(`${tag}.handed-over`, 'on the last row the page hands the recommender\'s picks to the server (autoplay in cast / next-hint)',
+        !!sent && sent.body.queue_index === last && sent.body.next == null
+        && JSON.stringify(sent.body.autoplay.map(x => x.name)) === JSON.stringify(RECS.map(x => x.name)),
+        sent ? `${sent.op} queue_index=${sent.body.queue_index} next=${JSON.stringify(sent.body.next)} autoplay=${JSON.stringify(sent.body.autoplay.map(x => x.name))}` : 'no request carried `autoplay`');
+      const recs0 = recReqs, lists0 = withList().length;
+      await sleep(9000); // four more polls
+      const a = await qstate();
+      R.check(`${tag}.peek-only`, 'handing the picks over consumes nothing: the queue is unchanged, the list is not sent or loaded again',
+        a.names.length === q.length && a.idx === last && withList().length === lists0 && recReqs === recs0 && a.autoAt === -1,
+        `queue=${a.names.length} idx=${a.idx} lists sent=${withList().length}/${lists0} rec loads=${recReqs}/${recs0} autoplayStart=${a.autoAt}`);
+
+      // (a) Awake: the track ends; the server appends pick 1 to the saved queue and casts it.
+      const row = (r) => ({ name: r.name, artist: r.artist, album: r.album, image: r.image, duration_ms: r.duration_ms });
+      const serverAppends = (r, pos = 2) => {
+        s.saved.queue = [...s.saved.queue, row(r)];
+        s.saved.current_index = s.saved.queue.length - 1;
+        s.fake.play({ queue_index: s.saved.current_index, ...row(r), by: 'server', autoplay: true }, pos);
+      };
+      const casts0 = s.fake.ops('POST cast').length;
+      s.fake.state = 'STOPPED'; s.fake.setPos(0);
+      const endedAt = Date.now();
+      await sleep(6000);
+      const own = s.fake.ops('POST cast', endedAt).length;
+      const mid = await qstate();
+      R.check(`${tag}.end-left-to-server`, 'at the end of the last row an awake page appends and casts nothing itself',
+        own === 0 && mid.names.length === q.length, `POST /cast=${own} queue rows=${mid.names.length}`);
+      serverAppends(RECS[0]);
+      const b = await waitFor(async () => { const x = await qstate(); return x.idx === last + 1 ? x : null; }, 10000) || await qstate();
+      const z = await st(s.page);
+      R.check(`${tag}.adopt`, 'the appended row is pushed into the page\'s queue and shown as the current track',
+        b.idx === last + 1 && b.names.length === q.length + 1 && b.names[last + 1] === RECS[0].name && z.title === RECS[0].name,
+        `idx=${b.idx} rows=${b.names.length} last="${b.names[b.names.length - 1]}" title="${z.title}"`);
+      R.check(`${tag}.same-array`, 'store.playerQueue is still the same array (push, not replace)', b.sameArray, `sameArray=${b.sameArray}`);
+      R.check(`${tag}.divider`, 'the "Autoplay" divider starts at the first appended row', b.autoAt === last + 1,
+        `autoplayStart=${b.autoAt} want ${last + 1}; dividers drawn=${b.seps}`);
+      await sleep(5000);
+      const hints = s.fake.ops('POST next-hint').filter(l => l.body && l.body.queue_index === last + 1);
+      const h = hints[hints.length - 1];
+      R.check(`${tag}.next-list`, 'the page then hands over what follows — without the pick just played',
+        !!h && Array.isArray(h.body.autoplay) && JSON.stringify(h.body.autoplay.map(x => x.name)) === JSON.stringify(RECS.slice(1).map(x => x.name)),
+        h ? `autoplay=${JSON.stringify((h.body.autoplay || []).map(x => x.name))}` : 'no next-hint for the adopted row');
+
+      // (b) Frozen (the phone's screen is off): the server plays picks 2 and 3 meanwhile.
+      // A queue save sits in its 2 s debounce when the page freezes: fired on wake as it
+      // is, it would write the queue from BEFORE the sleep over the server's rows.
+      const cdp = await s.context.newCDPSession(s.page);
+      await cdp.send('Debugger.enable');
+      await s.page.evaluate(async () => { (await window.__mods()).eng.saveQueueDebounced(); });
+      await cdp.send('Debugger.pause');
+      await sleep(2500);
+      const frozenAt = Date.now();
+      serverAppends(RECS[1]);
+      await sleep(6000);
+      serverAppends(RECS[2], 5);
+      await sleep(6000);
+      const duringFreeze = s.fake.ops('GET status', frozenAt).length;
+      await cdp.send('Debugger.resume');
+      await cdp.send('Debugger.disable');
+      const c = await waitFor(async () => { const x = await qstate(); return x.idx === last + 3 ? x : null; }, 12000) || await qstate();
+      await sleep(3000);
+      const y = await st(s.page);
+      R.check(`${tag}.freeze`, 'the page really was frozen (no status requests while frozen)', duringFreeze === 0, `GET /status while frozen: ${duringFreeze}`);
+      R.check(`${tag}.wake-adopt`, 'after waking, both rows the server appended are in the queue and the playing one is current',
+        c.idx === last + 3 && JSON.stringify(c.names.slice(last + 1)) === JSON.stringify(RECS.map(x => x.name)) && y.title === RECS[2].name && c.sameArray,
+        `idx=${c.idx} tail=${JSON.stringify(c.names.slice(last + 1))} title="${y.title}" sameArray=${c.sameArray}`);
+      R.check(`${tag}.divider-kept`, 'the divider stays at the first autoplay row', c.autoAt === last + 1, `autoplayStart=${c.autoAt}`);
+      const extra = s.fake.ops('POST cast').length - casts0;
+      R.check(`${tag}.nocast`, 'no POST /api/dlna/cast from the page for anything the server appended', extra === 0,
+        `extra POST /cast: ${extra} ${JSON.stringify(s.fake.ops('POST cast').slice(casts0).map(x => x.body && x.body.name))}`);
+      R.check(`${tag}.nolocal`, 'no local deck plays, the cast is still on', !y.localPlaying && !!y.cast, `local=${y.localPlaying} cast=${JSON.stringify(y.cast)}`);
+      R.check(`${tag}.saved`, 'the save that was pending when the page froze did not erase the server\'s rows: the saved queue holds all of them',
+        Array.isArray(s.saved.queue) && JSON.stringify(s.saved.queue.slice(last + 1).map(x => x.name)) === JSON.stringify(RECS.map(x => x.name)),
+        `saved tail=${JSON.stringify((s.saved.queue || []).slice(last + 1).map(x => x.name))}`);
       routingChecks(s, tag);
     } finally { await s.context.close(); }
   },

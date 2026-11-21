@@ -1524,3 +1524,590 @@ def test_an_http_uri_on_another_host_right_after_the_cast_is_not_learned(env):
     asyncio.run(main())
     assert SK not in dlna._sessions
     assert "playing something else" in dlna.take_abandoned(SK)
+
+
+# ── autoplay: the page's recommender picks continue a queue that ran out ──
+# The recommender lives in the page, and a phone page is frozen while the screen is
+# off: the follower reached the last row and stopped (production, 2026-11-21: row 174
+# of 175, hint next null, queue_ended). The page now hands the picks over in advance.
+
+R1 = {"name": "Rec One", "artist": "Reco A", "album": "LP", "image": "/api/library/cover/r1",
+      "duration_ms": 180000, "id": "sp-r1"}
+R2 = {"name": "Rec Two", "artist": "Reco B", "album": "", "image": "", "duration_ms": 190000}
+R3 = {"name": "Rec Three", "artist": "Reco C", "album": "", "image": "", "duration_ms": 0}
+
+
+async def cast_with_list(item, qi, autoplay, repeat="off", shuffle=False):
+    return await dlna.cast_to_device(
+        SK, UDN, item["name"], item["artist"], "tok", duration_ms=item.get("duration_ms", 0),
+        queue_index=qi, next_item=None, repeat=repeat, shuffle=shuffle, autoplay=autoplay,
+        username="lucas", client_device="phone1", by="client")
+
+
+def test_end_of_the_queue_with_an_autoplay_list_appends_and_casts_it(env):
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1, R2])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Rec One"]
+    assert st["queue_ended"] is False and st["cast_seq"] == 2
+    assert st["track"]["name"] == "Rec One" and st["track"]["by"] == "server"
+    assert st["track"]["queue_index"] == 3 and st["track"]["autoplay"] is True
+    assert st["autoplay_left"] == 1
+    assert [i["name"] for i in dlna._sessions[SK]["autoplay"]] == ["Rec Two"]
+    q = saved_queue()
+    assert [i["name"] for i in q["queue"]] == ["Alpha", "Bravo", "Charlie", "Rec One"]
+    assert q["queue"][3] == {"name": "Rec One", "artist": "Reco A", "album": "LP",
+                             "image": "/api/library/cover/r1", "duration_ms": 180000, "id": "sp-r1"}
+    assert q["current_index"] == 3 and q["position_seconds"] == 0
+
+
+def test_the_autoplay_list_is_played_through_and_only_then_the_queue_ends(env):
+    save_queue([A, B], current=1)
+
+    async def main():
+        await cast_with_list(B, 1, [R1, R2])
+        await play_to_end(env)
+        mid = await dlna.get_status(SK)
+        await play_to_end(env, t0=env.clock["t"])
+        mid2 = await dlna.get_status(SK)
+        await play_to_end(env, t0=env.clock["t"])
+        return mid, mid2, await dlna.get_status(SK)
+    mid, mid2, st = asyncio.run(main())
+    assert env.r.cast == ["Bravo", "Rec One", "Rec Two"]
+    assert mid["queue_ended"] is False and mid2["queue_ended"] is False
+    assert mid2["autoplay_left"] == 0
+    assert st["queue_ended"] is True
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Rec One", "Rec Two"]
+    assert saved_queue()["current_index"] == 3
+
+
+def test_an_empty_autoplay_list_means_none_and_the_queue_ends_as_before(env):
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1])
+        # The page says: nothing follows (radio, repeat, a recommender with no picks).
+        assert await dlna.set_next_hint(SK, 2, None, autoplay=[]) == "ok"
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie"] and st["queue_ended"] is True
+    assert len(saved_queue()["queue"]) == 3
+
+
+def test_a_hint_brings_the_autoplay_list_and_a_stale_one_does_not(env):
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await client_cast(C, 2)
+        assert dlna._sessions[SK]["autoplay"] == []
+        assert await dlna.set_next_hint(SK, 1, None, autoplay=[R1]) == "stale"
+        assert dlna._sessions[SK]["autoplay"] == []
+        assert await dlna.set_next_hint(SK, 2, None, autoplay=[R2, R3]) == "ok"
+        await play_to_end(env)
+    asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Rec Two"]
+
+
+def test_repeat_all_ignores_the_autoplay_list(env):
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1], repeat="all")
+        await play_to_end(env)
+    asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Alpha"]
+    assert len(saved_queue()["queue"]) == 3
+    assert [i["name"] for i in dlna._sessions[SK]["autoplay"]] == ["Rec One"]
+
+
+def test_repeat_one_ignores_the_autoplay_list(env):
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1], repeat="one")
+        await play_to_end(env)
+    asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Charlie"]
+    assert len(saved_queue()["queue"]) == 3
+
+
+def test_a_queue_with_tracks_left_does_not_touch_the_autoplay_list(env):
+    save_queue([A, B, C], current=1)
+
+    async def main():
+        await cast_with_list(B, 1, [R1])           # a list although B is not the last row
+        await play_to_end(env)
+    asyncio.run(main())
+    assert env.r.cast == ["Bravo", "Charlie"]
+    assert len(saved_queue()["queue"]) == 3
+
+
+def test_a_client_cast_while_the_server_appends_wins_and_the_row_is_taken_back(env, monkeypatch):
+    save_queue([A, B, C], current=2)
+    real_take = dlna._take_autoplay
+    seen = {}
+
+    async def take_then_client_casts(session):
+        choice = await real_take(session)
+        seen["appended"] = [i["name"] for i in saved_queue()["queue"]]
+        await cast_with_list(A, 0, [])     # the page woke up and the user tapped a row
+        return choice
+
+    monkeypatch.setattr(dlna, "_take_autoplay", take_then_client_casts)
+
+    async def main():
+        await cast_with_list(C, 2, [R1, R2])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert seen["appended"] == ["Alpha", "Bravo", "Charlie", "Rec One"]
+    assert env.r.cast == ["Charlie", "Alpha"]         # one cast after the end: the client's
+    assert st["track"]["name"] == "Alpha" and st["track"]["by"] == "client"
+    assert "autoplay" not in st["track"]
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie"]
+    assert dlna._sessions[SK]["autoplay"] == []       # the client's cast said: none
+
+
+def test_a_client_cast_just_before_the_autoplay_cast_goes_out_wins(env, monkeypatch):
+    save_queue([A, B, C], current=2)
+    from app.services import auth
+    real_token = auth.create_stream_token
+    fired = []
+
+    def token_and_client_cast(username, ttl=0):
+        if not fired and dlna._sessions[SK]["track"]["name"] == "Charlie":
+            fired.append(asyncio.get_running_loop().create_task(client_cast(A, 0)))
+        return real_token(username, ttl=ttl)
+
+    monkeypatch.setattr(auth, "create_stream_token", token_and_client_cast)
+
+    async def main():
+        await cast_with_list(C, 2, [R1])
+        await play_to_end(env)
+        await fired[0]
+    asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Alpha"]
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie"]
+
+
+def test_an_autoplay_track_that_cannot_be_cast_moves_on_to_the_next(env, monkeypatch):
+    save_queue([A, B, C], current=2)
+    real_set = FakeDmr.async_set_transport_uri
+
+    async def refuse_rec_one(self, url, title, meta_data=None):
+        if title == "Rec One":
+            self.r.cast.append("(refused) " + title)
+            raise RuntimeError("upnp error: 716 resource not found")
+        return await real_set(self, url, title, meta_data)
+
+    monkeypatch.setattr(FakeDmr, "async_set_transport_uri", refuse_rec_one)
+
+    async def main():
+        await cast_with_list(C, 2, [R1, R2, R3])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "(refused) Rec One", "Rec Two"]
+    assert st["track"]["name"] == "Rec Two" and st["track"]["queue_index"] == 4
+    assert st["queue_ended"] is False and st["autoplay_left"] == 1
+    q = saved_queue()
+    assert [i["name"] for i in q["queue"]] == ["Alpha", "Bravo", "Charlie", "Rec One", "Rec Two"]
+    assert q["current_index"] == 4
+
+
+def test_two_dead_autoplay_tracks_in_a_row_end_the_session(env, monkeypatch):
+    save_queue([A, B, C], current=2)
+
+    async def refuse(self, url, title, meta_data=None):
+        if title.startswith("Rec"):
+            raise RuntimeError("upnp error: 716")
+        self.r.cast.append(title)
+        self.r.state = "TRANSITIONING"
+
+    monkeypatch.setattr(FakeDmr, "async_set_transport_uri", refuse)
+
+    async def main():
+        await cast_with_list(C, 2, [R1, R2, R3])
+        await play_to_end(env)
+    asyncio.run(main())
+    assert SK not in dlna._sessions
+    assert "did not start" in dlna.take_abandoned(SK)
+
+
+def test_autoplay_passes_over_the_current_track_and_rows_the_queue_already_holds(env):
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [dict(C), {**A, "name": "ALPHA "}, R2])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Rec Two"]
+    assert st["autoplay_left"] == 0
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie", "Rec Two"]
+
+
+def test_an_autoplay_list_of_nothing_usable_ends_the_queue(env):
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [dict(A), dict(B)])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie"] and st["queue_ended"] is True
+    assert len(saved_queue()["queue"]) == 3
+
+
+def test_autoplay_is_appended_only_where_the_saved_queue_really_ends(env):
+    save_queue([A, B, C], current=1)
+    used, choice = dlna._append_autoplay("lucas", "phone1", {**B, "queue_index": 1}, [dict(R1)], False)
+    assert (used, choice) == (0, None)
+    used, choice = dlna._append_autoplay("lucas", "phone1", {**D, "queue_index": 7}, [dict(R1)], False)
+    assert (used, choice) == (0, None)                 # the track is not in this queue at all
+    assert len(saved_queue()["queue"]) == 3
+    used, choice = dlna._append_autoplay("lucas", "phone1", {**C, "queue_index": 2}, [dict(R1)], False)
+    assert used == 1 and choice[0] == 3 and choice[1]["name"] == "Rec One"
+
+
+def test_exhausted_shuffle_appends_autoplay_and_writes_the_order(env):
+    save_queue([A, B, C], current=1, shuffle_order={"played": [0, 2], "tail": []})
+
+    async def main():
+        await cast_with_list(B, 1, [R1], shuffle=True)
+        await play_to_end(env)
+    asyncio.run(main())
+    assert env.r.cast == ["Bravo", "Rec One"]
+    q = saved_queue()
+    assert q["current_index"] == 3 and len(q["queue"]) == 4
+    assert q["shuffle_order"] == {"played": [0, 2, 1], "tail": []}
+
+
+def test_shuffle_with_rows_left_plays_those_before_any_autoplay(env):
+    save_queue([A, B, C], current=1, shuffle_order={"played": [0], "tail": [2]})
+
+    async def main():
+        await cast_with_list(B, 1, [R1], shuffle=True)
+        await play_to_end(env)
+    asyncio.run(main())
+    assert env.r.cast == ["Bravo", "Charlie"]
+    assert len(saved_queue()["queue"]) == 3
+
+
+def test_the_autoplay_list_is_bounded_and_cleaned():
+    many = [{"name": f"T{i}", "artist": "X"} for i in range(200)]
+    assert len(dlna._clean_autoplay(many)) == dlna.AUTOPLAY_MAX_ITEMS == 20
+    out = dlna._clean_autoplay([
+        {"name": "N" * 9000, "artist": "A" * 9000, "album": "L" * 9000, "image": "I" * 9000,
+         "duration_ms": "12", "id": "x" * 9000, "junk": "j" * 9000, "queue_index": 5},
+        {"artist": "no name"}, "not a dict", None, {"name": ""},
+        {"name": "Dup", "artist": "D"}, {"name": " dup ", "artist": "d", "id": 42},
+        {"name": "Neg", "duration_ms": -5, "id": True},
+    ])
+    assert [len(out[0][k]) for k in ("name", "artist", "album", "image", "id")] == [500, 500, 500, 2000, 200]
+    assert set(out[0]) == {"name", "artist", "album", "image", "duration_ms", "id"}
+    assert out[0]["duration_ms"] == 12
+    assert [o["name"] for o in out[1:]] == ["Dup", "Neg"]
+    assert out[2]["duration_ms"] == 0 and "id" not in out[2]
+    for bad in (None, "x", {"name": "a"}, 7):
+        assert dlna._clean_autoplay(bad) == []
+
+
+def test_the_api_takes_the_autoplay_list_and_refuses_what_is_not_a_list(api, env):
+    save_queue([A, B, C], current=2)
+    r = api.post("/api/dlna/cast", json={"device_id": UDN, **C, "queue_index": 2, "next": None,
+                                          "autoplay": [R1, {"name": "x" * 9000, "artist": "y"}] + [R2] * 40})
+    assert r.status_code == 200
+    s = dlna._sessions[SK]
+    assert [i["name"][:7] for i in s["autoplay"]] == ["Rec One", "xxxxxxx", "Rec Two"]
+    assert len(s["autoplay"][1]["name"]) == 500
+    assert api.get("/api/dlna/status").json()["autoplay_left"] == 3
+
+    r = api.post("/api/dlna/next-hint", json={"queue_index": 2, "next": None, "autoplay": [R3]})
+    assert r.status_code == 200 and [i["name"] for i in s["autoplay"]] == ["Rec Three"]
+    assert api.post("/api/dlna/next-hint", json={"queue_index": 2, "autoplay": "Rec"}).status_code == 422
+    assert api.post("/api/dlna/next-hint", json={"queue_index": 2, "autoplay": ["Rec"]}).status_code == 422
+    assert [i["name"] for i in s["autoplay"]] == ["Rec Three"]
+    # No `autoplay` (or null) = "not known": what the server holds stays.
+    r = api.post("/api/dlna/next-hint", json={"queue_index": 2, "next": None})
+    assert r.status_code == 200 and [i["name"] for i in s["autoplay"]] == ["Rec Three"]
+    r = api.post("/api/dlna/next-hint", json={"queue_index": 2, "next": None, "autoplay": None})
+    assert r.status_code == 200 and [i["name"] for i in s["autoplay"]] == ["Rec Three"]
+    r = api.post("/api/dlna/cast", json={"device_id": UDN, **C, "queue_index": 2, "next": None})
+    assert r.status_code == 200 and [i["name"] for i in s["autoplay"]] == ["Rec Three"]
+    # … and only an explicit [] drops it.
+    r = api.post("/api/dlna/next-hint", json={"queue_index": 2, "next": None, "autoplay": []})
+    assert r.status_code == 200 and s["autoplay"] == []
+    assert api.get("/api/dlna/status").json()["autoplay_left"] == 0
+
+
+def test_the_autoplay_list_survives_a_restart(env):
+    save_queue([A, B, C], current=2)
+
+    async def before():
+        await cast_with_list(C, 2, [R1, R2])
+        await tick(env, 1002, "PLAYING", 150, 200)
+    asyncio.run(before())
+    data = json.loads((env.tmp / "dlna_sessions.json").read_text())
+    assert [i["name"] for i in data[SK]["autoplay"]] == ["Rec One", "Rec Two"]
+
+    dlna._sessions.clear()
+    data[SK].update(played=True, last_pos=150, last_playing=True, last_pos_wall=time.time() - 120)
+    data[SK]["autoplay"].append({"name": "x" * 9000, "artist": "edited by hand"})
+    (env.tmp / "dlna_sessions.json").write_text(json.dumps(data))
+
+    async def after():
+        assert await dlna.resume_sessions() == 1
+        s = dlna._sessions[SK]
+        assert [len(i["name"]) for i in s["autoplay"]] == [7, 7, 500]
+        env.clock["t"] += 2
+        env.r.state, env.r.pos, env.r.dur = "STOPPED", 0, 200
+        await dlna._follow_tick(SK, s)
+        return await dlna.get_status(SK)
+    st = asyncio.run(after())
+    assert env.r.cast == ["Charlie", "Rec One"]
+    assert st["track"]["autoplay"] is True and st["autoplay_left"] == 2
+    # … and what is left is on disk again for the next restart.
+    data = json.loads((env.tmp / "dlna_sessions.json").read_text())
+    assert [i["name"][:7] for i in data[SK]["autoplay"]] == ["Rec Two", "xxxxxxx"]
+    assert data[SK]["track"]["autoplay"] is True
+
+
+def test_a_resent_autoplay_track_keeps_its_mark(env):
+    """A track that did not start is sent once more (recast): the page must still learn
+    that this row came from the autoplay list."""
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1])
+        await play_to_end(env)
+        t = env.clock["t"]
+        while len(env.r.cast) < 3 and t < env.clock["t"] + 100:
+            t += 2
+            await tick(env, t, "STOPPED", 0)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Rec One", "Rec One"]
+    assert st["track"]["autoplay"] is True and st["track"]["queue_index"] == 3
+    assert len(saved_queue()["queue"]) == 4
+
+
+# ── review round 2 ──
+
+def test_a_cast_or_hint_without_the_field_keeps_the_list_the_server_holds(env):
+    """M1: the app was reopened on the last row — its recommender is still loading, so
+    its first cast and hint say nothing about autoplay. Saying nothing must not wipe
+    the list; the phone is locked again and the queue would simply end."""
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1, R2])
+        await cast_with_list(C, 2, None)                        # the reopened page casts again
+        assert await dlna.set_next_hint(SK, 2, None) == "ok"    # … and hints, list unknown
+        assert [i["name"] for i in dlna._sessions[SK]["autoplay"]] == ["Rec One", "Rec Two"]
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Charlie", "Rec One"]
+    assert st["queue_ended"] is False and st["track"]["autoplay"] is True
+
+
+def test_a_list_sent_mid_queue_waits_for_the_real_end_of_the_queue(env):
+    """M2: the list arrives with the cast of row 0; the phone is locked for the whole
+    queue and the server walks to the last row by itself, list in hand."""
+    save_queue([A, B, C], current=0)
+
+    async def main():
+        await cast_with_list(A, 0, [R1, R2])
+        for _ in range(3):
+            await play_to_end(env, t0=env.clock["t"])
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Alpha", "Bravo", "Charlie", "Rec One"]
+    assert st["queue_ended"] is False and st["autoplay_left"] == 1
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie", "Rec One"]
+
+
+def test_an_appended_row_the_page_saved_away_is_put_back_and_the_list_carries_on(env):
+    """H2: the server appended Rec One and plays it; a page that woke up wrote its older
+    queue over the file. The playing row is in no row now — that is still the end of
+    the queue, not a reason to stop with picks left."""
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1, R2, R3])
+        await play_to_end(env)
+        assert [i["name"] for i in saved_queue()["queue"]][-1] == "Rec One"
+        save_queue([A, B, C], current=2)           # the stale PUT
+        await play_to_end(env, t0=env.clock["t"])
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Rec One", "Rec Two"]
+    assert st["queue_ended"] is False and st["track"]["name"] == "Rec Two"
+    q = saved_queue()
+    assert [i["name"] for i in q["queue"]] == ["Alpha", "Bravo", "Charlie", "Rec One", "Rec Two"]
+    assert q["current_index"] == 4 and st["track"]["queue_index"] == 4
+
+
+def test_a_track_missing_from_the_file_that_is_not_ours_still_ends_the_queue(env):
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1])
+        save_queue([A, B], current=1)              # the user removed the playing row
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie"] and st["queue_ended"] is True
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo"]
+
+
+def test_an_unexpected_fault_in_the_append_ends_the_queue_instead_of_retrying_forever(env, monkeypatch):
+    """L1: only an unreadable/unwritable file is worth another try."""
+    save_queue([A, B, C], current=2)
+    calls = []
+
+    def broken(*a, **kw):
+        calls.append(1)
+        raise TypeError("a bug of ours")
+
+    monkeypatch.setattr(dlna, "_append_autoplay", broken)
+
+    async def main():
+        await cast_with_list(C, 2, [R1])
+        await play_to_end(env)
+        s = dlna._sessions[SK]
+        assert s["f"]["pending"] is None
+        for i in range(5):
+            await tick(env, env.clock["t"] + 2, "STOPPED", 0)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert st["queue_ended"] is True and len(calls) == 1
+
+
+def test_an_unreadable_queue_file_during_the_append_is_tried_again(env, monkeypatch):
+    save_queue([A, B, C], current=2)
+    real = dlna._append_autoplay
+    fails = [1]
+
+    def flaky(*a, **kw):
+        if fails:
+            fails.pop()
+            raise player.QueueUnreadable("mid-write")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(dlna, "_append_autoplay", flaky)
+
+    async def main():
+        await cast_with_list(C, 2, [R1])
+        await play_to_end(env)
+        assert env.r.cast == ["Charlie"] and dlna._sessions[SK]["queue_ended"] is False
+        await tick(env, env.clock["t"] + 2, "STOPPED", 0)
+    asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Rec One"]
+
+
+def test_a_device_without_its_own_queue_file_gets_no_append(env):
+    """L2: load_queue falls back to the default device's queue; writing that back plus
+    our row would hand this device another device's queue as its own."""
+    player.save_queue("lucas", {"queue": [dict(A), dict(B), dict(C)], "current_index": 2,
+                                "position_seconds": 0.0, "volume": 1.0}, "default")
+    own = player._queue_path("lucas", "phone1")
+    assert not own.exists()
+
+    async def main():
+        await cast_with_list(C, 2, [R1])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie"] and st["queue_ended"] is True
+    assert not own.exists()
+    assert len(player.load_queue("lucas", "default")["queue"]) == 3
+
+
+# ── review round 3 ──
+
+N_ROW = {"name": "Queued By Hand", "artist": "The User", "album": "", "image": "", "duration_ms": 200000}
+
+
+def test_a_lost_row_goes_back_after_the_row_it_followed_and_rows_queued_meanwhile_play_next(env):
+    """N3: put back at the END, the lost row sat behind what the user had queued and
+    became current — those rows never played."""
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1, R2])
+        await play_to_end(env)                     # the server appends and plays Rec One
+        save_queue([A, B, C, N_ROW], current=2)    # the page's save: its queue, plus a row queued by hand
+        await play_to_end(env, t0=env.clock["t"])
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Rec One", "Queued By Hand"]
+    q = saved_queue()
+    assert [i["name"] for i in q["queue"]] == ["Alpha", "Bravo", "Charlie", "Rec One", "Queued By Hand"]
+    assert q["current_index"] == 4 and st["track"]["queue_index"] == 4
+    assert "autoplay" not in st["track"] and st["queue_ended"] is False
+    assert [i["name"] for i in dlna._sessions[SK]["autoplay"]] == ["Rec Two"]     # kept for the real end
+
+
+def test_a_lost_row_is_put_back_even_when_no_picks_are_left(env):
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1])
+        await play_to_end(env)
+        assert dlna._sessions[SK]["autoplay"] == []
+        save_queue([A, B, C, N_ROW], current=2)
+        await play_to_end(env, t0=env.clock["t"])
+    asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Rec One", "Queued By Hand"]
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie", "Rec One", "Queued By Hand"]
+
+
+def test_an_appended_row_the_user_removed_while_it_plays_is_not_put_back(env):
+    """The page hinted about the row — it has it. Gone from the file after that is the
+    user's doing: the queue ends there, as for any removed playing row."""
+    save_queue([A, B, C], current=2)
+
+    async def main():
+        await cast_with_list(C, 2, [R1, R2])
+        await play_to_end(env)
+        assert await dlna.set_next_hint(SK, 3, None) == "ok"      # the awake page adopted it
+        save_queue([A, B, C], current=2)                          # … and the user removed the row
+        await play_to_end(env, t0=env.clock["t"])
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Rec One"]
+    assert st["queue_ended"] is True
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie"]
+
+
+def test_what_the_follower_knows_about_its_appended_row_survives_a_restart(env):
+    save_queue([A, B, C], current=2)
+
+    async def before():
+        await cast_with_list(C, 2, [R1, R2])
+        await play_to_end(env)
+        await tick(env, env.clock["t"] + 2, "PLAYING", 150, 200)
+    asyncio.run(before())
+    data = json.loads((env.tmp / "dlna_sessions.json").read_text())
+    assert data[SK]["autoplay_after"] == {"name": "Charlie", "artist": "DJ Three"}
+    assert data[SK]["autoplay_seen"] is False
+    dlna._sessions.clear()
+    data[SK].update(played=True, last_pos=150, last_playing=True, last_pos_wall=time.time() - 120)
+    (env.tmp / "dlna_sessions.json").write_text(json.dumps(data))
+    save_queue([A, B, C, N_ROW], current=2)
+
+    async def after():
+        assert await dlna.resume_sessions() == 1
+        s = dlna._sessions[SK]
+        env.clock["t"] += 2
+        env.r.state, env.r.pos, env.r.dur = "STOPPED", 0, 200
+        await dlna._follow_tick(SK, s)
+    asyncio.run(after())
+    assert env.r.cast == ["Charlie", "Rec One", "Queued By Hand"]

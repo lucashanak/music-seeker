@@ -397,6 +397,40 @@ export function setAutoplayStartIndex(i) {
   _autoFirst = (i >= 0 && i < store.playerQueue.length) ? store.playerQueue[i] : null;
 }
 
+/** Autoplay rows that arrive from outside the engine's own append — the cast follower
+ *  put them into the saved queue while this page slept. push, never a new array
+ *  (search.js tests the array's identity); the first one becomes the "Autoplay"
+ *  divider unless a tail is already marked. */
+export function appendAutoplayRows(items, at = null) {
+  const rows = (items || []).filter(Boolean);
+  if (!rows.length) return 0;
+  const q = store.playerQueue;
+  if (Number.isInteger(at) && at >= 0 && at < q.length) {
+    // Rows queued by the user sit after the row that just played and the server never
+    // saw them: the pick goes in BEFORE them (in place — same array), or they would be
+    // left above the current row and never play. No divider: what follows is not autoplay.
+    q.splice(at, 0, ...rows);
+    return rows.length;
+  }
+  markAutoplayStart(rows[0]);
+  for (const it of rows) q.push(it);
+  return rows.length;
+}
+
+/** Keep the autoplay tail at `max` rows by dropping its oldest ones — never the
+ *  current row or anything after it. Moves store.playerIndex along. Returns how many
+ *  rows went. */
+export function capAutoplayTail(max) {
+  const start = autoplayStart();
+  if (start < 0) return 0;
+  const over = Math.min(store.playerQueue.length - start - max, store.playerIndex - start);
+  if (!(over > 0)) return 0;
+  store.playerQueue.splice(start, over);
+  store.playerIndex -= over;
+  setAutoplayStartIndex(start);
+  return over;
+}
+
 export function setPlayerRefs(refs) {
   loadAndPlay = refs.loadAndPlay;
   hidePlayerBar = refs.hidePlayerBar;

@@ -1289,16 +1289,19 @@ def save_queue(username: str, data: dict, device_id: str = "default"):
         _write_queue_file(path, data)
 
 
-def update_queue(username: str, device_id: str, mutate, strict: bool = True) -> bool:
+def update_queue(username: str, device_id: str, mutate, strict: bool = True, *,
+                 fallback: bool = True) -> bool:
     """Read the device's queue, let `mutate(data)` change it in place, write it back —
     all under the queue lock, so a client save cannot land between the read and the
     write and be lost. `mutate` returns False to leave the file alone. With `strict`
     an unreadable device file raises QueueUnreadable like load_queue(strict=True).
+    `fallback=False`: only this device's own file — a device without one gets `{}`, never
+    the default device's queue written back as its own.
 
     Blocking (file I/O and a threading lock): call it from a worker thread."""
     _ensure_player_dir()
     with _queue_lock:
-        data = load_queue(username, device_id, strict=strict)
+        data = load_queue(username, device_id, strict=strict, fallback=fallback)
         if mutate(data) is False:
             return False
         _write_queue_file(_queue_path(username, device_id), data)

@@ -5,7 +5,7 @@ import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
 import { apiJson, refreshStreamToken, streamToken, freshStreamToken } from './api.js';
 import { openModal } from './downloads.js';
-import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, playOrder, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, setAutoplayStartIndex, adoptShuffleIndex, moveInPlayOrder, noteShuffleJump, undoShuffleJump } from './queue.js';
+import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, playOrder, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, appendAutoplayRows, capAutoplayTail, adoptShuffleIndex, moveInPlayOrder, noteShuffleJump, undoShuffleJump } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
 import { getCachedUrl, waitForCache, getStatus as getPrefetchStatus, prefetchTrack, cleanup as prefetchCleanup, pausePrefetch, abortStale, keyFor as prefetchKey, resumePrefetch, streamQuality, setUpcomingProvider } from './prefetch.js';
 import { fetchDjData, scheduleDjTransitionV3, resetDeckAfterTransitionV3, scheduleDjTransition, resetDeckAfterTransition, findCrossfadeStartBeat, findCrossfadeStartDownbeat, pickSmartNext, markPlayed, resetSmartQueuePlayed, CrossfadeBeatSyncV3, IS_WEBKIT, webkitCrossfadeDuration, resolveTransitionStyle, dropCutLead, clearPendingSeek, fadeBeatsFor } from './djmix.js';
@@ -2228,21 +2228,56 @@ function _appendAutoplay(item) {
   markAutoplayStart(item);
   store.playerQueue.push(item);
   store.playerIndex = store.playerQueue.length - 1;
-  const start = autoplayStart();
-  if (start >= 0) {
-    // Cap the tail. Unbounded, the queue grows for as long as the app is open and
-    // saveQueueNow PUTs the whole thing to the server on every change.
-    const over = store.playerQueue.length - start - AUTOPLAY_MAX;
-    if (over > 0) {
-      store.playerQueue.splice(start, over);
-      store.playerIndex -= over;
-      setAutoplayStartIndex(start);
-    }
-  }
+  // Cap the tail. Unbounded, the queue grows for as long as the app is open and
+  // saveQueueNow PUTs the whole thing to the server on every change.
+  capAutoplayTail(AUTOPLAY_MAX);
   _keepRecCursor = true;
   loadAndPlay();
   renderQueue();
   saveQueueDebounced();
+}
+
+
+// ── Autoplay while casting (cast.js) ──
+// The server's follower advances a cast; the recommender lives here. At the end of
+// the queue cast.js asks for the recommender's next picks (peekAutoplay) and hands
+// them to the server, which appends them to the saved queue as it plays them; rows it
+// appended while this page slept come back through appendAutoplayRows.
+let _recsMod = null;
+function _recs() {
+  if (!_recsMod) import('./recommendations.js').then(m => { _recsMod = m; }).catch(() => {});
+  return _recsMod;
+}
+function _castAppendAutoplay(items, at) {
+  const n = appendAutoplayRows(items, at);
+  if (n) {
+    // Through the module already loaded (init imports it): the hint that follows the
+    // adoption must see the cursor moved.
+    if (_recsMod) _recsMod.markRecsPlayed(items);
+    else import('./recommendations.js').then(m => { _recsMod = m; m.markRecsPlayed(items); }).catch(() => {});
+  }
+  return n;
+}
+/** What the recommender would play once the queue is over (cast.js sends it with every
+ *  cast and hint; the server uses it only at the real end of the saved queue).
+ *  A list; [] = nothing must follow; null = not known yet (the server keeps its list).
+ *  cast.js has already ruled out repeat, radio and a controller. */
+function _castPeekAutoplay(n) {
+  if (_currentRecItem) return null;
+  const q = store.playerQueue, i = store.playerIndex;
+  if (!(store.shuffleEnabled && q.length > 1) && i === q.length - 1 && _deskForcedIdx() == null) {
+    // Smart Queue on the last row may still pick an unplayed earlier track
+    // (_nextTrackInQueue): then the queue is not over, and the server must not play a
+    // pick in that track's place — it ends the queue and this page chooses, as before.
+    const mode = _djSetting('smart_queue', 'off');
+    if (mode !== 'off') {
+      const cur = q[i];
+      const dj = _outDjData || (cur ? getDjData(_decodeEntities(cur.name || ''), _decodeEntities(cur.artist || '')) : null);
+      if (dj && pickSmartNext(q, i, dj, mode, false) != null) return [];
+    }
+  }
+  const m = _recs();
+  return m ? m.peekNextRecs(n) : null;
 }
 
 // ── Play a track from recommendations (virtual, not in queue) ──
@@ -2473,30 +2508,49 @@ export function saveQueueDebounced() {
   store.playerSavePending = true; // cast.js flushes it before a cast (the server reads it)
   clearTimeout(store.playerSaveTimer);
   store.playerSaveTimer = setTimeout(saveQueueNow, 2000);
+  cast.noteQueueChanged(); // what plays next may have changed: the server hears it now
   // Trigger recommendations refresh
   import('./recommendations.js').then(m => m.onQueueChanged());
 }
 
-async function saveQueueNow() {
+const KEEPALIVE_MAX_BYTES = 60000;
+async function saveQueueNow(force, opts) {
+  // While casting, the server's follower writes this file too (the pointer, the rows it
+  // appends from the autoplay list). A save left in the debounce when the page froze
+  // fires on wake with the queue as it was BEFORE the sleep and would erase those rows:
+  // hold it until the page has seen a fresh status and any adoption has finished.
+  // flushQueue (a cast is going out, the page is being hidden) saves at once.
+  if (force !== true && store.castDevice && !cast.castStateFresh()) {
+    store.playerSavePending = true;
+    clearTimeout(store.playerSaveTimer);
+    store.playerSaveTimer = setTimeout(saveQueueNow, 2000);
+    return;
+  }
   store.playerSavePending = false;
   if (!store.currentUser) return;
   // A controller's queue is a scratch pad while it controls another device: its saved
   // queue stays what it was before, and remote.js restores it on the way out.
   if (store.remoteTarget) return;
   try {
-    const res = await apiJson('/api/player/queue', {
-      method: 'PUT',
-      body: {
-        queue: store.playerQueue,
-        current_index: store.playerIndex,
-        position_seconds: store.castDevice ? cast.castPosition() : (_activeDeckEl().currentTime || 0),
-        volume: store.playerVolume,
-        playlist_mode: store.playlistMode,
-        shuffle_order: serializeShuffleOrder(),
-        radio_mode: !!store.radioMode,
-        radio_seed: store.radioSeedTrack || null,
-      },
-    });
+    const body = {
+      queue: store.playerQueue,
+      current_index: store.playerIndex,
+      position_seconds: store.castDevice ? cast.castPosition() : (_activeDeckEl().currentTime || 0),
+      volume: store.playerVolume,
+      playlist_mode: store.playlistMode,
+      shuffle_order: serializeShuffleOrder(),
+      radio_mode: !!store.radioMode,
+      radio_seed: store.radioSeedTrack || null,
+    };
+    const req = { method: 'PUT', body };
+    // The page is being hidden (cast.js): a frozen page may never finish an ordinary
+    // fetch, a keepalive one is carried on by the browser. Its body is limited to
+    // 64 KiB — a queue row is ~245 bytes (measured), so about 250 rows fit; a longer
+    // queue goes out as an ordinary request, as before.
+    if (opts && opts.keepalive) {
+      try { if (new TextEncoder().encode(JSON.stringify(body)).length <= KEEPALIVE_MAX_BYTES) req.keepalive = true; } catch {}
+    }
+    const res = await apiJson('/api/player/queue', req);
     // The file a controller fetches has changed only now (the save is debounced).
     document.dispatchEvent(new Event('remote:queue-saved'));
     return res;
@@ -2506,9 +2560,9 @@ async function saveQueueNow() {
 // Synchronous (awaitable) flush of the pending queue save — cancels the debounce
 // timer and performs the PUT immediately. Used before engine-switch reloads so
 // recent queue/position changes are persisted to the server before unload.
-export async function flushQueue() {
+export async function flushQueue(opts) {
   clearTimeout(store.playerSaveTimer);
-  return saveQueueNow();
+  return saveQueueNow(true, opts);
 }
 
 // Put `item` on the active deck WITHOUT playing it, to start at `pos` when the listener
@@ -2553,6 +2607,8 @@ function _adoptCastTrack(idx, track, saved) {
     played: smart ? markPlayed : null,
   });
   if (!adopted) return;
+  // Rows the follower appended while the page slept count against the tail's cap too.
+  capAutoplayTail(AUTOPLAY_MAX);
   // The prediction was made for the track before this one.
   _predictedNextIdx = null;
   _predictedNextKey = null;
@@ -3154,10 +3210,13 @@ export function init() {
   });
 
   // ── Cast (DLNA) — shared module (cast.js) ──
+  _recs(); // load the recommender now: the first cast already wants its picks
   cast.initCast({
     getAudioEl: getAudio, nextTrack, syncVolume: () => setVolume(store.playerVolume),
     getUpcoming: () => { const i = _upcomingIdx(); return i == null ? null : { index: i, item: store.playerQueue[i] }; },
     adoptTrack: _adoptCastTrack,
+    peekAutoplay: _castPeekAutoplay,
+    appendAutoplayRows: _castAppendAutoplay,
     pauseLocal,
     resumeLocal: _resumeLocalPlayback,
     flushQueue,
@@ -3268,7 +3327,11 @@ export function init() {
 
   // Save on page unload (sync XHR since sendBeacon can't set auth headers)
   window.addEventListener('beforeunload', () => {
-    if (store.playerQueue.length && store.currentUser && !store.remoteTarget) {
+    // While casting, the server's follower writes this file too: a page that merely woke
+    // up must not write its pre-sleep queue over it — but an edit still waiting to be
+    // saved is never dropped (cast.castMaySaveOnUnload has the rule).
+    if (store.playerQueue.length && store.currentUser && !store.remoteTarget
+        && cast.castMaySaveOnUnload()) {
       try {
         const xhr = new XMLHttpRequest();
         xhr.open('PUT', '/api/player/queue', false);

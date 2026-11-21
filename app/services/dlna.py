@@ -375,6 +375,7 @@ LIVE_GAP_MAX = 6.0            # a longer gap between samples is not "watched" ti
 STALL_RECAST_AFTER = 15.0     # cast, but no PLAYING for this long → send it once more
 STALL_SKIP_AFTER = 30.0       # … and for this long → skip the track
 DEAD_TRACKS_LIMIT = 2         # tracks in a row that never played → abandon the session
+AUTOPLAY_MAX_ITEMS = 20       # the client's autoplay continuation, at most this many tracks
 NEAR_END_MARGIN = 12.0        # a stop this close to the end is the end
 NEAR_END_FRACTION = 0.85      # … and so is a stop past this share of the track …
 NEAR_END_MAX_WINDOW = 60.0    # … but never further than this from the end (long mixes)
@@ -448,6 +449,14 @@ def _get_session(session_key: str) -> dict:
             "track": None,        # what was cast last: queue_index, name, artist, …, by
             "hint": None,         # the client's "what plays after `track`"
             "hint_used": False,
+            # What plays once the saved queue has run out: the page's recommender picks,
+            # handed over in advance (the recommender lives only in the page, and a phone
+            # page is frozen while the screen is off).
+            "autoplay": [],
+            # About the playing track, when the follower appended it from that list:
+            # the row it followed, and whether the page has since shown it knows the row.
+            "autoplay_after": None,
+            "autoplay_seen": False,
             "repeat": "off",
             "shuffle": False,
             "cast_seq": 0,
@@ -525,6 +534,26 @@ def _clean_item(item: dict | None) -> dict | None:
     }
 
 
+def _clean_autoplay(items) -> list[dict]:
+    """The client's autoplay continuation: queue rows the follower may append once the
+    saved queue is over. Bounded, clipped like _clean_item, one entry per track."""
+    out: list[dict] = []
+    if not isinstance(items, list):
+        return out
+    for raw in items[:AUTOPLAY_MAX_ITEMS * 3]:      # never walk an unbounded body
+        it = _clean_item(raw)
+        if not it or any(_same_track(it, o) for o in out):
+            continue
+        del it["queue_index"]                     # it has no row yet
+        rid = raw.get("id")
+        if isinstance(rid, (str, int)) and not isinstance(rid, bool) and str(rid):
+            it["id"] = str(rid)[:200]
+        out.append(it)
+        if len(out) >= AUTOPLAY_MAX_ITEMS:
+            break
+    return out
+
+
 async def cast_with_outcome(session_key: str, device_id: str, name: str, artist: str, token: str,
                             album: str = "", image: str = "", duration_ms: int = 0, **kw) -> str:
     """Like cast_to_device, but says WHY it did not cast: "ok", "superseded" (a newer
@@ -545,7 +574,7 @@ async def _cast(session_key: str, device_id: str, name: str, artist: str, token:
                 next_item=_UNSET, repeat: str | None = None, shuffle: bool | None = None,
                 username: str = "", client_device: str = "default",
                 by: str = "client", expect_generation: int | None = None,
-                recast: bool = False) -> str:
+                recast: bool = False, autoplay=_UNSET, from_autoplay: bool = False) -> str:
     """"ok", "superseded" (another cast or a stop came after it), or "failed".
 
     `expect_generation` is the follower's guard: its cast goes out only when nothing
@@ -658,7 +687,8 @@ async def _cast(session_key: str, device_id: str, name: str, artist: str, token:
                        image=image, duration_ms=duration_ms, queue_index=queue_index,
                        next_item=next_item, repeat=repeat, shuffle=shuffle,
                        username=username, client_device=client_device,
-                       start_seconds=start_seconds, recast=recast)
+                       start_seconds=start_seconds, recast=recast,
+                       autoplay=autoplay, from_autoplay=from_autoplay)
             logger.info(f"DLNA: [{session_key}] casting '{artist} - {name}' to {device['name']}"
                         f" (by {by}, seq {session['cast_seq']})")
             await _persist()
@@ -686,7 +716,7 @@ async def _cast(session_key: str, device_id: str, name: str, artist: str, token:
 def _note_cast(session_key: str, session: dict, *, by: str, name: str, artist: str, album: str,
                image: str, duration_ms: int, queue_index: int, next_item, repeat, shuffle,
                username: str, client_device: str, start_seconds: float,
-               recast: bool = False) -> None:
+               recast: bool = False, autoplay=_UNSET, from_autoplay: bool = False) -> None:
     """Book-keeping of a cast that the renderer took. `recast`: the same track sent
     again (a seek on a stopped renderer, a stalled start) — what follows it is
     unchanged, so the client's hint stays."""
@@ -698,8 +728,17 @@ def _note_cast(session_key: str, session: dict, *, by: str, name: str, artist: s
         qi = int(queue_index)
     except (TypeError, ValueError):
         qi = -1
+    prev = session.get("track") or {}
     session["track"] = {"queue_index": qi, "name": name, "artist": artist, "album": album,
                         "image": image, "duration_ms": int(duration_ms or 0), "by": by}
+    # A row the follower appended from the autoplay list: the page must add it to its
+    # own queue when it adopts it (it has never seen this row). A re-send keeps the mark.
+    if from_autoplay or (recast and prev.get("autoplay") and _same_track(prev, session["track"])):
+        session["track"]["autoplay"] = True
+    if not recast:
+        session["autoplay_after"] = ({"name": prev.get("name", ""), "artist": prev.get("artist", "")}
+                                     if from_autoplay and prev.get("name") else None)
+        session["autoplay_seen"] = False
     # Renderers (Onkyo) often report TrackDuration=0/NOT_IMPLEMENTED; status and the
     # end rule fall back to what the client said.
     session["duration_seconds"] = (duration_ms / 1000) if duration_ms else 0
@@ -715,6 +754,12 @@ def _note_cast(session_key: str, session: dict, *, by: str, name: str, artist: s
     elif next_item is not _UNSET:
         session["hint"] = {"queue_index": qi, "next": _clean_item(next_item)}
         session["hint_used"] = False
+    # The autoplay list: a client cast that names one replaces it ([] = none). A cast
+    # WITHOUT the field keeps what the server holds — a page whose recommender is still
+    # loading (app just reopened) must not wipe the list by saying nothing. The
+    # follower's own casts leave what is left.
+    if not recast and by != "server" and autoplay is not _UNSET and autoplay is not None:
+        session["autoplay"] = _clean_autoplay(autoplay)
     session["cast_seq"] += 1
     session["queue_ended"] = False
     session["queue_ended_at"] = None
@@ -1198,6 +1243,8 @@ def _status_from(session: dict, sample: dict) -> dict:
         "track": dict(track) if track else None,
         "queue_ended": bool(session.get("queue_ended")),
         "idle_seconds": round(_idle_seconds(session), 1),
+        # How many autoplay tracks the follower still holds for the end of the queue.
+        "autoplay_left": len(session.get("autoplay") or []),
     }
     # Unknown volume: no key at all (a page cached before the null rule shows "null%").
     if session.get("volume") is not None:
@@ -1226,7 +1273,7 @@ async def get_status(session_key: str) -> dict | None:
 
 
 async def set_next_hint(session_key: str, queue_index: int, next_item: dict | None,
-                        repeat: str = "off", shuffle: bool = False) -> str:
+                        repeat: str = "off", shuffle: bool = False, autoplay=None) -> str:
     """The client's "after the current track comes …". Returns "ok", "no_session", or
     "stale" when the client is not talking about the track the session plays now."""
     session = _sessions.get(session_key)
@@ -1237,6 +1284,10 @@ async def set_next_hint(session_key: str, queue_index: int, next_item: dict | No
         return "stale"
     session["hint"] = {"queue_index": queue_index, "next": _clean_item(next_item)}
     session["hint_used"] = False
+    # The page speaks about THIS track: it has the row in its queue (it adopted it).
+    session["autoplay_seen"] = True
+    if autoplay is not None:        # absent = keep what is held; [] = none
+        session["autoplay"] = _clean_autoplay(autoplay)
     session["repeat"] = _norm_repeat(repeat)
     session["shuffle"] = bool(shuffle)
     await _persist()
@@ -1417,7 +1468,8 @@ def _judge_stop(f: dict, now: float, pos, dur: float, renderer_dur: bool = True)
 
 
 async def _server_cast(session_key: str, session: dict, item: dict, queue_index: int,
-                       expect_gen: int, by: str = "server", recast: bool = False) -> str:
+                       expect_gen: int, by: str = "server", recast: bool = False,
+                       from_autoplay: bool = False) -> str:
     """Cast `item` on the follower's behalf. "ok", "superseded" (the client cast
     meanwhile, or the session ended), or "failed"."""
     from app.services import auth
@@ -1430,7 +1482,7 @@ async def _server_cast(session_key: str, session: dict, item: dict, queue_index:
             album=item.get("album", ""), image=item.get("image", ""),
             duration_ms=int(item.get("duration_ms") or 0), queue_index=queue_index,
             username=session["username"], client_device=session["client_device"],
-            by=by, expect_generation=expect_gen, recast=recast,
+            by=by, expect_generation=expect_gen, recast=recast, from_autoplay=from_autoplay,
         ), timeout=CAST_TIMEOUT)
     except (CastError, asyncio.TimeoutError) as e:
         logger.warning(f"DLNA: [{session_key}] cast of '{item.get('name')}' failed: {e!r}")
@@ -1455,6 +1507,45 @@ async def _advance(session_key: str, session: dict, gen: int) -> None:
             return
         if session["generation"] != gen or _sessions.get(session_key) is not session:
             return
+        appended = False
+        lost_row = bool((session.get("track") or {}).get("autoplay")) and not session.get("autoplay_seen")
+        if (choice is None and session.get("repeat", "off") == "off"
+                and (session.get("autoplay") or lost_row)):
+            # The saved queue is over, and the page told us what its recommender would
+            # play then: append that row to the saved queue and carry on with it.
+            # (`lost_row`: even with no picks left, a row of ours that a stale save
+            # erased is put back — rows the user queued behind it are still to play.)
+            from app.services import player as _player
+            try:
+                choice = await _take_autoplay(session)
+            except (_player.QueueUnreadable, OSError) as e:
+                # A file mid-write or a full disk: the next tick tries again.
+                logger.warning(f"DLNA: [{session_key}] queue not writable, retrying: {e!r}")
+                if session["generation"] == gen and _sessions.get(session_key) is session:
+                    session["f"]["pending"] = gen
+                return
+            except Exception as e:
+                # Anything else is a fault of ours: end the queue, do not spin on it.
+                logger.error(f"DLNA: [{session_key}] autoplay append failed: {e!r}")
+                choice = None
+            if choice == "again":
+                # The playing row had been saved away and is back in its place, with
+                # rows the user queued behind it: the queue is not over — choose again.
+                try:
+                    choice = await _choose_next(session)
+                except _QueueNotReadable:
+                    if session["generation"] == gen and _sessions.get(session_key) is session:
+                        session["f"]["pending"] = gen
+                    return
+                if session["generation"] != gen or _sessions.get(session_key) is not session:
+                    return
+            else:
+                appended = choice is not None
+            if session["generation"] != gen or _sessions.get(session_key) is not session:
+                if appended:        # the client cast meanwhile: its queue has no such row
+                    await asyncio.to_thread(_drop_appended, session["username"],
+                                            session["client_device"], choice[0], choice[1])
+                return
         if choice is None:
             session["queue_ended"] = True
             session["queue_ended_at"] = _now()
@@ -1463,10 +1554,15 @@ async def _advance(session_key: str, session: dict, gen: int) -> None:
             await _persist()
             return
         idx, item, order = choice
+        prev_track = dict(session.get("track") or {})
         # The same track again (repeat one): a re-send, so the client's hint stays.
         again = _same_track(item, session.get("track")) and idx == (session.get("track") or {}).get("queue_index")
-        result = await _server_cast(session_key, session, item, idx, gen, recast=again)
+        result = await _server_cast(session_key, session, item, idx, gen, recast=again,
+                                    from_autoplay=appended)
         if result == "superseded":
+            if appended:
+                await asyncio.to_thread(_drop_appended, session["username"],
+                                        session["client_device"], idx, item)
             return
         await asyncio.to_thread(_write_queue_position, session["username"],
                                 session["client_device"], idx, item, order)
@@ -1480,8 +1576,124 @@ async def _advance(session_key: str, session: dict, gen: int) -> None:
             return
         # The failed one counts as played: the next choice moves past it.
         session["track"] = {**item, "queue_index": idx, "by": "server"}
+        if appended:
+            session["track"]["autoplay"] = True
+            session["autoplay_after"] = {"name": prev_track.get("name", ""), "artist": prev_track.get("artist", "")}
+            session["autoplay_seen"] = False
         session["hint"] = None
         gen = session["generation"]
+
+
+async def _take_autoplay(session: dict):
+    """End of the saved queue with an autoplay list: (queue index, item, shuffle order
+    or None) of the list's first usable track, now APPENDED to the saved queue — or
+    None when the list holds nothing usable, or the playing track is not where the
+    saved queue ends. Tracks passed over and the one used leave the session's list."""
+    lst = session.get("autoplay") or []
+    # A lost row is put back only if the page never showed it knows the row (it slept
+    # through it, and its stale save erased it). Once the page has hinted about this
+    # track it HAS the row: its absence from the file is then the user's doing (row
+    # removed, queue replaced) and the queue ends, as for any removed playing row.
+    restore_after = (session.get("autoplay_after") or {}) if not session.get("autoplay_seen") else None
+    took = await asyncio.to_thread(
+        _append_autoplay, session["username"], session["client_device"],
+        dict(session.get("track") or {}), [dict(i) for i in lst], bool(session.get("shuffle")),
+        restore_after)
+    used, choice = took
+    if session.get("autoplay") is lst:
+        del lst[:used]
+    elif isinstance(choice, tuple):
+        # A newer list arrived from the page while the queue was being written.
+        session["autoplay"] = [i for i in (session.get("autoplay") or [])
+                               if not _same_track(i, choice[1])]
+    return choice
+
+
+def _append_autoplay(username: str, client_device: str, track: dict, items: list,
+                     shuffle: bool, restore_after: dict | None = None) -> tuple[int, tuple | str | None]:
+    """(how many list items were consumed, (index, row, order) of the appended one or
+    None — or "again": a lost row was put back in the MIDDLE of the queue, so the queue
+    is not over and the caller chooses anew). One read-modify-write under the queue lock (player.update_queue). An item
+    that is the current track, or that the queue already holds, is passed over.
+
+    Nothing is appended unless the track playing now really is where the saved queue
+    ends: the list was made for that moment, not for a queue that changed since. One
+    exception: the playing track is itself a row this follower appended and the file no
+    longer holds it (a page that woke up saved its older queue over ours): the row is
+    put back right after the row it followed (`restore_after`; at the end when that row
+    cannot be found, or is the last) — rows the user queued meanwhile stay AHEAD of it.
+    `restore_after` None = do not restore (the page knows the row: it was removed).
+    The queue is NOT trimmed here: only the page knows where its "Autoplay" tail starts
+    (it caps the tail itself when it adopts the row). Only the device's OWN queue file
+    is written (fallback=False): a device without one must not get the default
+    device's queue plus our row as its own."""
+    from app.services import player
+    out: dict = {"used": 0, "choice": None}
+
+    def mutate(data: dict):
+        queue = data.get("queue")
+        if not isinstance(queue, list):
+            return False
+        n = len(queue)
+        cur = _locate([it if isinstance(it, dict) else {} for it in queue], track,
+                      data.get("current_index"))
+        restored = False
+        if (cur is None and restore_after is not None and track.get("autoplay")
+                and track.get("name") and n):
+            at = n
+            if restore_after.get("name"):
+                found = [i for i, it in enumerate(queue) if isinstance(it, dict) and _same_track(it, restore_after)]
+                if found:
+                    at = found[-1] + 1
+            queue.insert(at, {key: track[key] for key in ("name", "artist", "album", "image", "duration_ms", "id")
+                              if key in track})
+            cur, n, restored = at, n + 1, True
+            if cur != n - 1 and not shuffle:
+                # Rows follow it: only the row and the pointer are written here.
+                data["current_index"] = cur
+                out["choice"] = "again"
+                return True
+        shuffled = shuffle and n > 1
+        if cur is None or (not shuffled and cur != n - 1):
+            return False
+        played, tail = _sync_order(data.get("shuffle_order"), cur, n) if shuffled else ([], [])
+        if restored:
+            tail = []               # every other row was played before the row we lost
+        elif tail:
+            return False            # shuffle still has rows to play
+        for k, item in enumerate(items):
+            out["used"] = k + 1
+            if _same_track(item, track) or any(
+                    isinstance(it, dict) and _same_track(it, item) for it in queue):
+                continue
+            row = {key: v for key, v in item.items() if key != "queue_index"}
+            queue.append(row)
+            order = None
+            if shuffled:
+                order = _order_after(played, tail, cur, n)
+            out["choice"] = (n, row, order)
+            return True
+        return restored             # the lost row is back even when nothing follows it
+    player.update_queue(username, client_device, mutate, fallback=False)
+    return out["used"], out["choice"]
+
+
+def _drop_appended(username: str, client_device: str, idx: int, item: dict) -> None:
+    """An appended autoplay row whose cast never went out (the client cast something
+    itself): take it off again, if it is still the queue's last row and not current."""
+    from app.services import player
+
+    def mutate(data: dict):
+        queue = data.get("queue")
+        if (not isinstance(queue, list) or len(queue) != idx + 1 or not isinstance(queue[idx], dict)
+                or not _same_track(queue[idx], item) or data.get("current_index") == idx):
+            return False
+        queue.pop()
+        return True
+    try:
+        player.update_queue(username, client_device, mutate, fallback=False)
+    except Exception as e:
+        logger.warning(f"DLNA: could not take the unused autoplay row back: {e!r}")
 
 
 def _locate(queue: list, track: dict, saved_index) -> int | None:
@@ -1635,6 +1847,9 @@ def _snapshot() -> dict:
             "track": s.get("track"),
             "hint": s.get("hint"),
             "hint_used": s.get("hint_used", False),
+            "autoplay": list(s.get("autoplay") or []),
+            "autoplay_after": s.get("autoplay_after"),
+            "autoplay_seen": bool(s.get("autoplay_seen")),
             "repeat": s.get("repeat", "off"),
             "shuffle": s.get("shuffle", False),
             "cast_seq": s.get("cast_seq", 0),
@@ -1776,6 +1991,11 @@ async def _resume_one(key: str, e: dict) -> bool:
         "track": e.get("track"),
         "hint": e.get("hint"),
         "hint_used": bool(e.get("hint_used")),
+        "autoplay": _clean_autoplay(e.get("autoplay")),
+        "autoplay_after": ({"name": str(e["autoplay_after"].get("name") or "")[:500],
+                            "artist": str(e["autoplay_after"].get("artist") or "")[:500]}
+                           if isinstance(e.get("autoplay_after"), dict) else None),
+        "autoplay_seen": bool(e.get("autoplay_seen")),
         "repeat": _norm_repeat(e.get("repeat")),
         "shuffle": bool(e.get("shuffle")),
         "cast_seq": int(e.get("cast_seq") or 0),

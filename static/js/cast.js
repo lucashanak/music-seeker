@@ -24,6 +24,11 @@
 //   adoptTrack(idx, track) the server cast queue[idx] — make it current (adoptQueueIndex:
 //                          Smart Queue + shuffle bookkeeping), show it, save; NO cast.
 //                          A track that is in no row is not adopted at all.
+//   peekAutoplay(n)        what the recommender would play once the queue is over: a
+//                          list, [] = nothing, null = not known yet; consumes nothing
+//   appendAutoplayRows(items, at) rows the server appended from that list: put them into
+//                          store.playerQueue (same array; at the end and behind the
+//                          "Autoplay" divider, or at index `at`), tell the recommender
 //   pauseLocal()           pause BOTH local decks (and the prefetch)
 //   resumeLocal()          a cast that failed to start: local playback carries on
 //   onCastPlaying(bool)    sync the play/pause icon (store.playerPlaying)
@@ -44,6 +49,7 @@ const POLL_MAX_MS = 30000;  // ceiling of the back-off after failed polls
 const GAP_MS = 6000;        // a gap between polls longer than this = the page was asleep
 const STATUS_TIMEOUT_MS = 8000; // a status request is abandoned after this
 const FLUSH_TIMEOUT_MS = 3000;  // a queue save before a cast is waited for at most this
+const AUTOPLAY_SEND = 20;       // recommender picks handed to the server (its own bound)
 
 function _dec(s) {
   if (!s || !s.includes('&')) return s || '';
@@ -169,6 +175,8 @@ let _castSeq = -1;           // newest cast_seq this page knows of (its own cast
 let _castPosts = 0;          // POST /cast requests on their way
 let _hintKey = '';           // what the server was last told about "what plays next"
 let _hintInFlight = false;
+let _hintAgain = false;      // the hint changed while one was on its way
+let _followStatus = null;    // the last status of a FOLLOWED cast (its track is what a hint is about)
 let _abKey = '';             // what the Android shell was last told ('' | 'paused' | track key)
 let _pollGen = 0;            // bumped by every (re)start/end of the poll chain
 let _pollPromise = null;     // the ONE status request on its way, if any (finding 6)
@@ -290,8 +298,44 @@ function _nextBody(up) {
     album: it.album || '', image: it.image || '', duration_ms: _ms(it.duration_ms),
   };
 }
-function _hintKeyFor(idx, up) {
-  return [idx, up ? up.index : -1, up ? _key(up.item) : '', store.repeatMode || 'off', !!store.shuffleEnabled].join('\u0002');
+function _hintKeyFor(idx, up, ap) {
+  return [idx, up ? up.index : -1, up ? _key(up.item) : '', store.repeatMode || 'off', !!store.shuffleEnabled,
+    ap == null ? '?' : '=' + ap.map(_key).join('\u0003')].join('\u0002');
+}
+
+// ── What plays when the queue is over ──
+// Autoplay — the recommender — lives in the page, and the page is frozen while the
+// phone's screen is off: the server then reached the last row and stopped. So every
+// cast and every hint carries the recommender's next picks, wherever in the queue the
+// cast is (a phone locked for the whole queue reaches the last row by the server's own
+// advances, with no page awake to say anything then). The server uses the list only
+// when its saved queue is really over, and appends the picks as it plays them.
+//
+// Three answers (the wire's too):
+//   undefined  not known — the recommender is still loading, or this page has no say
+//              (a controller): the body has no `autoplay`, the server KEEPS what it holds
+//   []         nothing must follow the queue: repeat, radio (it refills itself), or a
+//              recommender that has nothing — the server drops its list
+//   [rows]     the picks, the current track left out
+function _autoplayFor(idx) {
+  if (idx < 0 || idx !== store.playerIndex || store.remoteTarget || !_ctx.peekAutoplay) return undefined;
+  if ((store.repeatMode || 'off') !== 'off' || store.radioMode) return [];
+  const list = _call(_ctx.peekAutoplay, AUTOPLAY_SEND);
+  if (!Array.isArray(list)) return undefined;
+  const seen = new Set([_key(store.playerQueue[idx])]);
+  const out = [];
+  for (const it of list) {
+    if (!it || !it.name) continue;
+    const k = _key(it);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const row = { name: _dec(it.name), artist: _dec(it.artist || ''), album: it.album || '',
+      image: it.image || '', duration_ms: _ms(it.duration_ms) };
+    if (it.id != null && it.id !== '') row.id = String(it.id);
+    out.push(row);
+    if (out.length >= AUTOPLAY_SEND) break;
+  }
+  return out;
 }
 
 // ── The ONE place a track is sent to the receiver ──
@@ -305,6 +349,7 @@ export async function castItem(item, opts = {}) {
   let idx = opts.queueIndex;
   if (idx == null) idx = q[store.playerIndex] === item ? store.playerIndex : q.indexOf(item);
   const up = idx >= 0 && idx === store.playerIndex ? _upcoming() : null;
+  const ap = _autoplayFor(idx);
   const start = Math.max(0, Number(opts.startSeconds) || 0);
   const body = {
     device_id: device.id,
@@ -317,6 +362,7 @@ export async function castItem(item, opts = {}) {
     repeat: store.repeatMode || 'off',
     shuffle: !!store.shuffleEnabled,
   };
+  if (ap) body.autoplay = ap; // absent = "not known": the server keeps its list
   _trackReset(start);
   _castEpoch++; // any status asked for before this cast is about the track it replaces
   _castPosts++;
@@ -336,7 +382,7 @@ export async function castItem(item, opts = {}) {
     const res = await apiJson('/api/dlna/cast', { method: 'POST', body });
     if (res) _sessionSeen(res.session_id);
     if (res && Number.isFinite(res.cast_seq)) _castSeq = Math.max(_castSeq, res.cast_seq);
-    _hintKey = idx >= 0 ? _hintKeyFor(idx, up) : '';
+    _hintKey = idx >= 0 ? _hintKeyFor(idx, up, ap) : '';
     _trackReset(start);
     return res;
   } finally {
@@ -493,6 +539,7 @@ function _endSession() {
   _inactiveCount = 0;
   // The next session counts its casts from 0 again.
   _castSeq = -1; _endedSeq = null; _hintKey = ''; _sessionId = null; _sawPlayingSeq = null;
+  _followStatus = null; _hintAgain = false;
   _deferQueue = [];
   if (!had) return false;
   syncCastButtons('');
@@ -605,7 +652,9 @@ function _adopt(t) {
   // Same row: not a new track — e.g. a seek on a stopped receiver, which the server
   // answers by casting the same track again. Only the seq is taken (caller).
   if (idx >= 0 && idx === store.playerIndex) return;
-  if (idx < 0) {
+  // A row the server appended from the autoplay list is in no row of ours yet: it is
+  // taken from the server's saved queue (below), never cast again.
+  if (idx < 0 && !(t.by === 'server' && t.autoplay)) {
     // Not in this queue under any row or name: the page cannot make it current without
     // inventing a queue entry. Leave the queue alone and say so.
     console.warn(`[cast] the receiver plays "${t.name || '?'}", which is not in this queue — not adopted`);
@@ -632,27 +681,83 @@ function _sameQueue(q) {
 
 const _queueSig = () => store.playerQueue.map(_key).join('\u0003');
 
+// The saved queue is ours plus rows after it: what the server appended (autoplay).
+function _appendedRows(q) {
+  const mine = store.playerQueue;
+  if (!Array.isArray(q) || !mine.length || q.length <= mine.length) return null;
+  if (!mine.every((it, i) => _key(it) === _key(q[i]))) return null;
+  return q.slice(mine.length).filter((it) => it && it.name);
+}
+
+// Rows the server appended go into OUR array (push — search.js tests its identity),
+// behind the "Autoplay" divider; the recommender is told they have been played.
+function _pushAutoplay(rows, at = null) {
+  if (!rows || !rows.length) return;
+  if (_ctx.appendAutoplayRows) _call(_ctx.appendAutoplayRows, rows, at);
+  else if (at != null) store.playerQueue.splice(at, 0, ...rows);
+  else for (const it of rows) store.playerQueue.push(it);
+}
+
 async function _adoptFromServer(idx, t) {
   const seq = _castSeq;
   const q0 = store.playerQueue, sig0 = _queueSig();
-  let saved = null;
+  const auto = t.autoplay === true;
+  let saved = null, data = null;
   try {
-    const data = await apiJson('/api/player/queue');
+    data = await apiJson('/api/player/queue');
     if (data && _sameQueue(data.queue)) saved = data;
   } catch {}
   if (!store.castDevice || seq !== _castSeq) return; // a newer cast or adoption took over
+  // A cast of ours is on its way (its POST has not answered, so the seq above has not
+  // moved yet) — the user started something else, typically a new playlist: what the
+  // server was playing belongs to the queue they just left. Nothing of it is taken.
+  if (_castPosts > 0) return;
   let i = idx;
+  const changed = store.playerQueue !== q0 || _queueSig() !== sig0;
+  if (auto && !changed && !saved && data) {
+    // The server played on past the end of our queue: take its rows — all of them, it
+    // may have appended several while the page slept. From here the two queues agree.
+    const rows = _appendedRows(data.queue);
+    if (rows && rows.length) {
+      _pushAutoplay(rows);
+      if (_sameQueue(data.queue)) saved = data;
+      i = _resolveIndex(t);
+    }
+  }
   // The queue changed while the GET was out (a row removed, a new playlist, a drag):
   // the server's order and index are positions into a queue that no longer exists, and
   // so is `idx`. Find the track again and book only the one step.
-  if (store.playerQueue !== q0 || _queueSig() !== sig0) {
+  if (changed) {
     saved = null;
     i = _resolveIndex(t);
     if (i < 0) {
+      // Edited while the GET was out and the track is in no row: positions (ours and
+      // the server's) mean nothing now. Not adopted — an autoplay row neither.
       console.warn(`[cast] the receiver plays "${t.name || '?'}", which left the queue meanwhile — not adopted`);
       return;
     }
     if (i === store.playerIndex) return;
+  }
+  if (i < 0) {
+    if (!auto) return;
+    // An autoplay row we could not read from the saved queue (the GET failed, or a save
+    // of ours replaced the file after the server appended): the status names the track.
+    // It followed the row that was current — so it goes right after that row. Anything
+    // behind it was queued by the user while the server was already moving on (the save
+    // is debounced) and must stay AHEAD of what plays now, or it would never play.
+    const row = { name: t.name || '', artist: t.artist || '', album: t.album || '', image: t.image || '',
+      duration_ms: _ms(t.duration_ms) };
+    if (!row.name) return;
+    saved = null;
+    const at = store.playerIndex + 1;
+    if (store.playerIndex >= 0 && at < store.playerQueue.length) {
+      _pushAutoplay([row], at);
+      i = store.playerQueue[at] === row ? at : _resolveIndex(t);
+      if (i < 0) return;
+    } else {
+      _pushAutoplay([row]);
+      i = store.playerQueue.length - 1;
+    }
   }
   if (saved && Number.isInteger(saved.current_index) && _key(store.playerQueue[saved.current_index]) === _key(t)) i = saved.current_index;
   _call(_ctx.adoptTrack, i, t, saved ? { shuffle_order: saved.shuffle_order || null, current_index: saved.current_index } : null);
@@ -691,7 +796,8 @@ export function adoptQueueIndex(idx, { shuffle, played, restoreOrder, saved } = 
 // Tell the server what the page would play next — only when that changed, and only
 // while the server's current track is ours (otherwise it answers 409 stale).
 function _maybeHint(status) {
-  if (_castPosts > 0 || _hintInFlight || _adoptPromise) return;
+  if (!status || _castPosts > 0 || _adoptPromise) return;
+  if (_hintInFlight) { _hintAgain = true; return; } // looked at again when it lands
   const t = status.track;
   const idx = store.playerIndex;
   // Ours when it resolves to our row — by index, or by name after the indices drifted
@@ -699,14 +805,70 @@ function _maybeHint(status) {
   if (!t || idx < 0 || _resolveIndex(t) !== idx) return;
   const serverIdx = Number.isInteger(t.queue_index) && t.queue_index >= 0 ? t.queue_index : idx;
   const up = _upcoming();
-  const key = _hintKeyFor(idx, up);
+  const ap = _autoplayFor(idx);
+  const key = _hintKeyFor(idx, up, ap);
   if (key === _hintKey) return;
   _hintInFlight = true;
-  apiJson('/api/dlna/next-hint', { method: 'POST', body: {
-    queue_index: serverIdx, next: _nextBody(up), repeat: store.repeatMode || 'off', shuffle: !!store.shuffleEnabled,
-  }}).then(() => { _hintKey = key; })
+  _hintAgain = false;
+  const body = { queue_index: serverIdx, next: _nextBody(up), repeat: store.repeatMode || 'off', shuffle: !!store.shuffleEnabled };
+  if (ap) body.autoplay = ap; // absent = "not known": the server keeps its list
+  // The save first: a hint naming a row the saved queue does not hold yet is cast with
+  // no queue index (and the queue ends after it).
+  _flushPendingSave().then(() => apiJson('/api/dlna/next-hint', { method: 'POST', body })).then(() => { _hintKey = key; })
     .catch(e => { if (e && (e.status === 409 || e.status === 400)) _hintKey = key; })
-    .finally(() => { _hintInFlight = false; });
+    .finally(() => {
+      _hintInFlight = false;
+      if (_hintAgain) { _hintAgain = false; if (store.castDevice) _maybeHint(_followStatus); }
+    });
+}
+
+/** The queue changed (the engine's saveQueueDebounced): what plays next may be another
+ *  track now. The poll would notice within 2 s and the save lands after its own 2 s
+ *  debounce — long enough for the current row to end and the server to move on by its
+ *  old idea of the queue (a track queued on the last row was skipped for an autoplay
+ *  pick). So, while the server follows: save now, then tell it, in that order — a hint
+ *  naming a row the saved queue does not hold yet is cast with no queue index. */
+let _noteScheduled = false;
+export function noteQueueChanged() {
+  if (!store.castDevice || !_followStatus || _noteScheduled) return;
+  _noteScheduled = true;
+  // After the caller has finished its own edit (it often saves first, then moves the index).
+  Promise.resolve().then(() => {
+    _noteScheduled = false;
+    if (!store.castDevice || !_followStatus || _castPosts > 0 || _adoptPromise) return;
+    if (!castStateFresh()) {
+      // The page's view is old (it slept, or its timers are throttled in a hidden tab —
+      // a remote command still gets here): look first. The poll adopts what the server
+      // did, then releases the save and sends the hint (_pollRequest).
+      pollCastOnce();
+      return;
+    }
+    const idx = store.playerIndex;
+    if (_hintKeyFor(idx, _upcoming(), _autoplayFor(idx)) === _hintKey) return; // nothing the server needs
+    _maybeHint(_followStatus); // saves first
+  });
+}
+
+// Save a queue edit that is waiting — in its debounce, or HELD by the engine because
+// the page's view of the cast was stale (saveQueueNow). Bounded: a save that hangs
+// must not hold what waits behind it.
+async function _flushPendingSave() {
+  if (!store.playerSavePending || !_ctx.flushQueue) return;
+  let cut;
+  try {
+    await Promise.race([_ctx.flushQueue(), new Promise((r) => { cut = setTimeout(r, FLUSH_TIMEOUT_MS); })]);
+  } catch {} finally { clearTimeout(cut); }
+}
+
+/** May the engine's last-moment save (beforeunload) write the queue? Not casting, or
+ *  the view is fresh: yes. Stale: only if an EDIT is waiting to be saved and no
+ *  adoption is reading the server's queue — a user's edit is not dropped because the
+ *  tab's timers were throttled. A page that merely woke up, with nothing of its own
+ *  to save, does not write: its queue and index are from before the sleep and the
+ *  server's follower has written the file since. */
+export function castMaySaveOnUnload() {
+  if (!store.castDevice || castStateFresh()) return true;
+  return !!store.playerSavePending && !_adoptPromise;
 }
 
 export function syncCastButtons(color) {
@@ -827,6 +989,16 @@ async function _pollRequest() {
   if (epoch !== _castEpoch || _castPosts > 0) return true;
   _applyStatus(status, gap);
   if (_adoptPromise) { try { await _adoptPromise; } catch {} }
+  // The engine HOLDS a debounced queue save while this page's view of the cast is stale
+  // (saveQueueNow), and re-checks on a timer. A timer is not enough: in a hidden desktop
+  // tab timers run about once a minute, save timer and poll in one batch — the save looks
+  // before the status lands and is held for good. So the hold is released HERE, by the
+  // event that makes the view fresh: the status is applied, any adoption is done.
+  if (gen === _pollGen && store.castDevice && castStateFresh()) {
+    await _flushPendingSave();
+    // A hint that could not go while the adoption was reading the queue goes now.
+    if (store.castDevice && _followStatus) _maybeHint(_followStatus);
+  }
   return true;
 }
 
@@ -878,6 +1050,7 @@ function _applyStatus(status, gap) {
   _lastStatusAt = now;
   const follow = status.follow === true;
   _sessionSeen(status.session_id);
+  _followStatus = follow ? status : null;
   if (follow) _maybeAdopt(status);
 
   const dur = status.duration_seconds || 0;
@@ -1066,7 +1239,14 @@ export function wireControls() {
   // (which, after a long sleep, may be a back-off interval).
   try {
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden || !store.castDevice || _pollPromise) return;
+      if (document.hidden) {
+        // About to be frozen: a queue save still in its debounce would fire only on
+        // wake, over whatever the server appended meanwhile. Save it now.
+        // keepalive: a page frozen right after may never finish an ordinary fetch.
+        if (store.castDevice && store.playerSavePending && castStateFresh()) _call(_ctx.flushQueue, { keepalive: true });
+        return;
+      }
+      if (!store.castDevice || _pollPromise) return;
       const gen = _pollGen;
       clearTimeout(store.castPollTimer);
       _tick(gen);
@@ -1077,6 +1257,7 @@ export function wireControls() {
 // Exposed for tests only.
 export const _internals = {
   POLL_MS, GAP_MS,
+  ctx: () => _ctx, // the hooks the engine wired (tests call the real ones)
   state: () => ({ castSeq: _castSeq, lastPos: _castLastPos, lastPosAt: _castLastPosAt, extrap: _castExtrap,
     wasPlaying: _castWasPlaying, issuedAt: _castIssuedAt, pollInFlight: !!_pollPromise, hintKey: _hintKey, lastState: _lastState, seenPos: _castSeenPos }),
   reset() {
@@ -1084,7 +1265,7 @@ export const _internals = {
     clearTimeout(store.castPollTimer);
     clearTimeout(_castTransitionTimer);
     store.castPollTimer = null;
-    _castSeq = -1; _castPosts = 0; _hintKey = ''; _hintInFlight = false; _abKey = '';
+    _castSeq = -1; _castPosts = 0; _hintKey = ''; _hintInFlight = false; _hintAgain = false; _followStatus = null; _noteScheduled = false; _abKey = '';
     _pollPromise = null; _castEpoch = 0; _endedSeq = null; _inactiveCount = 0;
     _deferQueue = []; _bypassDefer = false; _sessionId = null; _sawPlayingSeq = null; _adoptPromise = null; _lastPollEndAt = 0; _lastStatusAt = 0; _castPollFails = 0; _castDeadTracks = 0; _restoreTries = 0;
     _castIssuedAt = 0; _castSawPlaying = false; _castRetried = false;

@@ -173,6 +173,80 @@ export async function playNextRec() {
   return true;
 }
 
+// ── What playNextRec would deliver next, without delivering it ──
+// A cast is advanced by the SERVER (the page is frozen while the phone's screen is
+// off), and the server knows nothing of the recommender. At the end of the queue the
+// page therefore hands it these tracks in advance (cast.js: `autoplay`). Nothing here
+// moves the cursor or records a play; when nothing lies ahead a load is started — once
+// per need: one in flight at a time, and an empty or failed answer is not asked again
+// for PEEK_RETRY_MS (the caller polls every 2 s).
+//
+// Three answers, and the caller must tell them apart: a list; [] = the recommender was
+// asked and HAS nothing; null = not known (never loaded, loading, the load failed).
+// The server keeps its own list on "not known" and drops it on [].
+const PEEK_RETRY_MS = 60000;          // a failed load is asked again after this
+const PEEK_EMPTY_MAX_MS = 15 * 60000; // an EMPTY answer backs off: 1, 2, 4 … 15 min
+let _peekLoading = false;
+let _peekRetryAt = 0;
+let _peekKnownEmpty = false;   // the last answer that came back was "nothing"
+let _peekEmptyRuns = 0;        // empty answers in a row (drives the back-off)
+let _loadedFor = null;         // the queue ARRAY the cache was loaded for
+
+export function peekNextRecs(n = 10) {
+  // A new playlist is a new array (upnext.playTracks): picks made for the queue the
+  // user left are not this queue's. "Not known" until a load for THIS queue is in —
+  // asked once per array, whatever the retry clock says. Not while the station plays
+  // (the cursor is set): its picks belong to the tail that is playing.
+  if (_loadedFor && _loadedFor !== store.playerQueue && recsPlayingIdx < 0) {
+    if (!_peekLoading && !recsLoading && store.playerQueue.length) { _peekRetryAt = 0; _peekEmptyRuns = 0; _peekKnownEmpty = false; }
+    _loadForPeek();
+    return null;
+  }
+  const from = recsPlayingIdx >= 0 ? recsPlayingIdx + 1 : 0;
+  const ahead = recsCache.slice(from, from + Math.max(0, n));
+  if (ahead.length) { _peekKnownEmpty = false; _peekEmptyRuns = 0; return ahead; }
+  _loadForPeek();
+  // While a reload is on its way the previous answer stands: flipping [] → null → []
+  // every retry made the caller re-send its hint twice a minute for the whole cast.
+  return _peekKnownEmpty ? [] : null;
+}
+
+function _loadForPeek() {
+  if (_peekLoading || recsLoading || !store.playerQueue.length || Date.now() < _peekRetryAt) return;
+  _peekRetryAt = Date.now() + PEEK_RETRY_MS;
+  _peekLoading = true;
+  recsDirty = true;
+  loadRecs({ quiet: true }).catch(() => {}).finally(() => {
+    _peekLoading = false;
+    if (_loadFailed) return; // not an answer: what was known before stays
+    const from = recsPlayingIdx >= 0 ? recsPlayingIdx + 1 : 0;
+    _peekKnownEmpty = recsCache.length <= from;
+    if (_peekKnownEmpty) {
+      _peekEmptyRuns++;
+      _peekRetryAt = Date.now() + Math.min(PEEK_EMPTY_MAX_MS, PEEK_RETRY_MS * 2 ** (_peekEmptyRuns - 1));
+    } else {
+      _peekEmptyRuns = 0;
+    }
+  });
+}
+
+/** These tracks were played on the page's behalf (the cast follower appended them to
+ *  the queue): move the cursor past them, so the station does not offer them again,
+ *  and let them steer the top-up exactly as a pick playNextRec delivered. */
+export function markRecsPlayed(tracks) {
+  let moved = false;
+  for (const t of (tracks || [])) {
+    const k = _key(t);
+    const j = recsCache.findIndex(r => _key(r) === k);
+    if (j < 0) continue;
+    if (j > recsPlayingIdx) recsPlayingIdx = j;
+    _recordPlayedRec(recsCache[j]);
+    moved = true;
+  }
+  if (moved) { _maybeTopUp(); renderRecs(); }
+  return moved;
+}
+
 // ── Play previous rec ──
 export function playPrevRec() {
   if (recsPlayingIdx <= 0) {
@@ -202,7 +276,7 @@ let _loadedVibe = '';
 let _loadedSeedTrack = null;
 let _loadFailed = false;
 
-async function loadRecs() {
+async function loadRecs({ quiet = false } = {}) {
   if (!store.playerQueue.length) return;
   // A mood chip tapped while a load is in flight must not be swallowed: the
   // chip would show Calm over a Default list, and re-tapping it could not fix
@@ -211,6 +285,7 @@ async function loadRecs() {
   recsLoading = true;
   renderLoading();
   const vibe = _recsVibe;
+  const forQueue = store.playerQueue; // (peekNextRecs: a cache made for another queue array is stale)
   try {
     const fb = _loadFeedback();
     const profileTracks = _profileTracks();
@@ -248,6 +323,7 @@ async function loadRecs() {
     }
     recsDirty = false;
     _loadFailed = false;
+    _loadedFor = forQueue;
     _loadedVibe = vibe;
     _loadedSeedTrack = cursorTrack;
     // Re-anchor the endless-radio station on a fresh full load.
@@ -258,10 +334,12 @@ async function loadRecs() {
   } catch {
     recsCache = [];
     _loadFailed = true;
+    _loadedFor = forQueue;
     _loadedVibe = vibe;
     _loadedSeedTrack = store.playerQueue[_cursorIdx()] || _loadedSeedTrack;
     renderRecs();
-    showToast("Couldn't load recommendations");
+    // A load nobody asked for (the cast's look-ahead) fails silently.
+    if (!quiet) showToast("Couldn't load recommendations");
   } finally {
     recsLoading = false;
     // The mood changed under an in-flight request — serve the latest choice.
@@ -623,3 +701,13 @@ export function onQueueChanged() {
 
 // ── Init ──
 export function init() {}
+
+// Exposed for tests only.
+export const _internals = {
+  state: () => ({ cursor: recsPlayingIdx, cache: recsCache.slice(), played: _playedWindow.slice() }),
+  reset() {
+    recsCache = []; recsLoading = false; recsDirty = true; recsPlayingIdx = -1;
+    _playedWindow = []; _originalSeed = []; _driftSteps = 0; _toppingUp = false;
+    _peekLoading = false; _peekRetryAt = 0; _peekKnownEmpty = false; _peekEmptyRuns = 0; _loadedFor = null; _loadFailed = false;
+  },
+};

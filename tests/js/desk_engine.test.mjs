@@ -1299,3 +1299,199 @@ test('an engine load gives a deck its key lock back (the rate is 1 again)', asyn
 test('no engine event listener threw during this file', () => {
   assert.deepEqual(allErrors.map(e => String(e && e.stack || e).split('\n').slice(0, 2).join(' | ')), []);
 });
+
+// ── Cast autoplay: the hooks the engine really wires into cast.js (2026-11-21) ──
+// cast.test.mjs drives cast.js with stand-in hooks; these call the ones player_v3.js
+// passed to initCast (_castPeekAutoplay, _castAppendAutoplay, _adoptCastTrack) and the
+// engine's own queue save.
+const castMod = await import('../../static/js/cast.js');
+const recsMod = await import('../../static/js/recommendations.js');
+const PICKS = [{ id: 'p1', name: 'Pick One', artist: 'Reco' }, { name: 'Pick Two', artist: 'Reco' }, { name: 'Pick Three', artist: 'Reco' }];
+/** Answer the recommender and record queue saves on top of the harness's fetch. */
+function withApi(t, { recs = PICKS } = {}) {
+  const real = globalThis.fetch;
+  const log = { recs: 0, puts: [] };
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = new URL(String(url), 'http://localhost');
+    const json = (o) => ({ ok: true, status: 200, statusText: '', headers: { get: () => 'application/json' }, json: async () => o, text: async () => JSON.stringify(o) });
+    if (u.pathname === '/api/player/recommendations') { log.recs++; return json({ tracks: recs.map(r => ({ ...r })) }); }
+    if (u.pathname === '/api/player/queue' && (opts.method || 'GET') === 'PUT') { log.puts.push(JSON.parse(opts.body)); return json({ status: 'saved' }); }
+    return real(url, opts);
+  };
+  const user = store.currentUser;
+  store.currentUser = store.currentUser || { username: 'claude_test' };
+  recsMod._internals.reset();
+  Q.setAutoplayStartIndex(-1);
+  t.after(() => {
+    globalThis.fetch = real; store.currentUser = user; store.castDevice = null;
+    recsMod._internals.reset(); Q.setAutoplayStartIndex(-1); castMod._internals.reset();
+    clearTimeout(store.playerSaveTimer); store.playerSavePending = false;
+  });
+  return log;
+}
+
+test('cast autoplay: the engine\'s peek hook answers null while the recommender loads, then its picks — consuming none', async (t) => {
+  const log = withApi(t);
+  await fresh({ n: 3, idx: 2 });
+  const hooks = castMod._internals.ctx();
+  assert.equal(typeof hooks.peekAutoplay, 'function', 'player_v3 wires peekAutoplay');
+  assert.equal(hooks.peekAutoplay(20), null, 'not known yet: never an emptying []');
+  await flush();
+  assert.equal(log.recs, 1);
+  assert.deepEqual(hooks.peekAutoplay(20).map(x => x.name), PICKS.map(x => x.name));
+  assert.equal(recsMod._internals.state().cursor, -1);
+  assert.deepEqual(store.playerQueue.length, 3);
+  // The same on any row: the list is sent wherever the cast is.
+  store.playerIndex = 0;
+  assert.equal(hooks.peekAutoplay(2).length, 2);
+  assert.equal(log.recs, 1);
+});
+
+test('cast autoplay: the engine\'s append hook pushes into the same array, draws the divider and moves the recommender at once', async (t) => {
+  withApi(t);
+  await fresh({ n: 3, idx: 2 });
+  const hooks = castMod._internals.ctx();
+  hooks.peekAutoplay(20);
+  await flush();
+  const q = store.playerQueue;
+  const rows = [{ name: 'Pick One', artist: 'Reco' }, { name: 'Pick Two', artist: 'Reco' }];
+  hooks.appendAutoplayRows(rows);
+  // No await: the hint that follows an adoption reads the cursor in the same poll.
+  assert.equal(recsMod._internals.state().cursor, 1);
+  assert.equal(store.playerQueue, q);
+  assert.deepEqual(q.slice(3), rows);
+  assert.equal(Q.autoplayStart(), 3);
+  assert.deepEqual(hooks.peekAutoplay(20).map(x => x.name), ['Pick Three']);
+  // A fallback row goes in at a position, in place, with no new divider.
+  const mid = { name: 'Pick Three', artist: 'Reco' };
+  hooks.appendAutoplayRows([mid], 1);
+  assert.equal(store.playerQueue, q);
+  assert.equal(q[1], mid);
+  assert.equal(q.length, 6);
+  assert.equal(Q.autoplayStart(), 4, 'the divider follows its row');
+});
+
+test('cast autoplay: adopting a server row makes it current without loading a deck, and caps the tail at 20', async (t) => {
+  withApi(t);
+  const a = await fresh({ n: 3, idx: 2 });
+  const hooks = castMod._internals.ctx();
+  store.castDevice = { id: 'uuid:fake', name: 'Fake' };
+  const srcBefore = a.src;
+  const q = store.playerQueue;
+  const rows = Array.from({ length: 25 }, (_, i) => ({ name: `Auto ${i}`, artist: 'Reco' }));
+  hooks.appendAutoplayRows(rows);
+  assert.equal(q.length, 28);
+  hooks.adoptTrack(27, rows[24], null);
+  assert.equal(store.playerQueue, q);
+  assert.equal(q.length, 23, '3 queue rows + a tail of 20');
+  assert.equal(q[store.playerIndex], rows[24], 'the adopted row is current');
+  assert.equal(Q.autoplayStart(), 3);
+  assert.equal(q[3], rows[5], 'the oldest autoplay rows went');
+  assert.equal(a.src, srcBefore, 'nothing was loaded: the receiver is already playing it');
+});
+
+test('cast: a debounced queue save is held while the page\'s view of the cast is stale; flushQueue still saves', async (t) => {
+  const log = withApi(t);
+  await fresh({ n: 3, idx: 0 });
+  mock.timers.tick(2100); await flush(); // whatever fresh() left in the debounce
+  log.puts.length = 0;
+  // Local playback: the debounce saves as always.
+  P.saveQueueDebounced();
+  mock.timers.tick(2100); await flush();
+  const n = log.puts.length; // (the engine's 30 s periodic save may add one of its own)
+  assert.ok(n >= 1, 'saved');
+  // Casting, and no status seen (the page just woke up): the timer must not write.
+  store.castDevice = { id: 'uuid:fake', name: 'Fake' };
+  castMod._internals.reset();
+  assert.equal(castMod.castStateFresh(), false);
+  P.saveQueueDebounced();
+  mock.timers.tick(2100); await flush();
+  mock.timers.tick(2100); await flush();
+  assert.equal(log.puts.length, n, 'held: the server may have appended rows this page has not seen');
+  assert.equal(store.playerSavePending, true, 'and still pending');
+  // A cast going out (cast.js flushes before its POST) saves whatever the state.
+  await P.flushQueue();
+  assert.equal(log.puts.length, n + 1);
+  assert.equal(store.playerSavePending, false);
+});
+
+// ── Review round 3: the save hold is released by an event; the engine tells cast.js ──
+/** A followed cast on the row that is current, answered by the harness (no receiver). */
+function withFollowedCast(t, log) {
+  const real = globalThis.fetch;
+  log.hints = []; log.order = []; log.opts = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = new URL(String(url), 'http://localhost');
+    const json = (o) => ({ ok: true, status: 200, statusText: '', headers: { get: () => 'application/json' }, json: async () => o, text: async () => JSON.stringify(o) });
+    const m = (opts.method || 'GET').toUpperCase();
+    if (u.pathname.startsWith('/api/dlna/') || u.pathname === '/api/player/queue') log.order.push(`${m} ${u.pathname}`);
+    if (u.pathname === '/api/player/queue' && m === 'PUT') log.opts.push(opts);
+    if (u.pathname === '/api/dlna/status') {
+      const it = store.playerQueue[store.playerIndex];
+      return json({ active: true, device_id: 'uuid:fake', device: 'Fake', state: 'PLAYING', position_seconds: 5, duration_seconds: 200,
+        follow: true, cast_seq: 1, session_id: 's1', queue_ended: false,
+        track: { queue_index: store.playerIndex, name: it.name, artist: it.artist, by: 'client' } });
+    }
+    if (u.pathname === '/api/dlna/next-hint') { log.hints.push(JSON.parse(opts.body)); return json({ status: 'ok' }); }
+    return real(url, opts);
+  };
+  t.after(() => { globalThis.fetch = real; });
+  store.castDevice = { id: 'uuid:fake', name: 'Fake' };
+  castMod._internals.reset();
+}
+
+test('cast: a queue edit in a tab whose timers are throttled is saved and hinted by the edit itself — no timer needed', async (t) => {
+  const log = withApi(t);
+  await fresh({ n: 3, idx: 2 });
+  mock.timers.tick(2100); await flush();
+  withFollowedCast(t, log);
+  await castMod.pollCastOnce();
+  await flush();
+  assert.equal(castMod.castStateFresh(), true);
+  // A minute passes with no poll (a hidden desktop tab). A remote command queues a row.
+  mock.timers.setTime(Date.now() + 60_000);
+  assert.equal(castMod.castStateFresh(), false);
+  log.puts.length = 0; log.hints.length = 0; log.order.length = 0;
+  const row = { name: 'queued-by-remote', artist: 'a' };
+  store.playerQueue.push(row);
+  P.saveQueueDebounced(); // → cast.noteQueueChanged()
+  await flush(); // no timer is advanced
+  assert.equal(log.puts.length, 1, 'saved without waiting for a timer');
+  assert.equal(log.puts[0].queue.length, 4);
+  assert.deepEqual(log.order.slice(0, 3), ['GET /api/dlna/status', 'PUT /api/player/queue', 'POST /api/dlna/next-hint']);
+  assert.equal(log.hints.at(-1).next.name, 'queued-by-remote');
+  assert.equal(log.hints.at(-1).next.queue_index, 3);
+  assert.equal(store.playerSavePending, false);
+});
+
+test('cast: a save held by the engine lands with the next poll, however old the previous status was', async (t) => {
+  const log = withApi(t);
+  await fresh({ n: 3, idx: 0 });
+  mock.timers.tick(2100); await flush();
+  withFollowedCast(t, log);
+  log.puts.length = 0;
+  // The debounce fires while the view is stale (no status yet): held.
+  store.playerSavePending = true;
+  clearTimeout(store.playerSaveTimer);
+  assert.equal(castMod.castStateFresh(), false);
+  await castMod.pollCastOnce();
+  await flush();
+  assert.equal(log.puts.length, 1, 'the poll released it');
+  assert.equal(store.playerSavePending, false);
+});
+
+test('cast: the save on hide is a keepalive request when the queue fits 64 KiB, an ordinary one when it does not', async (t) => {
+  const log = withApi(t);
+  await fresh({ n: 3, idx: 0 });
+  withFollowedCast(t, log);
+  log.opts.length = 0;
+  await P.flushQueue({ keepalive: true });
+  assert.equal(log.opts.at(-1).keepalive, true);
+  await P.flushQueue();
+  assert.equal(log.opts.at(-1).keepalive, undefined, 'only when asked');
+  const q = store.playerQueue;
+  for (let i = 0; i < 400; i++) q.push({ name: `long-queue-row-${i}`, artist: 'an artist name of ordinary length', album: 'an album', image: '/api/library/cover/al-0123456789abcdef0123456789abcdef', duration_ms: 200000, id: 'x'.repeat(22), type: 'track' });
+  await P.flushQueue({ keepalive: true });
+  assert.equal(log.opts.at(-1).keepalive, undefined, 'over the limit the browser would refuse the request outright');
+  assert.ok(log.opts.at(-1).body.length > 64 * 1024);
+});
