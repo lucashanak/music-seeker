@@ -1310,12 +1310,13 @@ const PICKS = [{ id: 'p1', name: 'Pick One', artist: 'Reco' }, { name: 'Pick Two
 /** Answer the recommender and record queue saves on top of the harness's fetch. */
 function withApi(t, { recs = PICKS } = {}) {
   const real = globalThis.fetch;
-  const log = { recs: 0, puts: [] };
+  const log = { recs: 0, puts: [], mirror: [] };
   globalThis.fetch = async (url, opts = {}) => {
     const u = new URL(String(url), 'http://localhost');
     const json = (o) => ({ ok: true, status: 200, statusText: '', headers: { get: () => 'application/json' }, json: async () => o, text: async () => JSON.stringify(o) });
     if (u.pathname === '/api/player/recommendations') { log.recs++; return json({ tracks: recs.map(r => ({ ...r })) }); }
     if (u.pathname === '/api/player/queue' && (opts.method || 'GET') === 'PUT') { log.puts.push(JSON.parse(opts.body)); return json({ status: 'saved' }); }
+    if (/^\/api\/library\/playlist\/[^/]+\/add-and-download-batch$/.test(u.pathname)) { log.mirror.push({ path: u.pathname, body: JSON.parse(opts.body) }); return json({ added: 0 }); }
     return real(url, opts);
   };
   const user = store.currentUser;
@@ -1494,4 +1495,52 @@ test('cast: the save on hide is a keepalive request when the queue fits 64 KiB, 
   await P.flushQueue({ keepalive: true });
   assert.equal(log.opts.at(-1).keepalive, undefined, 'over the limit the browser would refuse the request outright');
   assert.ok(log.opts.at(-1).body.length > 64 * 1024);
+});
+
+// ── Radio rows the follower appended (2026-11-22) ──
+test('cast radio: the engine\'s append hook adds radio rows with no divider and leaves the recommender alone', async (t) => {
+  withApi(t);
+  await fresh({ n: 3, idx: 2 });
+  const hooks = castMod._internals.ctx();
+  hooks.peekAutoplay(20);
+  await flush();
+  store.radioMode = true;
+  const q = store.playerQueue;
+  const rows = [{ name: 'Pick One', artist: 'Reco' }, { name: 'radio-b', artist: 'Station' }];
+  assert.equal(hooks.appendAutoplayRows(rows, null, 'radio'), 2);
+  assert.equal(store.playerQueue, q);
+  assert.deepEqual(q.slice(3), rows);
+  assert.equal(Q.autoplayStart(), -1, 'no "Autoplay" divider in a radio queue');
+  assert.equal(recsMod._internals.state().cursor, -1, 'a radio row is not a recommender pick, even with the same name');
+  // Adopting one of them: current, nothing loaded, radio still on.
+  store.castDevice = { id: 'uuid:fake', name: 'Fake' };
+  hooks.adoptTrack(4, rows[1], null);
+  assert.equal(q[store.playerIndex], rows[1]);
+  assert.equal(q.length, 5);
+  assert.equal(store.radioMode, true);
+});
+
+test('cast radio: adopted radio rows are mirrored into the Radio playlist exactly once; autoplay picks never', async (t) => {
+  const log = withApi(t);
+  await fresh({ n: 3, idx: 2 });
+  const hooks = castMod._internals.ctx();
+  const mode = store.playlistMode;
+  t.after(() => { store.playlistMode = mode; store.radioMode = false; });
+  store.radioMode = true;
+  store.playlistMode = { id: 'pl-radio', name: 'Radio' }; // the temp Radio playlist is the active context
+  const rows = [{ name: 'radio-a', artist: 'Station', album: 'LP' }, { name: 'radio-b', artist: 'Station' }];
+  hooks.appendAutoplayRows(rows, null, 'radio');
+  await flush();
+  assert.equal(log.mirror.length, 1, 'one request for the whole batch');
+  assert.equal(log.mirror[0].path, '/api/library/playlist/pl-radio/add-and-download-batch');
+  assert.deepEqual(log.mirror[0].body, { tracks: [{ name: 'radio-a', artist: 'Station', album: 'LP' }, { name: 'radio-b', artist: 'Station', album: '' }], download: false });
+  // Adopting one of those rows adds nothing more.
+  store.castDevice = { id: 'uuid:fake', name: 'Fake' };
+  hooks.adoptTrack(3, rows[0], null);
+  await flush();
+  assert.equal(log.mirror.length, 1);
+  // A recommender pick appended by the server is not a radio row.
+  hooks.appendAutoplayRows([{ name: 'a pick', artist: 'Reco' }]);
+  await flush();
+  assert.equal(log.mirror.length, 1);
 });

@@ -2111,3 +2111,564 @@ def test_what_the_follower_knows_about_its_appended_row_survives_a_restart(env):
         await dlna._follow_tick(SK, s)
     asyncio.run(after())
     assert env.r.cast == ["Charlie", "Rec One", "Queued By Hand"]
+
+
+# ── radio: the follower refills a radio queue by itself (2026-11-22) ──
+# The page's radio refill (_nextTrackTerminal → GET /api/radio) lives in the page; with
+# the display off the follower reached the last row of a radio queue and stopped.
+
+RAD1 = {"id": "dz-1", "name": "Radio One", "artist": "Station A", "album": "R", "image": "http://img/1",
+      "duration_ms": 200000, "type": "track", "preview_url": "http://x/" + "p" * 5000}
+RAD2 = {"id": "dz-2", "name": "Radio Two", "artist": "Station B", "duration_ms": 200000, "type": "track"}
+RAD3 = {"id": "dz-3", "name": "Radio Three", "artist": "Station C", "duration_ms": 200000, "type": "track"}
+
+
+def save_radio_queue(items, current, **extra):
+    data = {"queue": [dict(i) for i in items], "current_index": current, "position_seconds": 0.0,
+            "volume": 1.0, "radio_mode": True, "radio_seed": {"name": "The Seed", "artist": "Seeder"}}
+    data.update(extra)
+    player.save_queue("lucas", data, "phone1")
+
+
+@pytest.fixture
+def station(monkeypatch):
+    """The radio service, faked: answers the batches it is given, in order, and records
+    what it was asked."""
+    from app.services import radio
+    st = SimpleNamespace(asked=[], batches=[], fail=None, delay=None)
+
+    async def get_radio_tracks(source, track_name="", artist_name="", artist_id="", limit=25):
+        st.asked.append((track_name, artist_name, artist_id, limit))
+        if st.delay:
+            await st.delay()
+        if st.fail:
+            raise st.fail
+        return [dict(t) for t in (st.batches.pop(0) if st.batches else [])]
+
+    monkeypatch.setattr(radio, "get_radio_tracks", get_radio_tracks)
+    return st
+
+
+def test_the_end_of_a_radio_queue_is_refilled_by_the_follower(env, station):
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1, dict(B), RAD2, dict(C), RAD3]]       # two of them the queue already holds
+
+    async def main():
+        await cast_with_list(C, 2, [])                       # the page says [] in radio mode
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert station.asked == [("Charlie", "DJ Three", "", dlna.RADIO_BATCH)]      # seeded by the last row
+    assert env.r.cast == ["Charlie", "Radio One"]
+    assert st["queue_ended"] is False and st["track"]["by"] == "server"
+    assert st["track"]["queue_index"] == 3 and st["track"]["autoplay"] is True and st["track"]["kind"] == "radio"
+    q = saved_queue()
+    assert [i["name"] for i in q["queue"]] == ["Alpha", "Bravo", "Charlie", "Radio One", "Radio Two", "Radio Three"]
+    assert q["current_index"] == 3
+    assert q["radio_mode"] is True and q["radio_seed"] == {"name": "The Seed", "artist": "Seeder"}
+    assert q["queue"][3] == {"name": "Radio One", "artist": "Station A", "album": "R", "image": "http://img/1",
+                             "duration_ms": 200000, "id": "dz-1", "type": "track"}      # nothing bloated
+
+
+def test_radio_plays_through_its_batch_and_refills_again_without_end(env, station):
+    save_radio_queue([A, B], 1)
+    station.batches = [[RAD1, RAD2], [RAD3, dict(RAD1)]]
+
+    async def main():
+        await cast_with_list(B, 1, [])
+        kinds = []
+        for _ in range(3):
+            await play_to_end(env, t0=env.clock["t"])
+            st = await dlna.get_status(SK)
+            kinds.append((st["track"]["name"], st["track"].get("kind"), st["track"].get("autoplay"), st["queue_ended"]))
+        return kinds
+    kinds = asyncio.run(main())
+    assert env.r.cast == ["Bravo", "Radio One", "Radio Two", "Radio Three"]
+    # Every row of a batch the page has not seen carries the mark, not only its first.
+    assert kinds == [("Radio One", "radio", True, False), ("Radio Two", "radio", True, False),
+                     ("Radio Three", "radio", True, False)]
+    assert [a[0] for a in station.asked] == ["Bravo", "Radio Two"]          # the second refill seeds from the new last row
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Radio One", "Radio Two", "Radio Three"]
+
+
+def test_a_radio_service_with_nothing_new_ends_the_queue(env, station):
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[dict(A), dict(C)]]
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie"] and st["queue_ended"] is True
+    assert len(saved_queue()["queue"]) == 3 and len(station.asked) == 1
+
+
+@pytest.mark.parametrize("fault", [RuntimeError("deezer is down"), "timeout"])
+def test_a_failing_or_slow_radio_service_ends_the_queue_and_says_so(env, station, monkeypatch, caplog, fault):
+    save_radio_queue([A, B, C], 2)
+    if fault == "timeout":
+        monkeypatch.setattr(dlna, "RADIO_TIMEOUT", 0.05)
+        station.delay = lambda: asyncio.sleep(1)
+    else:
+        station.fail = fault
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    with caplog.at_level("INFO", logger="musicseeker.dlna"):
+        st = asyncio.run(main())
+    assert st["queue_ended"] is True and env.r.cast == ["Charlie"]
+    assert any("radio refill" in r.getMessage() and SK in r.getMessage() and r.levelname == "WARNING"
+               for r in caplog.records)
+
+
+def test_a_queue_that_is_not_radio_never_asks_the_radio_service(env, station):
+    save_queue([A, B, C], current=2)
+    station.batches = [[RAD1]]
+
+    async def main():
+        await cast_with_list(C, 2, [R1])
+        await play_to_end(env)
+    asyncio.run(main())
+    assert station.asked == [] and env.r.cast == ["Charlie", "Rec One"]
+
+
+def test_a_radio_queue_is_refilled_from_the_radio_not_from_a_recommender_list(env, station):
+    """A list the server still holds (a page from before, or the keep-on-absent rule)
+    must not play where the page itself would refill the radio."""
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1]]
+
+    async def main():
+        await cast_with_list(C, 2, [R1, R2])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Radio One"] and st["track"]["kind"] == "radio"
+    assert [i["name"] for i in dlna._sessions[SK]["autoplay"]] == ["Rec One", "Rec Two"]
+
+
+def test_radio_with_repeat_all_wraps_and_does_not_refill(env, station):
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1]]
+
+    async def main():
+        await cast_with_list(C, 2, [], repeat="all")
+        await play_to_end(env)
+    asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Alpha"] and station.asked == []
+
+
+def test_a_client_cast_while_the_radio_is_being_fetched_wins_and_nothing_is_appended(env, station, monkeypatch):
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1, RAD2]]
+    writes = []
+    real_append = dlna._append_autoplay
+    monkeypatch.setattr(dlna, "_append_autoplay", lambda *a, **kw: writes.append(1) or real_append(*a, **kw))
+
+    async def client_casts():
+        await cast_with_list(A, 0, [])
+    station.delay = client_casts
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Alpha"] and st["track"]["by"] == "client"
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie"]
+    assert writes == []                 # not written and taken back: never written at all
+
+
+def test_a_client_cast_just_before_the_radio_cast_takes_the_whole_batch_back(env, station, monkeypatch):
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1, RAD2, RAD3]]
+    from app.services import auth
+    real_token = auth.create_stream_token
+    fired = []
+
+    def token_and_client_cast(username, ttl=0):
+        if not fired and dlna._sessions[SK]["track"]["name"] == "Charlie":
+            fired.append(asyncio.get_running_loop().create_task(client_cast(A, 0)))
+        return real_token(username, ttl=ttl)
+
+    monkeypatch.setattr(auth, "create_stream_token", token_and_client_cast)
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)
+        await fired[0]
+    asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Alpha"]
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie"]
+
+
+def test_after_a_client_cast_the_rows_are_the_pages_own_again(env, station):
+    """The mark says "a row the page has not seen". A client cast comes from the page's
+    queue: from then on the follower's advances are ordinary rows."""
+    save_radio_queue([A, B], 1)
+    station.batches = [[RAD1, RAD2, RAD3]]
+
+    async def main():
+        await cast_with_list(B, 1, [])
+        await play_to_end(env)                                  # → Radio One (ours)
+        await client_cast(RAD2, 3)                                # the page adopted and the user tapped a row
+        await play_to_end(env, t0=env.clock["t"])              # → Radio Three, a row the page has
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Bravo", "Radio One", "Radio Two", "Radio Three"]
+    assert st["track"]["name"] == "Radio Three" and "kind" not in st["track"] and "autoplay" not in st["track"]
+
+
+def test_a_radio_row_a_stale_save_erased_is_put_back_and_the_radio_goes_on(env, station):
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1], [RAD2]]
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)                                  # Radio One appended and playing
+        save_radio_queue([A, B, C], 2)                          # the woken page's old queue
+        await play_to_end(env, t0=env.clock["t"])
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert env.r.cast == ["Charlie", "Radio One", "Radio Two"]
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie", "Radio One", "Radio Two"]
+    assert st["track"]["kind"] == "radio" and st["queue_ended"] is False
+
+
+def test_the_radio_mark_survives_a_restart(env, station):
+    save_radio_queue([A, B], 1)
+    station.batches = [[RAD1, RAD2]]
+
+    async def before():
+        await cast_with_list(B, 1, [])
+        await play_to_end(env)
+        await tick(env, env.clock["t"] + 2, "PLAYING", 150, 200)
+    asyncio.run(before())
+    data = json.loads((env.tmp / "dlna_sessions.json").read_text())
+    assert data[SK]["radio_from"] == 2 and data[SK]["track"]["kind"] == "radio"
+    dlna._sessions.clear()
+    data[SK].update(played=True, last_pos=150, last_playing=True, last_pos_wall=time.time() - 120)
+    (env.tmp / "dlna_sessions.json").write_text(json.dumps(data))
+
+    async def after():
+        assert await dlna.resume_sessions() == 1
+        s = dlna._sessions[SK]
+        env.clock["t"] += 2
+        env.r.state, env.r.pos, env.r.dur = "STOPPED", 0, 200
+        await dlna._follow_tick(SK, s)
+        return await dlna.get_status(SK)
+    st = asyncio.run(after())
+    assert st["track"]["name"] == "Radio Two" and st["track"]["kind"] == "radio"
+
+
+# ── a trail in the log ──
+
+def _lines(caplog, *needles):
+    return [r.getMessage() for r in caplog.records
+            if r.name == "musicseeker.dlna" and all(n in r.getMessage() for n in needles)]
+
+
+def test_the_follower_logs_under_the_name_the_app_raises_to_info():
+    from pathlib import Path as _P
+    assert dlna.logger.name == "musicseeker.dlna"
+    src = (_P(dlna.__file__).resolve().parents[1] / "__init__.py").read_text()
+    assert 'logging.getLogger("musicseeker.dlna").setLevel(logging.INFO)' in src
+    assert 'basicConfig(level=logging.WARNING' in src           # everything else stays quiet
+
+
+def test_every_advance_and_the_end_of_the_queue_leave_one_line_each(env, caplog):
+    save_queue([A, B, C, D], current=0)
+
+    async def main():
+        await client_cast(A, 0, nxt=(2, C))
+        await play_to_end(env)                                  # hint → Charlie
+        await play_to_end(env, t0=env.clock["t"])              # queue → Delta
+        assert await dlna.set_next_hint(SK, 3, None, autoplay=[R1]) == "ok"
+        await play_to_end(env, t0=env.clock["t"])              # autoplay → Rec One
+        await play_to_end(env, t0=env.clock["t"])              # end
+    with caplog.at_level("INFO", logger="musicseeker.dlna"):
+        asyncio.run(main())
+    adv = _lines(caplog, f"[{SK}] advance")
+    assert len(adv) == 3
+    assert "'Alpha' (row 0) → 'Charlie' (row 2), via hint" in adv[0]
+    assert "'Charlie' (row 2) → 'Delta' (row 3), via queue" in adv[1]
+    assert "'Delta' (row 3) → 'Rec One' (row 4), via autoplay" in adv[2]
+    end = _lines(caplog, f"[{SK}] end of the queue")
+    assert len(end) == 1
+    assert "saved queue 5 rows" in end[0] and "playing row found at 4" in end[0]
+    assert "repeat off" in end[0] and "shuffle False" in end[0] and "autoplay list 0" in end[0] and "radio no" in end[0]
+    assert len(_lines(caplog, "client cast")) == 1             # the one cast the page made
+    # Nothing per poll: 24 ticks ran, and every line is one of the events above.
+    assert len([r for r in caplog.records if r.name == "musicseeker.dlna"]) == 5
+
+
+def test_a_radio_advance_says_so(env, station, caplog):
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1]]
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)
+    with caplog.at_level("INFO", logger="musicseeker.dlna"):
+        asyncio.run(main())
+    assert len(_lines(caplog, f"[{SK}] advance", "→ 'Radio One' (row 3), via radio")) == 1
+
+
+def test_a_stop_in_the_middle_of_a_track_leaves_one_line_with_the_numbers(env, caplog):
+    save_queue([A, B, C], current=0)
+
+    async def main():
+        await client_cast(A, 0)
+        await tick(env, 1002, "PLAYING", 2, 200)
+        await tick(env, 1070, "PLAYING", 70, 200)
+        for t in range(1072, 1090, 2):
+            await tick(env, t, "STOPPED", 0, 200)
+    with caplog.at_level("INFO", logger="musicseeker.dlna"):
+        asyncio.run(main())
+    mid = _lines(caplog, f"[{SK}] receiver STOPPED mid-track 'Alpha' (row 0)")
+    assert len(mid) == 1                                        # nine stopped polls, one line
+    assert "at 72/200 s" in mid[0] and "renderer duration" in mid[0] and "no advance" in mid[0]
+    assert env.r.cast == ["Alpha"]
+
+
+def test_every_way_a_session_ends_says_why_and_where_it_was(env, caplog, monkeypatch):
+    save_queue([A, B, C], current=0)
+
+    async def stopped_by_the_client():
+        await client_cast(A, 0)
+        await tick(env, 1002, "PLAYING", 40, 200)
+        await dlna.stop(SK)
+
+    async def receiver_gone():
+        await client_cast(A, 0)
+        await tick(env, env.clock["t"] + 2, "PLAYING", 40, 200)
+        env.r.fail_av = True
+        for _ in range(int(dlna.STALE_SECONDS // 2) + 2):
+            if SK not in dlna._sessions:
+                break
+            await tick(env, env.clock["t"] + 2, "PLAYING", 0, 200)
+        env.r.fail_av = False
+
+    async def idle():
+        await client_cast(A, 0)
+        await tick(env, env.clock["t"] + 2, "PLAYING", 40, 200)
+        await tick(env, env.clock["t"] + 2, "PAUSED_PLAYBACK", 42, 200)
+        env.clock["t"] += dlna.IDLE_EXPIRE + 5
+        await dlna.get_status(SK)
+
+    with caplog.at_level("INFO", logger="musicseeker.dlna"):
+        asyncio.run(stopped_by_the_client())
+        asyncio.run(receiver_gone())
+        asyncio.run(idle())
+    assert len(_lines(caplog, f"[{SK}] session ended: stop from the client", "'Alpha' (row 0) at 40/200 s")) == 1
+    assert len(_lines(caplog, f"[{SK}] session ended:", "stopped answering", "'Alpha' (row 0) at 40/")) == 1
+    assert len(_lines(caplog, f"[{SK}] session ended:", "was idle for 30 minutes", "'Alpha' (row 0) at 42/")) == 1
+
+
+def test_a_failed_cast_and_a_dead_track_leave_a_line_and_never_a_token(env, caplog, monkeypatch):
+    save_queue([A, B, C], current=0)
+    real_set = FakeDmr.async_set_transport_uri
+
+    async def refuse_bravo(self, url, title, meta_data=None):
+        if title == "Bravo":
+            # A renderer's error may quote the URL it was given back at us.
+            raise RuntimeError(f"upnp error: 716 cannot open {url}")
+        return await real_set(self, url, title, meta_data)
+
+    monkeypatch.setattr(FakeDmr, "async_set_transport_uri", refuse_bravo)
+
+    async def main():
+        await client_cast(A, 0)
+        await play_to_end(env)                 # Bravo is refused → Charlie
+        t = env.clock["t"]
+        while len(env.r.cast) < 3 or SK in dlna._sessions and t < env.clock["t"] + 200:
+            t += 2
+            if SK not in dlna._sessions:
+                break
+            await tick(env, t, "STOPPED", 0)   # Charlie never starts → sent again → dead
+    with caplog.at_level("DEBUG", logger="musicseeker.dlna"):
+        asyncio.run(main())
+    failed = _lines(caplog, f"[{SK}] cast of 'Bravo' (by server) failed", "716")
+    assert len(failed) == 1
+    assert len(_lines(caplog, f"[{SK}]", "'Charlie' (row 2)", "sending it once more")) == 1
+    # The second track in a row that never played: the session ends, and says so.
+    assert len(_lines(caplog, f"[{SK}] session ended:", "did not start 2 tracks in a row", "'Charlie' (row 2)")) == 1
+    everything = "\\n".join(r.getMessage() for r in caplog.records)
+    assert "token=" in everything and "token=tok" not in everything and "api/player/stream?name" in everything
+    import re as _re
+    assert not _re.search(r"token=[A-Za-z0-9._-]{6,}", everything)
+
+
+def test_a_track_that_never_starts_leaves_a_dead_track_line_before_it_is_skipped(env, caplog):
+    save_queue([A, B, C], current=0)
+
+    async def main():
+        await client_cast(A, 0)
+        t = 1000
+        while len(env.r.cast) < 3 and t < 1200:
+            t += 2
+            await tick(env, t, "STOPPED", 0)
+    with caplog.at_level("INFO", logger="musicseeker.dlna"):
+        asyncio.run(main())
+    assert env.r.cast == ["Alpha", "Alpha", "Bravo"]
+    assert len(_lines(caplog, f"[{SK}] dead track: 'Alpha' (row 0)", "skipping it")) == 1
+    assert len(_lines(caplog, f"[{SK}] advance 'Alpha' (row 0) → 'Bravo' (row 1), via queue")) == 1
+
+
+def test_a_receiver_playing_something_else_and_a_takeover_say_so(env, caplog):
+    env.r.echo = lambda url: "http://192.168.1.99:5000/stream/radio.mp3"
+    save_queue([A, B], current=0)
+
+    async def foreign():
+        await client_cast(A, 0)
+        for i, t in enumerate(range(1002, 1012, 2)):
+            if SK not in dlna._sessions:
+                break
+            await tick(env, t, "PLAYING", 10 + 2 * i, 200)
+
+    async def takeover():
+        env.r.echo = None
+        await client_cast(A, 0)
+        await dlna.cast_to_device("lucas:tablet", UDN, "Bravo", "DJ Two", "tok", queue_index=1,
+                                  username="lucas", client_device="tablet", by="client")
+    with caplog.at_level("INFO", logger="musicseeker.dlna"):
+        asyncio.run(foreign())
+        asyncio.run(takeover())
+    assert len(_lines(caplog, f"[{SK}] session ended:", "playing something else")) == 1
+    assert len(_lines(caplog, f"[{SK}] session ended: [lucas:tablet] cast to the same renderer")) == 1
+
+
+# ── review of the radio diff (R1, R2, R7) ──
+
+def test_a_queue_file_that_cannot_be_written_does_not_ask_the_radio_service_again_and_gives_up(env, station, monkeypatch, caplog):
+    """R1: the service was asked BEFORE the write; a failing write set `pending`, and
+    every 2 s tick asked Deezer / Last.fm again — until the 30-minute idle expiry."""
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1, RAD2]] + [[RAD3]] * 20
+    writes = []
+
+    def disk_full(*a, **kw):
+        writes.append(1)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(dlna, "_append_autoplay", disk_full)
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)
+        for _ in range(10):
+            await tick(env, env.clock["t"] + 2, "STOPPED", 0)
+        return await dlna.get_status(SK)
+    with caplog.at_level("INFO", logger="musicseeker.dlna"):
+        st = asyncio.run(main())
+    assert len(station.asked) == 1                      # one external lookup for this queue end
+    assert len(writes) == dlna.APPEND_WRITE_TRIES == 3  # a few tries, not one every 2 s
+    assert st["queue_ended"] is True and env.r.cast == ["Charlie"]
+    assert len(_lines(caplog, f"[{SK}] queue not writable, retrying")) == 1
+    assert len(_lines(caplog, f"[{SK}] queue not writable after 3 tries", "the queue ends here")) == 1
+
+
+def test_a_write_that_fails_once_uses_the_batch_it_already_has(env, station, monkeypatch):
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1, RAD2], [RAD3]]
+    real = dlna._append_autoplay
+    fails = [OSError(5, "I/O error")]
+
+    def flaky(*a, **kw):
+        if fails:
+            raise fails.pop()
+        return real(*a, **kw)
+
+    monkeypatch.setattr(dlna, "_append_autoplay", flaky)
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)
+        assert env.r.cast == ["Charlie"]
+        await tick(env, env.clock["t"] + 2, "STOPPED", 0)
+    asyncio.run(main())
+    assert len(station.asked) == 1
+    assert env.r.cast == ["Charlie", "Radio One"]       # the first batch, not a second one
+    assert [i["name"] for i in saved_queue()["queue"]][3:] == ["Radio One", "Radio Two"]
+    assert dlna._sessions[SK]["radio_batch"] is None
+
+
+def test_an_unreadable_queue_keeps_retrying_but_never_fetches_the_radio_twice(env, station, monkeypatch):
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1], [RAD2], [RAD3]]
+    real = dlna._append_autoplay
+    left = [6]
+
+    def mid_write(*a, **kw):
+        if left[0]:
+            left[0] -= 1
+            raise player.QueueUnreadable("mid-write")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(dlna, "_append_autoplay", mid_write)
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)
+        for _ in range(6):
+            assert dlna._sessions[SK]["queue_ended"] is False       # more than three tries: still going
+            await tick(env, env.clock["t"] + 2, "STOPPED", 0)
+    asyncio.run(main())
+    assert len(station.asked) == 1 and env.r.cast == ["Charlie", "Radio One"]
+
+
+def test_the_next_queue_end_fetches_again(env, station):
+    """The kept batch belongs to ONE queue end (one cast_seq)."""
+    save_radio_queue([A, B], 1)
+    station.batches = [[RAD1], [RAD2]]
+
+    async def main():
+        await cast_with_list(B, 1, [])
+        await play_to_end(env)
+        await play_to_end(env, t0=env.clock["t"])
+    asyncio.run(main())
+    assert len(station.asked) == 2 and env.r.cast == ["Bravo", "Radio One", "Radio Two"]
+
+
+def test_a_client_cast_right_after_the_radio_batch_was_written_takes_the_whole_batch_back(env, station, monkeypatch):
+    """R2: the first of the two places a batch is taken back — between the write and
+    the follower's own cast."""
+    save_radio_queue([A, B, C], 2)
+    station.batches = [[RAD1, RAD2, RAD3]]
+    real = dlna._append_autoplay
+    seen = {}
+
+    async def client_casts():
+        await cast_with_list(A, 0, [])
+
+    real_take = dlna._append_radio
+
+    async def append_then_client_casts(*a, **kw):
+        out = await real_take(*a, **kw)
+        seen["written"] = [i["name"] for i in saved_queue()["queue"]]
+        await client_casts()
+        return out
+
+    monkeypatch.setattr(dlna, "_append_radio", append_then_client_casts)
+
+    async def main():
+        await cast_with_list(C, 2, [])
+        await play_to_end(env)
+        return await dlna.get_status(SK)
+    st = asyncio.run(main())
+    assert seen["written"] == ["Alpha", "Bravo", "Charlie", "Radio One", "Radio Two", "Radio Three"]
+    assert env.r.cast == ["Charlie", "Alpha"] and st["track"]["by"] == "client"
+    assert [i["name"] for i in saved_queue()["queue"]] == ["Alpha", "Bravo", "Charlie"]
+    assert real is dlna._append_autoplay
+
+
+def test_the_log_never_carries_a_token_however_it_is_encoded():
+    for raw in ("http://h/api/player/stream?name=a&token=abc.DEF-123_x&quality=lossless",
+                "http%3A//h/api/player/stream%3Fname%3Da%26token%3Dabc.DEF-123_x%26quality%3Dlossless",
+                "http%253A//h/stream%253Fname%253Da%2526token%253Dabc.DEF-123_x%2526q"):
+        out = dlna._safe(raw)
+        assert "abc.DEF-123_x" not in out and "token" in out and "quality"[:1] in out
+    assert dlna._safe("no secret here") == "no secret here"

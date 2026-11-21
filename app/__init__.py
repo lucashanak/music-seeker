@@ -18,6 +18,11 @@ def create_app() -> FastAPI:
     # instrumentation without that blast radius.
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("app.services.recognize").setLevel(logging.INFO)
+    # The cast follower runs with no page awake: without its INFO lines (each advance,
+    # the end of a queue, why a session ended or stood still) a cast that stopped
+    # overnight leaves nothing to work from. Bounded: one line per track, none per poll.
+    # (The logger is named "musicseeker.dlna", not after its module.)
+    logging.getLogger("musicseeker.dlna").setLevel(logging.INFO)
 
     app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 

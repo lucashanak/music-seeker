@@ -905,7 +905,15 @@ function _recs() {
   if (!_recsMod) import('./recommendations.js').then(m => { _recsMod = m; }).catch(() => {});
   return _recsMod;
 }
-function _castAppendAutoplay(items, at) {
+function _castAppendAutoplay(items, at, kind) {
+  if (kind === 'radio') {
+    // The follower refilled a RADIO queue while this page slept: plain radio rows — no
+    // "Autoplay" divider, nothing to tell the recommender — mirrored into the Radio
+    // playlist exactly as the page's own refill mirrors its batch (_nextTrackTerminal).
+    const added = appendAutoplayRows(items, at, { divider: false });
+    if (added) import('./upnext.js').then(u => u.mirrorAdd(items)).catch(() => {});
+    return added;
+  }
   const n = appendAutoplayRows(items, at);
   if (n) {
     // Through the module already loaded (init imports it): the hint that follows the

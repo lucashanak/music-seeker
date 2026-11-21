@@ -1182,7 +1182,12 @@ function setupAutoplay(t, { recs = [R1, R2, R3], atEnd = true } = {}) {
   if (atEnd) { store.playerIndex = 2; eng.upcoming = null; }
   cast.initCast({
     peekAutoplay: (n) => { eng.peeks++; return R.peekNextRecs(n); },
-    appendAutoplayRows: (rows, at) => { Q.appendAutoplayRows(rows, at); R.markRecsPlayed(rows); },
+    // As both engines wire it (_castAppendAutoplay): radio rows are plain rows.
+    appendAutoplayRows: (rows, at, kind) => {
+      (eng.kinds = eng.kinds || []).push(kind);
+      if (kind === 'radio') { Q.appendAutoplayRows(rows, at, { divider: false }); return; }
+      Q.appendAutoplayRows(rows, at); R.markRecsPlayed(rows);
+    },
   });
   t.after(() => { cast.initCast({ peekAutoplay: null, appendAutoplayRows: null }); R._internals.reset(); Q.setAutoplayStartIndex(-1); store.radioMode = false; store.remoteTarget = null; });
   return eng;
@@ -1766,4 +1771,105 @@ test('hiding the page asks the engine for a keepalive save', async (t) => {
   await flush();
   assert.deepEqual(got, { keepalive: true });
   void eng;
+});
+
+// ── Radio (2026-11-22): the SERVER refills a radio queue; the page adopts the rows ──
+const RAD = [{ id: 'dz-1', name: 'Radio One', artist: 'Station A', album: '', image: '', duration_ms: 200000, type: 'track' },
+  { id: 'dz-2', name: 'Radio Two', artist: 'Station B', album: '', image: '', duration_ms: 200000, type: 'track' },
+  { id: 'dz-3', name: 'Radio Three', artist: 'Station C', album: '', image: '', duration_ms: 200000, type: 'track' }];
+const trRad = (r, qi) => ({ queue_index: qi, name: r.name, artist: r.artist, album: '', image: '', duration_ms: r.duration_ms,
+  by: 'server', autoplay: true, kind: 'radio' });
+
+test('radio: casts and hints say autoplay [] — the recommender has no part in a radio queue, and is not even asked', async (t) => {
+  const eng = setupAutoplay(t);
+  store.radioMode = true;
+  await cast.castItem(C);
+  assert.deepEqual(calls('POST', '/api/dlna/cast').at(-1)[2].autoplay, []);
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 10_000);
+  assert.ok(hintBodies().every((b) => Array.isArray(b.autoplay) && b.autoplay.length === 0));
+  assert.equal(eng.peeks, 0);
+  assert.equal(recLoads(), 0);
+});
+
+test('radio: rows the server refilled are pushed as plain radio rows — same array, no "Autoplay" divider, no re-cast, no refill of our own', async (t) => {
+  const eng = setupAutoplay(t);
+  store.radioMode = true;
+  const q = store.playerQueue;
+  server.status = follow('PLAYING', 290, 300, 1, trC);
+  cast.startCastPoll();
+  await run(t, 6000);
+  // The last radio row ends. The server is asking the radio service: STOPPED, not ended.
+  server.status = follow('STOPPED', 0, 300, 1, trC, { queue_ended: false });
+  await run(t, 8000);
+  assert.equal(eng.next, 0, 'an awake page does not refill beside the server');
+  assert.equal(q.length, 3);
+  // It appended a batch of three and plays the first.
+  server.savedQueue = { queue: [A, B, C, ...RAD], current_index: 3, radio_mode: true };
+  server.status = follow('PLAYING', 3, 200, 2, trRad(RAD[0], 3));
+  await run(t, 6000);
+  assert.equal(store.playerQueue, q);
+  assert.deepEqual(q.map((x) => x.name), [A.name, B.name, C.name, 'Radio One', 'Radio Two', 'Radio Three']);
+  assert.equal(q[3].id, 'dz-1');
+  assert.deepEqual(eng.adopted, [[3, 'Radio One']]);
+  assert.equal(store.playerIndex, 3);
+  assert.equal(Q.autoplayStart(), -1, 'radio rows are not an autoplay tail');
+  assert.deepEqual(eng.kinds, ['radio']);
+  assert.equal(R._internals.state().cursor, -1, 'the recommender is not told');
+  assert.equal(store.radioMode, true);
+  assert.equal(calls('POST', '/api/dlna/cast').length, 0);
+  assert.equal(eng.next, 0);
+  // The next rows of that batch are rows the page now has: adopted like any other.
+  server.status = follow('PLAYING', 3, 200, 3, trRad(RAD[1], 4));
+  await run(t, 4000);
+  assert.deepEqual(eng.adopted.at(-1), [4, 'Radio Two']);
+  assert.equal(q.length, 6);
+});
+
+test('radio: a page that slept through a whole batch and into the next one takes every row', async (t) => {
+  const eng = setupAutoplay(t);
+  store.radioMode = true;
+  const q = store.playerQueue;
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 4000);
+  const more = [{ name: 'Radio Four', artist: 'Station D', duration_ms: 1 }, { name: 'Radio Five', artist: 'Station E', duration_ms: 1 }];
+  server.savedQueue = { queue: [A, B, C, ...RAD, ...more], current_index: 7, radio_mode: true };
+  server.status = follow('PLAYING', 3, 200, 9, trRad(more[1], 7));
+  t.mock.timers.setTime(Date.now() + 3_600_000);
+  await run(t, 4000);
+  assert.equal(store.playerQueue, q);
+  assert.equal(q.length, 8);
+  assert.deepEqual(eng.adopted, [[7, 'Radio Five']]);
+  assert.equal(Q.autoplayStart(), -1);
+  assert.equal(calls('POST', '/api/dlna/cast').length, 0);
+});
+
+test('radio: when the saved queue cannot be used, the row from the status is a radio row too', async (t) => {
+  const eng = setupAutoplay(t);
+  store.radioMode = true;
+  const q = store.playerQueue;
+  server.status = follow('PLAYING', 10, 0, 1, trC);
+  cast.startCastPoll();
+  await run(t, 4000);
+  server.savedQueue = { queue: [B, A], current_index: 0 };
+  server.status = follow('PLAYING', 3, 200, 2, trRad(RAD[0], 3));
+  await run(t, 4000);
+  assert.deepEqual(q.map((x) => x.name), [A.name, B.name, C.name, 'Radio One']);
+  assert.deepEqual(eng.adopted, [[3, 'Radio One']]);
+  assert.equal(Q.autoplayStart(), -1);
+  assert.deepEqual(eng.kinds, ['radio']);
+});
+
+test('radio: only when the server could not refill is the end handed to the engine (its own refill, once)', async (t) => {
+  const eng = setupAutoplay(t);
+  store.radioMode = true;
+  server.status = follow('PLAYING', 290, 300, 1, trC);
+  cast.startCastPoll();
+  await run(t, 4000);
+  server.status = follow('STOPPED', 0, 300, 1, trC, { queue_ended: true, queue_ended_ago: 1 });
+  await run(t, 10_000);
+  assert.equal(eng.next, 1);
+  assert.deepEqual(eng.nextOpts[0], { reason: 'ended' });
 });

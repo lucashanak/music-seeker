@@ -26,9 +26,11 @@
 //                          A track that is in no row is not adopted at all.
 //   peekAutoplay(n)        what the recommender would play once the queue is over: a
 //                          list, [] = nothing, null = not known yet; consumes nothing
-//   appendAutoplayRows(items, at) rows the server appended from that list: put them into
+//   appendAutoplayRows(items, at, kind) rows the server appended: put them into
 //                          store.playerQueue (same array; at the end and behind the
-//                          "Autoplay" divider, or at index `at`), tell the recommender
+//                          "Autoplay" divider, or at index `at`), tell the recommender.
+//                          kind 'radio': the server refilled a radio queue — plain rows,
+//                          no divider, nothing for the recommender
 //   pauseLocal()           pause BOTH local decks (and the prefetch)
 //   resumeLocal()          a cast that failed to start: local playback carries on
 //   onCastPlaying(bool)    sync the play/pause icon (store.playerPlaying)
@@ -314,8 +316,9 @@ function _hintKeyFor(idx, up, ap) {
 // Three answers (the wire's too):
 //   undefined  not known — the recommender is still loading, or this page has no say
 //              (a controller): the body has no `autoplay`, the server KEEPS what it holds
-//   []         nothing must follow the queue: repeat, radio (it refills itself), or a
-//              recommender that has nothing — the server drops its list
+//   []         no recommender pick may follow the queue: repeat; radio (the SERVER
+//              refills a radio queue from the radio service, see dlna.py _take_radio);
+//              or a recommender that has nothing — the server drops its list
 //   [rows]     the picks, the current track left out
 function _autoplayFor(idx) {
   if (idx < 0 || idx !== store.playerIndex || store.remoteTarget || !_ctx.peekAutoplay) return undefined;
@@ -691,9 +694,9 @@ function _appendedRows(q) {
 
 // Rows the server appended go into OUR array (push — search.js tests its identity),
 // behind the "Autoplay" divider; the recommender is told they have been played.
-function _pushAutoplay(rows, at = null) {
+function _pushAutoplay(rows, at = null, kind = '') {
   if (!rows || !rows.length) return;
-  if (_ctx.appendAutoplayRows) _call(_ctx.appendAutoplayRows, rows, at);
+  if (_ctx.appendAutoplayRows) _call(_ctx.appendAutoplayRows, rows, at, kind);
   else if (at != null) store.playerQueue.splice(at, 0, ...rows);
   else for (const it of rows) store.playerQueue.push(it);
 }
@@ -702,6 +705,8 @@ async function _adoptFromServer(idx, t) {
   const seq = _castSeq;
   const q0 = store.playerQueue, sig0 = _queueSig();
   const auto = t.autoplay === true;
+  // 'radio': rows of a radio refill the server made — radio rows, not an autoplay tail.
+  const kind = t.kind === 'radio' ? 'radio' : '';
   let saved = null, data = null;
   try {
     data = await apiJson('/api/player/queue');
@@ -719,7 +724,7 @@ async function _adoptFromServer(idx, t) {
     // may have appended several while the page slept. From here the two queues agree.
     const rows = _appendedRows(data.queue);
     if (rows && rows.length) {
-      _pushAutoplay(rows);
+      _pushAutoplay(rows, null, kind);
       if (_sameQueue(data.queue)) saved = data;
       i = _resolveIndex(t);
     }
@@ -751,11 +756,11 @@ async function _adoptFromServer(idx, t) {
     saved = null;
     const at = store.playerIndex + 1;
     if (store.playerIndex >= 0 && at < store.playerQueue.length) {
-      _pushAutoplay([row], at);
+      _pushAutoplay([row], at, kind);
       i = store.playerQueue[at] === row ? at : _resolveIndex(t);
       if (i < 0) return;
     } else {
-      _pushAutoplay([row]);
+      _pushAutoplay([row], null, kind);
       i = store.playerQueue.length - 1;
     }
   }

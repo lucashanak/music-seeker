@@ -401,10 +401,15 @@ export function setAutoplayStartIndex(i) {
  *  put them into the saved queue while this page slept. push, never a new array
  *  (search.js tests the array's identity); the first one becomes the "Autoplay"
  *  divider unless a tail is already marked. */
-export function appendAutoplayRows(items, at = null) {
+export function appendAutoplayRows(items, at = null, { divider = true } = {}) {
   const rows = (items || []).filter(Boolean);
   if (!rows.length) return 0;
   const q = store.playerQueue;
+  if (!divider && !(Number.isInteger(at) && at >= 0 && at < q.length)) {
+    // Radio rows (the follower refilled a radio queue): ordinary rows of that queue.
+    for (const it of rows) q.push(it);
+    return rows.length;
+  }
   if (Number.isInteger(at) && at >= 0 && at < q.length) {
     // Rows queued by the user sit after the row that just played and the server never
     // saw them: the pick goes in BEFORE them (in place — same array), or they would be

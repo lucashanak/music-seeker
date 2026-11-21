@@ -35,6 +35,10 @@
 //             frozen, the page pushes those rows behind the "Autoplay" divider, shows them,
 //             and sends no POST /cast of its own; a queue save pending at the freeze does
 //             not overwrite the server's rows on wake            (screen-off stop, 2026-11-21)
+//   radio     a RADIO queue cast on its last row: the page says autoplay [] and leaves the
+//             end to the server; rows the server refilled (track.kind "radio") are pushed as
+//             plain radio rows — no "Autoplay" divider, radio mode kept, no POST /cast and
+//             no /api/radio request from the page — awake and frozen           (2026-11-22)
 //
 // Oracle: production, account claude_test (never lucas). Must FAIL on the deployed code and
 // PASS over the tree:
@@ -54,7 +58,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TREE = process.env.MS_TREE || (process.argv.includes('--tree') ? path.resolve(HERE, '../../..') : null);
 const vpArg = process.argv.find(a => a.startsWith('--vp='));
 const VPS = (vpArg ? vpArg.slice(5) : (process.env.MS_VIEWPORTS || 'phone,tablet,desktop')).split(',').filter(Boolean);
-const ALL = ['restore', 'sleep', 'seek', 'handover', 'midstop', 'midstopmix', 'superseded', 'abandoned', 'autoplay'];
+const ALL = ['restore', 'sleep', 'seek', 'handover', 'midstop', 'midstopmix', 'superseded', 'abandoned', 'autoplay', 'radio'];
 const want = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const SCEN = want.length ? want : ALL;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -183,7 +187,7 @@ async function session(browser, vpName, queueInit) {
   // Saved queue: faked, so nothing on production is overwritten and a reload sees what
   // the page last saved.
   const saved = { queue: queueInit.queue, current_index: queueInit.index ?? 0, position_seconds: 0,
-    volume: 0.8, shuffle_order: null, playlist_mode: null };
+    volume: 0.8, shuffle_order: null, playlist_mode: null, ...(queueInit.extra || {}) };
   const puts = [];
   await context.route(/\/api\/player\/queue(\?|$)/, async (route) => {
     const m = route.request().method();
@@ -733,6 +737,98 @@ const scenarios = {
       R.check(`${tag}.saved`, 'the save that was pending when the page froze did not erase the server\'s rows: the saved queue holds all of them',
         Array.isArray(s.saved.queue) && JSON.stringify(s.saved.queue.slice(last + 1).map(x => x.name)) === JSON.stringify(RECS.map(x => x.name)),
         `saved tail=${JSON.stringify((s.saved.queue || []).slice(last + 1).map(x => x.name))}`);
+      routingChecks(s, tag);
+    } finally { await s.context.close(); }
+  },
+
+  // 7. A radio queue: the server refills it; the page only shows what the server did.
+  async radio(browser, vp) {
+    const tag = `${vp}.radio`;
+    const q = Q();
+    const last = q.length - 1;
+    const s = await session(browser, vp, { queue: q, index: last,
+      extra: { radio_mode: true, radio_seed: { name: q[0].name, artist: q[0].artist } } });
+    try {
+      let radioReqs = 0, recReqs = 0;
+      await s.page.route('**/api/radio**', (r) => { radioReqs++; return r.fulfill({ status: 200, contentType: 'application/json', body: '{"tracks":[]}' }); });
+      await s.page.route('**/api/player/recommendations**', (r) => { recReqs++; return r.fulfill({ status: 200, contentType: 'application/json', body: '{"tracks":[]}' }); });
+      const RAD = [1, 2, 3, 4, 5].map(n => ({ id: `zz-rad-${n}`, name: `zz-e2e radio ${n}`, artist: 'zz-e2e station', album: '', image: '', duration_ms: 200000 + n, type: 'track' }));
+      const qstate = () => s.page.evaluate(async () => {
+        const { store } = await window.__mods();
+        const src = [...document.scripts].map(x => x.src).find(x => /\/app\.js/.test(x)) || '';
+        const v = src.includes('?v=') ? '?v=' + src.split('?v=')[1] : '';
+        const Qm = await import(`/static/js/queue.js${v}`);
+        if (!window.__q0) window.__q0 = store.playerQueue;
+        return { names: store.playerQueue.map(x => x.name), idx: store.playerIndex, sameArray: store.playerQueue === window.__q0,
+          radio: !!store.radioMode, autoAt: typeof Qm.autoplayStart === 'function' ? Qm.autoplayStart() : null,
+          seps: document.querySelectorAll('.qi-autoplay-sep').length };
+      });
+      const a0 = await qstate();
+      R.check(`${tag}.restored`, 'the page restored the queue as a radio queue (store.radioMode)', a0.radio && a0.idx === last, `radioMode=${a0.radio} idx=${a0.idx}`);
+      if (!(await startCasting(s, tag))) return;
+      await sleep(7000);
+      const said = s.fake.log.filter(l => (l.op === 'POST cast' || l.op === 'POST next-hint') && l.body && 'autoplay' in l.body).map(l => l.body.autoplay);
+      R.check(`${tag}.says-none`, 'in radio mode the page hands over no recommender picks: autoplay [] (the server refills the radio)',
+        said.length > 0 && said.every(x => Array.isArray(x) && x.length === 0),
+        `autoplay values sent=${JSON.stringify(said)} (recommendation loads by the open panel: ${recReqs})`);
+
+      const serverRefills = (rows, playAt, pos = 2) => {
+        const base = s.saved.queue.length;
+        s.saved.queue = [...s.saved.queue, ...rows.map(r => ({ ...r }))];
+        s.saved.current_index = base + playAt;
+        const r = rows[playAt];
+        s.fake.play({ queue_index: base + playAt, name: r.name, artist: r.artist, album: r.album, image: r.image, duration_ms: r.duration_ms,
+          by: 'server', autoplay: true, kind: 'radio' }, pos);
+      };
+      // (a) Awake: the last row ends; the server takes a while to ask the radio service.
+      const casts0 = s.fake.ops('POST cast').length;
+      s.fake.state = 'STOPPED'; s.fake.setPos(0);
+      const endedAt = Date.now();
+      await sleep(7000);
+      const mid = await qstate();
+      R.check(`${tag}.end-left-to-server`, 'at the end of the radio queue an awake page neither casts nor refills by itself',
+        s.fake.ops('POST cast', endedAt).length === 0 && radioReqs === 0 && mid.names.length === q.length,
+        `POST /cast=${s.fake.ops('POST cast', endedAt).length} GET /api/radio=${radioReqs} rows=${mid.names.length}`);
+      serverRefills(RAD.slice(0, 3), 0);
+      const b = await waitFor(async () => { const x = await qstate(); return x.idx === last + 1 ? x : null; }, 10000) || await qstate();
+      const z = await st(s.page);
+      R.check(`${tag}.adopt`, 'the whole refilled batch is in the page\'s queue and its first row is current',
+        b.idx === last + 1 && JSON.stringify(b.names.slice(last + 1)) === JSON.stringify(RAD.slice(0, 3).map(x => x.name)) && z.title === RAD[0].name && b.sameArray,
+        `idx=${b.idx} tail=${JSON.stringify(b.names.slice(last + 1))} title="${z.title}" sameArray=${b.sameArray}`);
+      R.check(`${tag}.no-divider`, 'radio rows are plain rows: no "Autoplay" divider, radio mode still on',
+        b.autoAt === -1 && b.seps === 0 && b.radio, `autoplayStart=${b.autoAt} dividers drawn=${b.seps} radioMode=${b.radio}`);
+      await sleep(4000);
+      R.check(`${tag}.saved-radio`, 'the queue the page then saves is still a radio queue and holds the rows',
+        s.saved.radio_mode === true && s.saved.queue.length === q.length + 3 && s.saved.current_index === last + 1,
+        `radio_mode=${s.saved.radio_mode} rows=${s.saved.queue.length} current_index=${s.saved.current_index}`);
+
+      // (b) Frozen: the server plays the batch out and refills again.
+      const cdp = await s.context.newCDPSession(s.page);
+      await cdp.send('Debugger.enable');
+      await cdp.send('Debugger.pause');
+      await sleep(2500);
+      const frozenAt = Date.now();
+      s.saved.current_index = last + 3;
+      s.fake.play({ queue_index: last + 3, name: RAD[2].name, artist: RAD[2].artist, album: '', image: '', duration_ms: RAD[2].duration_ms,
+        by: 'server', autoplay: true, kind: 'radio' }, 2);
+      await sleep(5000);
+      serverRefills(RAD.slice(3), 0);
+      await sleep(5000);
+      const duringFreeze = s.fake.ops('GET status', frozenAt).length;
+      await cdp.send('Debugger.resume');
+      await cdp.send('Debugger.disable');
+      const c = await waitFor(async () => { const x = await qstate(); return x.idx === last + 4 ? x : null; }, 12000) || await qstate();
+      await sleep(3000);
+      const y = await st(s.page);
+      R.check(`${tag}.freeze`, 'the page really was frozen (no status requests while frozen)', duringFreeze === 0, `GET /status while frozen: ${duringFreeze}`);
+      R.check(`${tag}.wake-adopt`, 'after waking, the second batch is in the queue too and the playing row is current',
+        c.idx === last + 4 && JSON.stringify(c.names.slice(last + 1)) === JSON.stringify(RAD.map(x => x.name)) && y.title === RAD[3].name && c.sameArray,
+        `idx=${c.idx} tail=${JSON.stringify(c.names.slice(last + 1))} title="${y.title}"`);
+      R.check(`${tag}.still-radio`, 'still a radio queue with no divider', c.radio && c.autoAt === -1 && c.seps === 0, `radioMode=${c.radio} autoplayStart=${c.autoAt} dividers=${c.seps}`);
+      const extra = s.fake.ops('POST cast').length - casts0;
+      R.check(`${tag}.nocast`, 'no POST /api/dlna/cast and no /api/radio request from the page for anything the server refilled',
+        extra === 0 && radioReqs === 0, `extra POST /cast: ${extra}, GET /api/radio: ${radioReqs}`);
+      R.check(`${tag}.nolocal`, 'no local deck plays, the cast is still on', !y.localPlaying && !!y.cast, `local=${y.localPlaying} cast=${JSON.stringify(y.cast)}`);
       routingChecks(s, tag);
     } finally { await s.context.close(); }
   },
