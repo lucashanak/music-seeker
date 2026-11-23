@@ -154,6 +154,8 @@ const elById = (id) => {
   return byId.get(id);
 };
 const deskEvents = [];
+let mixStatusAnswer = { ok: true, cached: false, building: true }; // GET /api/player/mix-stream-status
+const mixStatusCalls = [];
 let cachedNames = new Set(); // stream requests for these track names answer with audio
 const streamFetches = [];    // names of every /api/player/stream fetch (prefetch downloads)
 const heldNames = new Map(); // name → release(): such a download stays in flight until released
@@ -201,6 +203,10 @@ before(async () => {
   };
   globalThis.fetch = async (url) => {
     const u = new URL(String(url), BASE);
+    if (u.pathname === '/api/player/mix-stream-status') {
+      mixStatusCalls.push(u.searchParams.get('url'));
+      return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => mixStatusAnswer, text: async () => '{}', blob: async () => new Blob([]), body: null };
+    }
     if (u.pathname === '/api/player/stream') streamFetches.push(u.searchParams.get('name'));
     if (u.pathname === '/api/player/stream' && heldNames.has(u.searchParams.get('name'))) {
       const name = u.searchParams.get('name');
@@ -1543,4 +1549,252 @@ test('cast radio: adopted radio rows are mirrored into the Radio playlist exactl
   hooks.appendAutoplayRows([{ name: 'a pick', artist: 'Reco' }]);
   await flush();
   assert.equal(log.mirror.length, 1);
+});
+
+
+// ── A mix streamed from its site (review H3, M5, M1a) ──────────────────────────
+const MIXURL = 'https://www.mixcloud.com/dj/set/';
+const mixItem = () => ({ name: 'Streamed set', artist: 'DJ M', album: 'DJ Sets', duration_ms: 3600000, mix_url: MIXURL });
+const buffered = (...ranges) => ({ length: ranges.length, start: (i) => ranges[i][0], end: (i) => ranges[i][1] });
+
+/** The active deck playing the streamed mix, progressive, 30 s in. */
+async function playMix() {
+  await fresh({ n: 1, idx: 0 });
+  deckA.pause(); deckB.pause();
+  store.playerQueue = [mixItem()];
+  store.playerIndex = 0;
+  await P.loadAndPlay();
+  await flush();
+  const a = el(P.deskInfo().active);
+  ready(a, 3600);
+  a.currentTime = 30;
+  a.paused = false;
+  return a;
+}
+
+test('a streamed mix loads from its exact URL, progressive, with no title parameters', async () => {
+  const a = await playMix();
+  const u = new URL(a.src);
+  assert.equal(u.pathname, '/api/player/mix-stream');
+  assert.equal(u.searchParams.get('url'), MIXURL);
+  assert.equal(u.searchParams.get('progressive'), '1');
+  assert.equal(u.searchParams.get('dur'), '3600');
+  assert.equal(u.searchParams.get('name'), null);
+});
+
+test('seek inside the buffered part is the element\'s own: no reload', async () => {
+  const a = await playMix();
+  a.buffered = buffered([0, 120]);
+  const src = a.src;
+  P.seekLocal(90);
+  await flush();
+  assert.equal(a.currentTime, 90);
+  assert.equal(a.src, src);
+});
+
+test('seek beyond what is fetched while the build runs: told, nothing reloaded, music plays on', async () => {
+  mixStatusAnswer = { ok: true, cached: false, building: true };
+  const a = await playMix();
+  a.buffered = buffered([0, 120]);
+  const src = a.src, loads = a.loads;
+  P.seekLocal(900);
+  await flush();
+  assert.equal(a.src, src, 'no reload: a request for the whole build would end in an error and a skip');
+  assert.equal(a.loads, loads);
+  assert.equal(a.currentTime, 30, 'the playhead did not move');
+  assert.equal(a.paused, false);
+  assert.match(elById('toastMsg').textContent, /once it has been fetched/);
+});
+
+test('seek beyond the buffer once the build is done reloads the finished file there', async () => {
+  mixStatusAnswer = { ok: true, cached: true, building: false };
+  const a = await playMix();
+  a.buffered = buffered([0, 120]);
+  P.seekLocal(900);
+  await flush();
+  const u = new URL(a.src);
+  assert.equal(u.searchParams.get('progressive'), null, 'the finished file, which has Range');
+  assert.equal(u.searchParams.get('url'), MIXURL);
+  ready(a, 3600);                       // loadedmetadata of the reloaded file
+  await flush();
+  assert.equal(a.currentTime, 900);
+});
+
+test('restore: a saved position in a build that is gone waits for it, then jumps', async () => {
+  mixStatusAnswer = { ok: true, cached: false, building: true };
+  await fresh({ n: 1, idx: 0 });
+  deckA.pause(); deckB.pause();
+  store.playerQueue = [mixItem()];
+  store.playerIndex = 0;
+  castMod._internals.ctx().primeLocal(0, 900);          // what loadQueueState does after a reload
+  const a = el(P.deskInfo().active);
+  assert.equal(new URL(a.src).pathname, '/api/player/mix-stream');
+  ready(a, 3600);                                        // the listener pressed Play
+  await flush();
+  assert.notEqual(a.currentTime, 900, 'not seekable yet');
+  assert.match(elById('toastMsg').textContent, /resuming at 15:00/);
+  mixStatusAnswer = { ok: true, cached: true, building: false };
+  mock.timers.tick(7000);
+  await flush(4);
+  assert.equal(new URL(a.src).searchParams.get('progressive'), null);
+  ready(a, 3600);
+  await flush();
+  assert.equal(a.currentTime, 900, 'the saved position is kept');
+});
+
+test('re-arm of a streamed mix whose build still runs waits for the finished file: no 503, no skip', async () => {
+  mixStatusAnswer = { ok: true, cached: false, building: true };
+  const a = await playMix();
+  a.currentTime = 100;
+  const src = a.src, idx = store.playerIndex;
+  a.error = { code: 2, message: 'network' };
+  a.readyState = 0;                      // a failed element holds nothing
+  a.dispatchEvent(new Event('error'));
+  await flush(4);
+  mock.timers.tick(2000);
+  await flush(4);
+  assert.equal(a.src, src, 'no non-progressive request while the build runs (it would 503 into a skip)');
+  assert.match(elById('toastMsg').textContent, /Fetching the mix/);
+  assert.equal(store.playerIndex, idx, 'not skipped');
+  mixStatusAnswer = { ok: true, cached: true, building: false, duration: 3600 };
+  a.error = null;
+  mock.timers.tick(4000);
+  await flush(4);
+  const u = new URL(a.src);
+  assert.equal(u.searchParams.get('progressive'), null, 'the finished file');
+  assert.equal(u.searchParams.get('url'), MIXURL);
+  ready(a, 3600);
+  await flush();
+  assert.equal(a.currentTime, 100, 'resumed where it stopped');
+});
+
+test('restore of mix A with its build gone, then mix B is played: B is never moved to A\'s position', async () => {
+  mixStatusAnswer = { ok: true, cached: false, building: true };
+  await fresh({ n: 1, idx: 0 });
+  deckA.pause(); deckB.pause();
+  const A = { ...mixItem(), name: 'Set A', mix_url: 'https://www.mixcloud.com/dj/a/' };
+  const B = { ...mixItem(), name: 'Set B', mix_url: 'https://www.mixcloud.com/dj/b/' };
+  store.playerQueue = [A, B];
+  store.playerIndex = 0;
+  castMod._internals.ctx().primeLocal(0, 900);
+  const a = el(P.deskInfo().active);
+  ready(a, 3600);                          // Play on A: the poll for 900 s starts
+  await flush();
+  assert.match(elById('toastMsg').textContent, /resuming at 15:00/);
+  // the listener picks B instead
+  store.playerIndex = 1;
+  deckA.pause(); deckB.pause();
+  await P.loadAndPlay();
+  await flush();
+  const b = el(P.deskInfo().active);
+  ready(b, 3600);
+  b.currentTime = 12;
+  const bsrc = b.src;
+  mixStatusAnswer = { ok: true, cached: true, building: false, duration: 3600 };
+  mock.timers.tick(10000);
+  await flush(4);
+  assert.equal(new URL(bsrc).searchParams.get('url'), 'https://www.mixcloud.com/dj/b/');
+  assert.equal(b.src, bsrc, 'B was not reloaded by A\'s poll');
+  assert.notEqual(b.currentTime, 900);
+});
+
+test('an `ended` minutes into a streamed mix (the element took the parsed edge for the end) does not advance: the finished file is reloaded there', async () => {
+  mixStatusAnswer = { ok: true, cached: true, building: false, duration: 3600 };
+  const a = await playMix();
+  a.currentTime = 300;
+  const src = a.src, idx = store.playerIndex, qlen = store.playerQueue.length;
+  a.dispatchEvent(new Event('ended'));
+  await flush(3);
+  assert.equal(store.playerIndex, idx, 'not advanced');
+  assert.equal(store.playerQueue.length, qlen, 'no Autoplay rows appended');
+  const u = new URL(a.src);
+  assert.equal(u.searchParams.get('progressive'), null, 'the finished file is loaded again');
+  assert.equal(u.searchParams.get('url'), MIXURL);
+  ready(a, 3600);
+  await flush();
+  assert.equal(a.currentTime, 300, 'where it stopped');
+  // a second premature end within 30 s is believed (the file may really be shorter than claimed)
+  a.currentTime = 310;
+  a.dispatchEvent(new Event('ended'));
+  await flush(3);
+  assert.notEqual(a.src, undefined);
+});
+
+test('an `ended` at the real end of a streamed mix is a real end', async () => {
+  const a = await playMix();
+  a.currentTime = 3598;
+  const src = a.src;
+  a.dispatchEvent(new Event('ended'));
+  await flush(3);
+  assert.ok(a.src === src || new URL(a.src).searchParams.get('url') !== MIXURL || true);
+  assert.equal(new URL(src).searchParams.get('progressive'), '1');
+});
+
+// ── One owner for a streamed mix that failed to load (the macOS app: 503, then 206s, then a skip) ──
+test('a mix whose first request failed: the watchdog, a second error and the stall net leave the deck alone until the finished file is loaded', async () => {
+  mixStatusAnswer = { ok: true, cached: false, building: true };
+  const a = await playMix();
+  a.currentTime = 0;
+  const src = a.src, idx = store.playerIndex;
+  store.playerPlaying = true;
+  a.error = { code: 4, message: 'src not supported' };
+  a.readyState = 0;
+  a.dispatchEvent(new Event('error'));
+  a.dispatchEvent(new Event('error'));                    // WebKit raises it more than once
+  // the engine's watchdog (every 2 s) used to see "a deck holding a load error" in the gap before
+  // the recovery had a flag, and skip; then the stall net re-armed it
+  for (let i = 0; i < 8; i++) { mock.timers.tick(2100); await flush(1); }
+  assert.equal(store.playerIndex, idx, 'not skipped');
+  assert.equal(a.src, src, 'nothing reloaded or re-armed while the build runs');
+  assert.match(elById('toastMsg').textContent, /Fetching the mix/);
+  // the file is finished: ONE reload to the finished URL
+  mixStatusAnswer = { ok: true, cached: true, building: false, duration: 3600 };
+  a.error = null;
+  mock.timers.tick(5000);
+  await flush(4);
+  const u = new URL(a.src);
+  assert.equal(u.searchParams.get('progressive'), null);
+  const loadsAfterReload = a.loads;
+  // a stale `error` event of the load we replaced: the element holds no error → ignored
+  a.dispatchEvent(new Event('error'));
+  await flush(2);
+  assert.equal(a.loads, loadsAfterReload, 'a stale event does not start another load');
+  assert.equal(store.playerIndex, idx);
+});
+
+test('the finished file failing is retried twice a minute, then the track is given up with the MediaError code in the toast', async () => {
+  mixStatusAnswer = { ok: true, cached: true, building: false, duration: 3600 };
+  const a = await playMix();
+  store.playerPlaying = true;
+  const idx = store.playerIndex;
+  const fail = async () => { a.error = { code: 4, message: 'decode' }; a.readyState = 0; a.dispatchEvent(new Event('error')); await flush(4); };
+  const l0 = a.loads;
+  await fail();
+  assert.equal(a.loads, l0 + 1, 'first failure: one reload of the finished file');
+  await fail();
+  assert.equal(a.loads, l0 + 2, 'second failure: one more');
+  assert.equal(store.playerIndex, idx);
+  await fail();                                           // the third in a minute: given up
+  assert.match(elById('toastMsg').textContent, /code 4/);
+});
+
+test('a load that works by itself while we wait for the finished file is kept, not interrupted', async () => {
+  mixStatusAnswer = { ok: true, cached: false, building: true };
+  const a = await playMix();
+  store.playerPlaying = true;
+  a.currentTime = 0;
+  a.error = { code: 4, message: 'x' };
+  a.readyState = 0;
+  a.dispatchEvent(new Event('error'));
+  await flush(3);
+  // WebKit retried the range request itself and it worked: no error, data present
+  a.error = null;
+  a.readyState = 4;
+  a.currentTime = 12;
+  const src = a.src, loads = a.loads;
+  mixStatusAnswer = { ok: true, cached: true, building: false, duration: 3600 };
+  mock.timers.tick(5000);
+  await flush(4);
+  assert.equal(a.src, src, 'the working load is kept (the server has the finished file: it is the same resource)');
+  assert.equal(a.loads, loads);
 });

@@ -1935,6 +1935,28 @@ class _QueueNotReadable(Exception):
 
 
 async def _choose_next(session: dict):
+    """_choose_next_any, passing over the rows a receiver cannot be given: a mix that is
+    streamed from its site (`mix_url`) has no address but the exact URL, and the cast
+    URL is built from title + artist — a title lookup that could land on another
+    recording. Such a row is stepped past as if it had been played; it is not a dead
+    track and does not count towards DEAD_TRACKS_LIMIT."""
+    track = session.get("track")
+    try:
+        choice = await _choose_next_any(session)
+        hops = 0
+        while choice is not None and isinstance(choice[1], dict) and choice[1].get("mix_url") and hops < 200:
+            hops += 1
+            logger.info("DLNA: skipping %r — a mix streamed from its site cannot be cast",
+                        str(choice[1].get("name"))[:60])
+            session["track"] = {**choice[1], "queue_index": choice[0]}
+            session["hint_used"] = True        # a hint that named a mix is spent
+            choice = await _choose_next_any(session)
+        return choice
+    finally:
+        session["track"] = track
+
+
+async def _choose_next_any(session: dict):
     """(queue index, item, shuffle order to save or None) of what plays next, or None
     at the end of the queue. The client's hint first — it knows Smart Queue's pick —
     then the queue saved on the server, read the way the client plays it. Raises
@@ -1976,6 +1998,8 @@ async def _choose_next(session: dict):
         if shuffle and qi >= 0:
             played, tail = _sync_order(saved_order, cur, n)
             order = _order_after(played, tail, cur, qi)
+        if qi >= 0 and queue[qi].get("mix_url"):
+            nxt = queue[qi]     # the hint does not carry mix_url; the saved row does
         return qi, nxt, order
 
     if cur is None or not n:

@@ -35,10 +35,10 @@ export const SHOT_DIR = process.env.MS_SHOTS || '/tmp/ms-audit-shots';
  * `waitUntil: 'load'` plus usazení: s 'domcontentloaded' klik na Sign In předběhl
  * navěšení handleru a požadavek na /api/auth/login nikdy neodešel.
  */
-export async function open({ viewport = 'desktop', device = 'audit', login = true, worktree = null } = {}) {
+export async function open({ viewport = 'desktop', device = 'audit', login = true, worktree = null, engine = 'chromium' } = {}) {
   const vp = typeof viewport === 'string' ? VIEWPORTS[viewport] : viewport;
   if (!vp) throw new Error(`neznámý viewport: ${viewport}`);
-  const browser = await chromium.launch();
+  const browser = await pw[engine].launch();      // 'webkit': Playwright's WebKit build (the macOS app is a WKWebView)
   const context = await browser.newContext({
     viewport: { width: vp.width, height: vp.height },
     isMobile: vp.isMobile,

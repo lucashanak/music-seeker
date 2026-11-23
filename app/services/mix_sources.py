@@ -15,6 +15,7 @@ our volume with HTTP 429, after which nothing un-downloaded plays.
 """
 
 import asyncio
+import base64
 import json
 import re
 import time
@@ -336,6 +337,61 @@ async def search_hearthis(q: str) -> list[dict]:
     return parse_hearthis_list(data)
 
 
+# ── Paging: every source is asked by OFFSET ──
+# Mixcloud's GraphQL cursor is base64("arrayconnection:<index of the last row>"), hearthis
+# takes `page`, and yt-dlp takes --playlist-start/--playlist-end over `…search<end>:`. A
+# deeper page of the yt-dlp sources costs a search to that depth again (measured: SoundCloud
+# page 2 ~8 s with the extraction of its 10, YouTube flat ~1.5 s at any depth), so each source
+# has a depth cap beyond which it is simply "dry".
+PAGE_SIZE = {"soundcloud": SOUNDCLOUD_RESULTS, "youtube": YOUTUBE_RESULTS,
+             "mixcloud": MIXCLOUD_RESULTS, "hearthis": HEARTHIS_RESULTS}
+MAX_DEPTH = {"soundcloud": 40, "youtube": 80, "mixcloud": 120, "hearthis": 100}
+MAX_PAGE = 12
+
+
+def mixcloud_cursor(after_index: int) -> str | None:
+    """The `after` cursor that continues behind row index `after_index` (0-based), as
+    Mixcloud issues them; None for the first page."""
+    if after_index < 0:
+        return None
+    return base64.b64encode(f"arrayconnection:{after_index}".encode()).decode()
+
+
+async def page_soundcloud(q: str, page: int) -> list[dict]:
+    n = PAGE_SIZE["soundcloud"]
+    start = (page - 1) * n
+    d, _ = await _ytdlp_json(["-J", "--playlist-start", str(start + 1), "--playlist-end", str(start + n),
+                              f"scsearch{start + n}:{q}"])
+    return parse_soundcloud_playlist(d)
+
+
+async def page_youtube(q: str, page: int) -> list[dict]:
+    n = PAGE_SIZE["youtube"]
+    start = (page - 1) * n
+    d = await _youtube_flat(["--playlist-start", str(start + 1), "--playlist-end", str(start + n),
+                             f"ytsearch{start + n}:{q}"], f"mix search {q[:60]} p{page}")
+    return _parse_all(parse_youtube_entry, _dict(d).get("entries"))
+
+
+async def page_mixcloud(q: str, page: int) -> list[dict]:
+    n = PAGE_SIZE["mixcloud"]
+    query = ("query($term: String!, $after: String) { viewer { search { searchQuery(term: $term) {"
+             f" cloudcasts(first: {n}, after: $after) {{ edges {{ node {{ {_MC_NODE}"
+             " owner { username displayName picture { urlRoot } } } } } } } } } }")
+    return parse_mixcloud_search(await mixcloud_graphql(
+        query, {"term": q, "after": mixcloud_cursor((page - 1) * n - 1)}))
+
+
+async def page_hearthis(q: str, page: int) -> list[dict]:
+    data = await get_json(f"{HEARTHIS_API}/search",
+                          {"t": q, "type": "tracks", "count": PAGE_SIZE["hearthis"], "page": page})
+    return parse_hearthis_list(data)
+
+
+PAGERS = {"soundcloud": page_soundcloud, "youtube": page_youtube,
+          "mixcloud": page_mixcloud, "hearthis": page_hearthis}
+
+
 SEARCHERS = {
     "soundcloud": search_soundcloud,
     "youtube": search_youtube,
@@ -483,11 +539,88 @@ def _err_text(e: Exception) -> str:
     return (str(e) or type(e).__name__)[:200]
 
 
-async def search(q: str, sources: list[str]) -> dict:
+# What the server remembers of one search so later pages can fold into it: the rows sent so
+# far (with their `also`), which sources are dry. Keyed by (query, sources); bounded, 10 min.
+STATE_TTL = 600
+STATE_MAX = 100              # all users together, least recently used out first
+STATE_PER_USER = 8           # one person's open tabs / recent searches
+SID_RE = re.compile(r"^[A-Za-z0-9_-]{6,40}$")
+
+
+class _State:
+    def __init__(self, q: str = "", sources: list[str] | None = None):
+        self.q = q
+        self.sources = list(sources or [])
+        self.rows: list[dict] = []          # every row sent so far, in the order sent
+        self.dry: set[str] = set()          # sources not to be asked again for this query
+        self.page = 1
+        self.t = time.monotonic()
+
+
+_states: dict[tuple, _State] = {}
+
+
+def _state_key(user: str, sid: str) -> tuple:
+    """A search is one user's one search (the client makes `sid` for each): two tabs, or two
+    people, asking the same query must not reset each other's paging."""
+    return (str(user or ""), sid if SID_RE.match(str(sid or "")) else "")
+
+
+def _remember(key: tuple, st: _State) -> None:
+    st.t = time.monotonic()
+    _states.pop(key, None)
+    _states[key] = st
+    mine = [k for k in _states if k[0] == key[0]]
+    for k in mine[:-STATE_PER_USER]:              # dict order = least recently used first
+        _states.pop(k, None)
+    while len(_states) > STATE_MAX:
+        _states.pop(next(iter(_states)), None)
+
+
+def _norm_q(q: str) -> str:
+    return nfc(" ".join(str(q or "").split()))[:200]
+
+
+class SearchExpired(Exception):
+    """A later page was asked for a search the server no longer holds (or out of order)."""
+
+
+def _page_meta(sources: list[str], got: dict[str, int], errors: dict, st: _State, page: int) -> dict:
+    """Which sources can still be asked: not dry, not failed, and the last page was full."""
+    for s in sources:
+        if s in errors:
+            st.dry.add(s)                       # failing or rate-limited: not asked again for this query
+        elif s in got and (got[s] < PAGE_SIZE[s] or page * PAGE_SIZE[s] >= MAX_DEPTH[s]):
+            st.dry.add(s)                       # a short page is the end; so is the depth cap
+    more = {s: s not in st.dry for s in sources}
+    return {"page": page, "more": more, "done": not any(more.values())}
+
+
+def _fold_into(rows: list[dict], new: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Rows of a later page that are the same set as a row already sent (on another site) are
+    not rows: they fold into it. -> (rows that stay new, [{into: url, also: [...]}])."""
+    keep, folds = [], []
+    for it in new:
+        host = None
+        for row in rows:
+            sites = {row["source"]} | {a.get("source") for a in row.get("also", [])}
+            if it["source"] not in sites and same_set(it, row):
+                host = row
+                break
+        if host is None:
+            keep.append(it)
+            continue
+        extra = [_also_entry(it)] + list(it.get("also", []))
+        host.setdefault("also", []).extend(extra)
+        folds.append({"into": host["url"], "also": extra})
+    return keep, folds
+
+
+async def search(q: str, sources: list[str], user: str = "", sid: str = "") -> dict:
     """All results of every asked source, folded and quality-sorted, plus
     `errors: {source: reason}` for the ones that failed. Filtering is the
-    client's (a toggle has to be instant)."""
-    q = nfc(" ".join(str(q or "").split()))[:200]
+    client's (a toggle has to be instant). The first page; `search_more` continues."""
+    q = _norm_q(q)
     results = await asyncio.gather(*(_one_source(s, q) for s in sources), return_exceptions=True)
     per_source, errors = {}, {}
     for s, r in zip(sources, results):
@@ -498,8 +631,46 @@ async def search(q: str, sources: list[str]) -> dict:
     merged = dedupe(interleave(per_source))
     for i, it in enumerate(merged):
         it["relevance"] = i
+    st = _State(q, sources)
+    st.rows = [it for it in merged]
+    meta = _page_meta(sources, {s: len(v) for s, v in per_source.items()}, errors, st, 1)
+    _remember(_state_key(user, sid), st)
     return {"query": q, "sources": sources, "results": sort_by_quality(merged),
-            "errors": errors, "counts": {s: len(v) for s, v in per_source.items()}}
+            "errors": errors, "counts": {s: len(v) for s, v in per_source.items()}, **meta}
+
+
+async def search_more(q: str, sources: list[str], page: int, user: str = "", sid: str = "") -> dict:
+    """Page `page` (2…) of a search the first page of which was answered: only the sources
+    that are not dry are asked, rows that are the same set as one already sent fold into it
+    (`folds`) instead of repeating, and a source that fails or runs out is not asked again.
+    Raises SearchExpired when the server does not hold that search or the page is out of order."""
+    q = _norm_q(q)
+    if not (2 <= page <= MAX_PAGE):
+        raise SearchExpired("page out of range")
+    key = _state_key(user, sid)
+    st = _states.get(key)
+    if (st is None or time.monotonic() - st.t > STATE_TTL or page != st.page + 1
+            or st.q != q or st.sources != list(sources)):
+        raise SearchExpired("This search has expired — search again")
+    ask = [s for s in sources if s not in st.dry]
+    results = await asyncio.gather(*(PAGERS[s](q, page) for s in ask), return_exceptions=True)
+    per_source, errors = {}, {}
+    for s, r in zip(ask, results):
+        if isinstance(r, BaseException):
+            errors[s] = _err_text(r)
+        else:
+            per_source[s] = r
+    merged = dedupe(interleave(per_source))
+    keep, folds = _fold_into(st.rows, merged)
+    base = len(st.rows)
+    for i, it in enumerate(keep):
+        it["relevance"] = base + i
+    st.rows.extend(keep)
+    st.page = page
+    meta = _page_meta(sources, {s: len(v) for s, v in per_source.items()}, errors, st, page)
+    _remember(key, st)
+    return {"query": q, "sources": sources, "results": sort_by_quality(keep), "folds": folds,
+            "errors": errors, "counts": {s: len(v) for s, v in per_source.items()}, **meta}
 
 
 # ── A DJ's latest uploads ──

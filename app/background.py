@@ -125,6 +125,12 @@ async def startup():
         print("WARNING: ADMIN_PASS not set! Set it via environment variable.", file=sys.stderr)
     else:
         auth.init_admin(ADMIN_USER, ADMIN_PASS)
+    # Nothing is being built yet: partial files of a killed process in the mix-stream cache are garbage.
+    try:
+        from app.services import mix_stream
+        await asyncio.to_thread(mix_stream.sweep_stale)
+    except Exception:
+        pass
     asyncio.create_task(_podcast_auto_sync())
     asyncio.create_task(_favorites_release_check())
     asyncio.create_task(_mix_follow_auto_check())

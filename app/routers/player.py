@@ -1,15 +1,21 @@
 import asyncio
+import json
+import logging
 import os
+import re
 import tempfile
+import time
+from collections import deque
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Request
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, Response
 
 from app.models import QueueState, AddToQueueRequest, RecommendationRequest, PrewarmRequest
-from app.services import auth, player, radio, settings as app_settings
+from app.services import auth, mixes, player, radio, mix_stream, settings as app_settings
 from app.dependencies import _stream_auth, _get_device_id, bind_navidrome_creds
 
 router = APIRouter(prefix="/api/player", tags=["player"])
+logger = logging.getLogger("musicseeker.mixstream")
 
 # Retains references to fire-and-forget pre-warm tasks so they are not GC'd
 # mid-flight (asyncio only weakly references unawaited tasks).
@@ -104,7 +110,7 @@ async def player_stream_head(name: str, artist: str = "", quality: str = "standa
 
 
 async def _file_or_follow(build, cache_path: str, progressive: bool, mime: str,
-                          file_headers: dict, headers: dict):
+                          file_headers: dict, headers: dict, on_close=None):
     """Await a cache build and serve the file — or, for a deck that asked for it
     (`progressive=1`) and a build that is not done within a moment, serve the file as
     it grows (player.follow_build). Returns None when the build failed outright.
@@ -112,7 +118,7 @@ async def _file_or_follow(build, cache_path: str, progressive: bool, mime: str,
     Only a DECK asks for this. A progressive answer has no Content-Length, so the
     browser cannot tell its duration and a prefetch cannot tell a short read from a
     complete one; prefetch keeps waiting for the finished file, as before."""
-    task = asyncio.create_task(build)
+    task = asyncio.ensure_future(build)   # a coroutine, or the Task a shared build already is
     _prewarm_tasks.add(task)            # keep a reference: the build outlives this request
 
     def _done(t: asyncio.Task) -> None:
@@ -123,8 +129,15 @@ async def _file_or_follow(build, cache_path: str, progressive: bool, mime: str,
     if progressive:
         done, _ = await asyncio.wait({task}, timeout=1.0)
         if not done:
+            async def _body():
+                try:
+                    async for chunk in player.follow_build(task, cache_path):
+                        yield chunk
+                finally:
+                    if on_close:
+                        on_close()
             return StreamingResponse(
-                player.follow_build(task, cache_path), media_type=mime,
+                _body(), media_type=mime,
                 headers={**headers, "Accept-Ranges": "none", "Cache-Control": "no-store",
                          "X-Stream-Progressive": "1"})
     cached = await asyncio.shield(task)
@@ -132,6 +145,144 @@ async def _file_or_follow(build, cache_path: str, progressive: bool, mime: str,
         return None
     player.touch_cache_file(cached)
     return _ServedFile(cached, media_type=mime, headers=file_headers)
+
+
+class _MixServedFile(_ServedFile):
+    """A cached mix being sent: afterwards the page cache it filled is handed back (the
+    container's memory limit counts it; the cache lives on the music volume, where
+    POSIX_FADV_DONTNEED works)."""
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await asyncio.to_thread(mixes.release_page_cache, self.path)
+
+
+# ── What the page's media element said about a streamed mix ──
+# The audio element reports "error" and nothing else; on the macOS app (WKWebView) every request
+# was answered 206 and the page still raised an error and skipped. Both engines post a small JSON
+# line for each error / ended / recovery step / change of source of a streamed mix. Tiny, capped
+# per user, logged at INFO and never with a token or a URL.
+CLIENT_LOG_LIMIT = 30
+CLIENT_LOG_WINDOW = 60.0
+CLIENT_LOG_MAX_BYTES = 1200
+_client_log: dict[str, "deque"] = {}
+_LOG_SECRET = re.compile(r"(token=)[^&\s\"]+|eyJ[A-Za-z0-9_.\-=]{20,}|https?://\S+")
+
+
+@router.post("/client-log", status_code=204)
+async def client_log(request: Request, body: dict, user: dict = Depends(auth.get_current_user)):
+    name = user.get("username", "?")
+    now = time.monotonic()
+    q = _client_log.setdefault(name, deque())
+    while q and now - q[0] > CLIENT_LOG_WINDOW:
+        q.popleft()
+    if len(q) >= CLIENT_LOG_LIMIT:
+        return Response(status_code=204)             # capped: silently, the page must not care
+    q.append(now)
+    clean = {}
+    for k, v in list(body.items())[:24]:
+        if isinstance(v, (int, float, bool)) or v is None:
+            clean[str(k)[:12]] = v
+        else:
+            clean[str(k)[:12]] = _LOG_SECRET.sub("…", str(v))[:120]
+    text = json.dumps(clean, separators=(",", ":"), ensure_ascii=False)[:CLIENT_LOG_MAX_BYTES]
+    logger.info("client-log user=%s %s | %s", name, text, _ua_family(request.headers.get("user-agent", "")))
+    return Response(status_code=204)
+
+
+@router.get("/mix-stream-status")
+async def mix_stream_status(url: str, user: dict = Depends(_stream_auth)):
+    """What a mix-stream request for this URL would meet — never starts a build."""
+    return await mix_stream.peek(url, user["username"])
+
+
+def _ua_family(ua: str) -> str:
+    """A coarse browser family for the log: which engine asked (a WKWebView app has no
+    "Safari/" token, Safari has, Chromium says Chrome/)."""
+    ua = ua or ""
+    if "Chrome/" in ua or "Chromium/" in ua:
+        return "Chromium"
+    if "Firefox/" in ua:
+        return "Firefox"
+    if "AppleWebKit" in ua:
+        return "Safari" if "Safari/" in ua else "WebKit-webview"
+    return (ua.split("/")[0] or "?")[:20]
+
+
+@router.get("/mix-stream")
+async def mix_stream_get(request: Request, url: str, progressive: int = 0, dur: int = 0,   # dur: a display hint of the client, never used here
+                         user: dict = Depends(_stream_auth)):
+    """Play a mix found in search ... (see _mix_stream_impl)."""
+    try:
+        return await _mix_stream_impl(request, url, progressive, user)
+    except HTTPException as e:
+        # We were blind in the log once: every refusal says what, why, and who asked how.
+        logger.info("mix-stream %s: %s | range=%s progressive=%s | %s | user=%s",
+                    e.status_code, e.detail, request.headers.get("range") or "-", progressive,
+                    _ua_family(request.headers.get("user-agent", "")), user.get("username"))
+        raise
+
+
+async def _mix_stream_impl(request: Request, url: str, progressive: int, user: dict):
+    """Play a mix found in search, from its own site, without downloading it into the
+    library (see services/mix_stream.py). The exact URL plays — never a title lookup.
+    `dur`: the length in seconds the search result gave (optional), to tell a cut
+    download from a whole one. The server judges that itself (yt-dlp's info); `dur` only
+    travels in the URL for the client's own use."""
+    t0 = time.monotonic()
+    rng = (request.headers.get("range") or "").replace(" ", "").lower()
+    progressive = bool(progressive) and rng in ("", "bytes=0-")
+    try:
+        curl, source, done, build = await mix_stream.prepare(url, user["username"])
+    except mix_stream.MixStreamError as e:
+        raise HTTPException(e.status, e.message)
+    headers = {"X-Stream-Source": "mix-stream"}
+    if done:
+        player.touch_cache_file(done)
+        return _MixServedFile(done, media_type=mix_stream.mime_of(done),
+                              headers={**headers, "Cache-Control": "private, max-age=3600"})
+    lease = build.lease()
+    handed = False
+    try:
+        left = lambda: max(1.0, mix_stream.REQUEST_BUDGET - (time.monotonic() - t0))   # noqa: E731
+        try:
+            _ext, mime, final = await asyncio.wait_for(
+                asyncio.shield(build.fmt), min(mix_stream.FORMAT_TIMEOUT, left()))
+        except mix_stream.MixStreamError as e:
+            raise HTTPException(e.status, e.message)
+        except asyncio.TimeoutError:
+            build.keep(mix_stream.KEEP_AFTER_503)      # the player will ask again: do not lose the build
+            raise HTTPException(504, "The mix is taking too long to start", headers={"Retry-After": "5"})
+        if not progressive:
+            # A seek (Range) into a file that is still being built cannot be answered from
+            # a part of it: wait for the rest of this request's budget (nginx cuts at 60 s),
+            # else tell the client to retry.
+            _done, _ = await asyncio.wait({build.task}, timeout=min(left(), mix_stream.NONPROG_WAIT))
+            if not _done:
+                build.keep(mix_stream.KEEP_AFTER_503)  # the retry (or the client's polling) gets the finished file
+                raise HTTPException(503, "The mix is still being fetched", headers={"Retry-After": "5"})
+        if not progressive:
+            # The build is done: the plain MP4 made from it (task.result() is the fragmented
+            # file the followers were told about).
+            t = build.task
+            if t.cancelled() or t.exception() or not t.result():
+                raise HTTPException(502, "Could not fetch this mix")
+            best = mix_stream.cached_file(curl) or final
+            player.touch_cache_file(best)
+            return _MixServedFile(best, media_type=mix_stream.mime_of(best),
+                                  headers={**headers, "Cache-Control": "private, max-age=3600"})
+        resp = await _file_or_follow(build.task, final, progressive, mime,
+                                     {**headers, "Cache-Control": "private, max-age=3600"}, headers,
+                                     on_close=lease.release)
+        if resp is None:
+            raise HTTPException(502, "Could not fetch this mix")
+        handed = isinstance(resp, StreamingResponse)   # the body's generator releases the lease
+        return resp
+    finally:
+        if not handed:
+            lease.release()
 
 
 @router.get("/stream-duration")

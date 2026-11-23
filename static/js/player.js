@@ -2,7 +2,9 @@
 
 import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
-import { apiJson } from './api.js';
+import { apiJson, mixPlayUrl } from './api.js';
+import { mixLog, watchMixSrc, watchMixEvents } from './mixlog.js';
+import { isMixStreamSrc, isPrematureMixEnd, mixKnownDuration, mixStatus, awaitFinished, keepMixAlive, planMixSeek, toastSeekBeyondBuilt, explainMixFailure, resumeWhenBuilt } from './mixstream.js';
 import { openModal } from './downloads.js';
 import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, adoptShuffleIndex, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, appendAutoplayRows, capAutoplayTail } from './queue.js';
 import { syncFullPlayer, syncMuteUI } from './fullplayer.js';
@@ -246,10 +248,53 @@ window._androidBridgeReady = function() {
 // ── Helper: get duration with Safari fallback ──
 function _getDuration() {
   let dur = audio.duration;
+  const declared = mixKnownDuration(audio.src);   // a streamed mix: the element's length is what has arrived (mixstream.js)
+  if (declared) return declared;
   if (dur && isFinite(dur) && dur > 0) return dur;
   const item = store.playerQueue[store.playerIndex] || _currentRecItem;
   if (item && item.duration_ms > 0) return item.duration_ms / 1000;
   return null;
+}
+
+/** Load the finished (non-progressive) file of the streamed mix and seek in it. */
+function _reloadFinishedAndSeek(to, play) {
+  let next = String(audio.src || '');
+  try { const u = new URL(next, location.href); u.searchParams.delete('progressive'); next = u.href; } catch {}
+  const wasPlaying = play === undefined ? !audio.paused : !!play;   // after a media error `paused` says nothing
+  const onMeta = () => {
+    audio.removeEventListener('loadedmetadata', onMeta);
+    if (audio.src !== next) return;
+    try { audio.currentTime = to; } catch {}
+    if (wasPlaying) audio.play().catch(() => {});
+  };
+  audio.addEventListener('loadedmetadata', onMeta);
+  audio.src = next;
+  audio.load();
+  if (wasPlaying) audio.play().catch(() => {});
+}
+
+/** Seek the element to `to` seconds. A streamed mix is served as a body that is still being
+ *  built (progressive=1: no Range): inside what is buffered the element seeks itself;
+ *  beyond it nothing can be answered until the build is done — the listener is told and
+ *  the music plays on; once it is done the finished file is loaded (mixstream.js). */
+export function seekLocal(to) {
+  const src = String(audio.src || '');
+  if (isMixStreamSrc(src)) {
+    planMixSeek(audio, to).then((plan) => {
+      if (audio.src !== src) return;                        // the track changed meanwhile
+      if (plan === 'direct') { try { audio.currentTime = to; } catch {} }
+      else if (plan === 'reload') _reloadFinishedAndSeek(to);
+      else toastSeekBeyondBuilt();
+    });
+    return;
+  }
+  try { audio.currentTime = to; } catch {}
+}
+
+/** Fraction → seconds with this engine's idea of the duration. */
+export function seekToFraction(pct) {
+  const dur = _getDuration();
+  if (dur) seekLocal(pct * dur);
 }
 
 // ── Play Track ──
@@ -325,6 +370,11 @@ export async function loadAndPlay() {
   const cleanName = _decodeEntities(item.name || '');
   const cleanArtist = _decodeEntities(item.artist || '');
   const mode = store.deviceOutputMode || 'default';
+  // A streamed mix has no title the receiver could resolve to this recording.
+  if (item.mix_url && ((store.castDevice && mode !== 'local') || mode === 'dlna_only')) {
+    showToast('A mix that is not downloaded cannot be cast — download it first', true);
+    return;
+  }
   // DLNA Only mode: auto-connect to renderer on play
   if (mode === 'dlna_only' && !store.castDevice) {
     cast.autoCastAndPlay(item, cleanName, cleanArtist);
@@ -343,7 +393,7 @@ export async function loadAndPlay() {
       audio.src = cached;
     } else {
       const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: (store.streamToken || store.authToken) });
-      audio.src = `/api/player/stream?${params}&quality=${streamQuality()}`;
+      audio.src = mixPlayUrl(item) || `/api/player/stream?${params}&quality=${streamQuality()}`;
     }
     audio.load();
     audio.play().catch(() => {});
@@ -687,6 +737,10 @@ export function playRecTrack(item) {
   const cleanName = _decodeEntities(item.name || '');
   const cleanArtist = _decodeEntities(item.artist || '');
   // Cast mode: send to DLNA renderer
+  if (item.mix_url && store.castDevice) {
+    showToast('A mix that is not downloaded cannot be cast — download it first', true);
+    return;
+  }
   if (store.castDevice) {
     cast.castTrack(item, { name: cleanName, artist: cleanArtist, queueIndex: -1 }); // not a queue row
   } else {
@@ -695,7 +749,7 @@ export function playRecTrack(item) {
       audio.src = cached;
     } else {
       const params = new URLSearchParams({ name: cleanName, artist: cleanArtist, token: (store.streamToken || store.authToken) });
-      audio.src = `/api/player/stream?${params}&quality=${streamQuality()}`;
+      audio.src = mixPlayUrl(item) || `/api/player/stream?${params}&quality=${streamQuality()}`;
     }
     audio.load();
     audio.play().catch(() => {});
@@ -869,7 +923,7 @@ export async function flushQueue(opts) {
 const _primed = { src: '', pos: 0 }; // the source _primeAudio set, and where it will start
 function _primeAudio(item, pos) {
   const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: (store.streamToken || store.authToken) });
-  audio.src = `/api/player/stream?${params}&quality=${streamQuality()}`;
+  audio.src = mixPlayUrl(item) || `/api/player/stream?${params}&quality=${streamQuality()}`;
   audio.preload = 'none';
   _primed.src = audio.src;
   _primed.pos = pos > 0 ? pos : 0;
@@ -878,7 +932,11 @@ function _primeAudio(item, pos) {
     audio.addEventListener('loadedmetadata', () => {
       // Only seek if still the restored track — the user may have switched tracks
       // before this one-shot metadata load fired.
-      if (audio.src === restoreSrc) audio.currentTime = pos;
+      if (audio.src !== restoreSrc) return;
+      // A streamed mix whose build is gone (a deploy empties the cache) cannot be sought
+      // yet: wait for it, with visible state (mixstream.js).
+      if (isMixStreamSrc(restoreSrc)) resumeWhenBuilt(audio, pos, (p) => _reloadFinishedAndSeek(p, store.playerPlaying), () => audio.src === restoreSrc);
+      else audio.currentTime = pos;
     }, { once: true });
   }
 }
@@ -1056,6 +1114,8 @@ export function silenceForRemote() {
 
 // ── Init ──
 export function init() {
+  watchMixSrc(audio, 'classic'); watchMixEvents(audio, 'classic');   // what the element says about a streamed mix, to the server's log
+  keepMixAlive(() => audio);   // a streamed mix that is playing (or paused) is kept in the server's cache
   setInterval(_stallWatchdog, 2000);
   // Audio events
   audio.addEventListener('play', () => {
@@ -1077,6 +1137,13 @@ export function init() {
   });
   audio.addEventListener('ended', () => {
     if (store.remoteTarget) return; // a controller plays nothing out and advances nothing
+    // An `ended` far from the mix's real end: reload the finished file where it stopped (once per 30 s).
+    if (isPrematureMixEnd(audio, store.playerQueue[store.playerIndex]) && Date.now() - (audio._prematureAt || 0) > 30000) {
+      audio._prematureAt = Date.now();
+      console.warn(`[mix] premature ended at ${audio.currentTime.toFixed(1)}s — reloading from there`);
+      _reloadFinishedAndSeek(audio.currentTime || 0, true);
+      return;
+    }
     if (store.repeatMode === 'one') {
       audio.currentTime = 0;
       audio.play().catch(() => {});
@@ -1112,6 +1179,52 @@ export function init() {
     const code = audio.error?.code || '?';
     const msg = audio.error?.message || '';
     const src = audio.src?.substring(0, 60) || 'none';
+    const _item = store.playerQueue[store.playerIndex];
+    if (_item && _item.mix_url && isMixStreamSrc(audio.src)) {
+      // A streamed mix: ONE recovery path owns the element (any source, progressive or the
+      // finished file). Events during it are the same failure; an `error` event that finds no
+      // error on the element is the stale event of a load we replaced and is ignored.
+      if (audio._mixRec) return;
+      if (!audio.error) { mixLog('error-stale', audio, {}, 'classic'); return; }
+      audio._mixRec = true;
+      const failedSrc = audio.src, pos = audio.currentTime || 0;
+      mixLog('recover', audio, { pos: Math.round(pos) }, 'classic');
+      const done = () => { audio._mixRec = false; };
+      const skip = (why) => {
+        done();
+        mixLog('skip', audio, { why }, 'classic');
+        explainMixFailure(_item, `Stream error (code ${code}), skipping`);
+        setTimeout(() => nextTrack(), 2000);
+      };
+      const reload = (p) => {
+        done();
+        // The element may have recovered by itself (WebKit retries a failed range request): keep a load that works.
+        if (!audio.error && audio.readyState >= 2 && audio.src === failedSrc) {
+          mixLog('keep', audio, { pos: Math.round(p) }, 'classic');
+          if (p > 1 && Math.abs((audio.currentTime || 0) - p) > 5) { try { audio.currentTime = p; } catch {} }
+          if (store.playerPlaying && audio.paused) audio.play().catch(() => {});
+          return;
+        }
+        mixLog('reload-finished', audio, { pos: Math.round(p) }, 'classic');
+        _reloadFinishedAndSeek(p, store.playerPlaying);
+      };
+      mixStatus(failedSrc).then((st) => {
+        if (audio.src !== failedSrc) { done(); return; }          // the listener moved on
+        const url = (() => { try { return new URL(failedSrc).searchParams.get('url') || ''; } catch { return ''; } })();
+        const tr = audio._mixTry && audio._mixTry.url === url && Date.now() - audio._mixTry.at < 60000 ? audio._mixTry : { url, n: 0, at: Date.now() };
+        if (st && st.building) {
+          mixLog('wait', audio, { pos: Math.round(pos) }, 'classic');
+          awaitFinished(audio, pos, reload, () => audio.src === failedSrc && audio._mixRec,
+            (m) => { showToast(m, true); skip(String(m).slice(0, 60)); });
+        } else if (st && st.cached && tr.n < 2) {
+          tr.n++; tr.at = Date.now(); audio._mixTry = tr;
+          reload(pos);
+        } else {
+          skip(st ? (st.cached ? 'again' : 'idle') : 'nostatus');
+        }
+      });
+      return;
+    }
     showToast(`Stream error (${code}): ${msg || src}`);
     // Don't chain-skip — wait 2s
     setTimeout(() => nextTrack(), 2000);
@@ -1150,7 +1263,7 @@ export function init() {
     if (store.castDevice) {
       apiJson('/api/dlna/seek', { method: 'POST', body: { position_seconds: pct * dur } }).catch(() => {});
     } else {
-      try { audio.currentTime = pct * dur; } catch {}
+      seekLocal(pct * dur);
     }
   }
   const miniBar = $('#playerProgressBar');

@@ -109,7 +109,7 @@ export function isTempActive() {
 function _prewarmFirst() {
   try {
     const first = store.playerQueue && store.playerQueue[store.playerIndex];
-    if (!first) return;
+    if (!first || first.mix_url) return;   // a streamed mix has no title to warm
     apiJson('/api/player/prewarm', {
       method: 'POST',
       body: { tracks: [{ name: first.name, artist: first.artist, id: first.id }] },
@@ -157,8 +157,10 @@ export async function playTracks(tracks, startIndex = 0) {
   playerMod.loadAndPlay();
   if (remote) return;
   const id = activePlaylistId();
+  // A streamed mix is not in Navidrome: its row would send a title that matches nothing.
+  // The mirror gets the rest (possibly none), so it never keeps the PREVIOUS queue.
   if (id && isTempActive()) {
-    replaceByName(id, tracks).catch(e => console.warn('Mirror failed:', e));
+    replaceByName(id, tracks.filter(t => !(t && t.mix_url))).catch(e => console.warn('Mirror failed:', e));
   }
 }
 

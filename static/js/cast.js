@@ -293,7 +293,9 @@ function _upcoming() {
   return null;
 }
 function _nextBody(up) {
-  if (!up || !up.item) return null;
+  // A streamed mix has no address a receiver could be given (its row carries the site
+  // URL, the cast URL is built from the title): never offered as the next track.
+  if (!up || !up.item || up.item.mix_url) return null;
   const it = up.item;
   return {
     queue_index: up.index, name: _dec(it.name || ''), artist: _dec(it.artist || ''),
@@ -328,7 +330,7 @@ function _autoplayFor(idx) {
   const seen = new Set([_key(store.playerQueue[idx])]);
   const out = [];
   for (const it of list) {
-    if (!it || !it.name) continue;
+    if (!it || !it.name || it.mix_url) continue;
     const k = _key(it);
     if (seen.has(k)) continue;
     seen.add(k);

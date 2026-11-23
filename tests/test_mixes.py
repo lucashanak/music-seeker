@@ -83,7 +83,8 @@ def test_download_command_keeps_the_codec_and_cannot_be_hijacked():
     assert "--audio-format" not in cmd and "--audio-quality" not in cmd
     # Best AAC first (HQ Mixcloud mixes offer AAC 192k beside Opus ~195k, and
     # iOS Safari / DLNA renderers play only the AAC), Opus only without AAC.
-    assert cmd[cmd.index("-f") + 1] == "bestaudio[acodec^=mp4a]/bestaudio/best"
+    assert cmd[cmd.index("-f") + 1] == mixes.FORMAT_SELECTOR
+    assert "[format_id!*=preview]" in mixes.FORMAT_SELECTOR      # never the 30 s Go+ preview
     # The URL comes last, after "--", so it can never be read as an option.
     assert cmd[-2:] == ["--", SAMPLE_CANON]
     assert "--no-playlist" in cmd

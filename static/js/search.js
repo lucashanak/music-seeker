@@ -307,6 +307,8 @@ export function restoreSearch() {
       $('#searchClear').style.display = 'block';
       store.searchType = saved.type || 'all';
       $$('.type-btn[data-type]').forEach(b => b.classList.toggle('active', b.dataset.type === store.searchType));
+      // A mix search is slow and rate-limited: reopening the app never runs one.
+      if (store.searchType === 'mix') { _showMixIdle(saved.q); return; }
       doSearch();
       return;
     }
@@ -585,7 +587,23 @@ function _handleSearchKeydown(e) {
 let _searchGen = 0;
 let _searchAbort = null;
 
+let _mixMod = null;   // mixes.js, once the Mixes type has been used
+
+function _hideMixStatus() {
+  const ms = $('#mixSearchViewStatus');
+  if (ms) { ms.style.display = 'none'; ms.innerHTML = ''; }
+  if (_mixMod) _mixMod.resetSearchView();
+}
+
+function _showMixIdle(q) {
+  _beginSearch();
+  const el = $('#searchResults');
+  el.classList.remove('grid');
+  el.innerHTML = `<div class="empty-state mix-empty"><p>Press Enter to search DJ sets for &ldquo;${esc(q)}&rdquo;.</p></div>`;
+}
+
 function _beginSearch() {
+  _hideMixStatus();
   // Any search repaints #searchResults, so whatever the genre layer put there
   // is gone — the flag must not outlive it.
   store.genreOpen = false;
@@ -754,7 +772,45 @@ function _renderTrackRows(tracks, append) {
 }
 
 // ── Do Search ──
+// DJ sets: only ever on an explicit submit (Enter, the Mixes button, a recent
+// search) — never from the debounced input handler. See init().
+async function doSearchMixes() {
+  const { gen, signal } = _beginSearch();
+  const q = $('#searchInput').value.trim();
+  if (!q) { store.searchLoading = false; saveSearchState(); renderBrowse(); return; }
+  store.searchQuery = q;
+  store.searchHasMore = false;
+  store.searchLoading = true;
+  $('#searchLoadMore').style.display = 'none';
+  const el = $('#searchResults');
+  el.classList.remove('grid');
+  el.innerHTML = '<div class="skeleton" style="height:180px;"></div>';
+  saveSearchState();
+  try {
+    _mixMod = _mixMod || await import('./mixes.js');
+    if (gen !== _searchGen) return;
+    await _mixMod.searchMixesInView(q, {
+      box: el, status: $('#mixSearchViewStatus'), signal, isStale: () => gen !== _searchGen,
+      onOpenLib: () => {
+        import('./router.js').then(r => r.switchPage('library'));
+        import('./library.js').then(l => l.switchLibraryTab('mixes'));
+      },
+    });
+  } catch (e) {
+    if (gen !== _searchGen) return;
+    el.innerHTML = `<div class="empty-state"><p>Search failed: ${esc(e.message)}</p></div>`;
+  }
+  if (gen !== _searchGen) return;
+  store.searchLoading = false;
+  addRecentSearch(q);
+}
+
 export async function doSearch(append) {
+  if (store.searchType === 'mix') {
+    store.searchHasMore = false;
+    if (!append) await doSearchMixes();
+    return;
+  }
   // "All" mode has its own renderer; it bumps the shared generation counter
   // itself, which is what invalidates any in-flight per-type search.
   if (store.searchType === 'all') {
@@ -1293,6 +1349,8 @@ export function init() {
       renderBrowse();
       return;
     }
+    // Mixes search yt-dlp on four sites and is rate-limited: no search as you type.
+    if (store.searchType === 'mix') return;
     store.searchTimeout = setTimeout(doSearch, 400);
   });
   $('#searchInput').addEventListener('keydown', _handleSearchKeydown);
@@ -1315,6 +1373,7 @@ export function init() {
       $$('.type-btn[data-type]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       store.searchType = btn.dataset.type;
+      clearTimeout(store.searchTimeout);   // a typed-ahead debounce must not fire under the new type
       _closeOpenDetail();
       doSearch();
     });

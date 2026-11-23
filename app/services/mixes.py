@@ -554,6 +554,12 @@ def mix_basename(title: str) -> str:
     return name
 
 
+# A SoundCloud Go+ track offers a listener only a 30 s "*_preview" stream, and when that is
+# the one AAC beside a full MP3 the plain `[acodec^=mp4a]` filter picked the preview.
+_NO_PREVIEW = "[format_id!*=preview]"
+FORMAT_SELECTOR = (f"bestaudio[acodec^=mp4a]{_NO_PREVIEW}/bestaudio{_NO_PREVIEW}/best{_NO_PREVIEW}")
+
+
 def build_download_cmd(url: str, out_template: str, path_file: str) -> list[str]:
     """The yt-dlp command for one mix. No `--audio-format`: `-x` with the default
     codec "best" keeps the stream as it is and only moves it into an audio
@@ -567,7 +573,7 @@ def build_download_cmd(url: str, out_template: str, path_file: str) -> list[str]
     SoundCloud's best is `hls_aac_160k`."""
     return [
         "yt-dlp",
-        "-f", "bestaudio[acodec^=mp4a]/bestaudio/best",
+        "-f", FORMAT_SELECTOR,
         "-x",
         "--no-playlist",
         "--no-embed-metadata",

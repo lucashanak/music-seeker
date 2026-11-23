@@ -559,7 +559,7 @@ def test_one_malformed_row_does_not_lose_the_rest():
 def test_searches_are_throttled_per_user(monkeypatch):
     from app.routers import mixes as mixes_router
 
-    async def fake_search(q, sources):
+    async def fake_search(q, sources, user="", sid=""):
         return {"results": []}
 
     monkeypatch.setattr(mix_sources, "search", fake_search)

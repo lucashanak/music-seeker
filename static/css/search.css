@@ -78,6 +78,8 @@
 .type-btn:hover { border-color: var(--border-hover); color: var(--text); }
 .type-btn.active { background: var(--accent); color: #000; font-weight: 600; border-color: var(--accent); }
 
+.mix-search-status { margin: 12px 0 8px; }
+
 /* ── Recognize Result ── */
 .recognize-result {
   background: var(--bg-card); border: 1px solid var(--accent); border-radius: var(--radius);

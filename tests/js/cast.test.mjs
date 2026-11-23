@@ -309,6 +309,18 @@ test('next-hint goes out once per change of "what plays next"', async (t) => {
   assert.equal(calls('POST', '/api/dlna/next-hint').length, 3, 'repeat is part of the hint');
 });
 
+test('next-hint never names a streamed mix (the receiver cannot be given its address)', async (t) => {
+  const eng = setup(t);
+  const MIX = { name: 'Streamed set', artist: 'DJ M', duration_ms: 3600000, mix_url: 'https://www.mixcloud.com/dj/set/' };
+  eng.upcoming = { index: 1, item: MIX };
+  const track = { queue_index: 0, name: A.name, artist: A.artist };
+  server.status = playing(10, 300, { follow: true, cast_seq: 1, track });
+  cast.startCastPoll();
+  await run(t, 10_000);
+  const hints = calls('POST', '/api/dlna/next-hint');
+  assert.ok(hints.every((h) => !h[2].next || h[2].next.name !== MIX.name), 'no hint carries the mix');
+});
+
 test('next-hint: a 409 stale is not retried every tick', async (t) => {
   setup(t);
   server.hintStatus = 409;

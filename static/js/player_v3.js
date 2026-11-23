@@ -3,7 +3,9 @@
 
 import { store } from './store.js';
 import { $, $$, fmtTime, showToast, setArt} from './utils.js';
-import { apiJson, refreshStreamToken, streamToken, freshStreamToken } from './api.js';
+import { apiJson, refreshStreamToken, streamToken, freshStreamToken, mixPlayUrl } from './api.js';
+import { mixLog, watchMixSrc, watchMixEvents } from './mixlog.js';
+import { isMixStreamSrc, isPrematureMixEnd, mixKnownDuration, mixStatus, awaitFinished, keepMixAlive, planMixSeek, toastSeekBeyondBuilt, explainMixFailure, resumeWhenBuilt } from './mixstream.js';
 import { openModal } from './downloads.js';
 import { renderQueue, shuffleNext, shufflePrev, peekShuffleNext, playOrder, resetShuffleOrder, serializeShuffleOrder, restoreShuffleOrder, autoplayStart, markAutoplayStart, appendAutoplayRows, capAutoplayTail, adoptShuffleIndex, moveInPlayOrder, noteShuffleJump, undoShuffleJump } from './queue.js';
 import { syncFullPlayer } from './fullplayer.js';
@@ -324,6 +326,7 @@ function _setDeckSrc(deck, src) {
   else _expectedSrcB = abs;
   _resetPitchMode(deck);
   deck.src = src;
+  deck._mixRec = false;      // a new load supersedes any recovery wait
   deck.load();
 }
 function _isExpectedSrc(deck) {
@@ -431,7 +434,65 @@ function _canRearm(deck) {
   const src = String(deck.src || '');
   return !!src && !src.startsWith('blob:') && _rearmedSrc !== src && !_crossfading;
 }
+/** Wait for the finished file of the streamed mix on `deck` and resume at `pos`, with
+ *  visible state. The watchdog's error net stays off meanwhile; if the server says it cannot
+ *  be fetched, or the listener has moved on, that ends the wait (the skip only for the
+ *  former). */
+function _waitMixFinished(deck, pos) {
+  const gen0 = _loadGen;
+  _rearmPending = true;
+  deck._mixRec = true;               // the ONE owner of this deck while it waits: no watchdog, error net or re-arm touches it
+  mixLog('wait', deck, { pos: Math.round(pos) }, 'dj');
+  const release = () => { _rearmPending = false; deck._mixRec = false; };
+  awaitFinished(deck, pos,
+    (p) => {
+      release();
+      // The element may have recovered by itself while we waited (WebKit retries a failed
+      // range request on its own): the server has the finished file, so what is loading IS
+      // the same resource — keep it rather than interrupt a load that works.
+      if (!deck.error && deck.readyState >= 2) {
+        mixLog('keep', deck, { pos: Math.round(p) }, 'dj');
+        if (p > 1 && Math.abs((deck.currentTime || 0) - p) > 5) { try { deck.currentTime = p; } catch {} }
+        if (store.playerPlaying && deck.paused) deck.play().catch(() => {});
+        return;
+      }
+      mixLog('reload-finished', deck, { pos: Math.round(p) }, 'dj');
+      _reloadFinishedAndSeek(deck, p, store.playerPlaying);
+    },
+    () => { const ok = deck === _activeDeckEl() && _loadGen === gen0; if (!ok) release(); return ok; },
+    (msg) => { release(); mixLog('skip', deck, { why: String(msg).slice(0, 60) }, 'dj'); showToast(msg, true); _skipAfterError(deck.error ? deck.error.code : undefined); });
+}
+
+/** A streamed mix failed to load. ONE path owns the deck from the first instant (no watchdog,
+ *  no other `error` event may start a second recovery): if the server has the finished file or is
+ *  building it, wait for it / reload it; the same stream is retried at most twice a minute before
+ *  the track is given up. `deck.error` is read now — a stale event of a load we replaced finds no
+ *  error and is ignored by the caller. */
+async function _recoverMixError(deck) {
+  if (deck._mixRec) return;
+  deck._mixRec = true;                 // synchronously: the watchdog's error net runs every 2 s and used to skip in the gap
+  _rearmPending = true;
+  const src = deck.src, pos = deck.currentTime || 0, code = deck.error ? deck.error.code : undefined;
+  mixLog('recover', deck, { pos: Math.round(pos) }, 'dj');
+  const st = await mixStatus(src);
+  if (deck !== _activeDeckEl() || deck.src !== src) { deck._mixRec = false; _rearmPending = false; return; }   // the listener moved on
+  const url = (() => { try { return new URL(src).searchParams.get('url') || ''; } catch { return ''; } })();
+  const tr = deck._mixTry && deck._mixTry.url === url && Date.now() - deck._mixTry.at < 60000 ? deck._mixTry : { url, n: 0, at: Date.now() };
+  if (st && st.building) { _rearmPending = false; deck._mixRec = false; _waitMixFinished(deck, pos); return; }
+  if (st && st.cached && tr.n < 2) {
+    tr.n++; tr.at = Date.now(); deck._mixTry = tr;
+    _rearmPending = false; deck._mixRec = false;
+    mixLog('reload-finished', deck, { pos: Math.round(pos), try: tr.n }, 'dj');
+    _reloadFinishedAndSeek(deck, pos, store.playerPlaying);
+    return;
+  }
+  _rearmPending = false; deck._mixRec = false;
+  mixLog('skip', deck, { why: st ? (st.cached ? 'again' : 'idle') : 'nostatus' }, 'dj');
+  _skipAfterError(code);
+}
+
 function _rearmDeck(deck) {
+  if (deck._mixRec) return;           // a streamed mix in recovery has its own owner
   const old = deck.src, pos = deck.currentTime || 0, rate = deck.playbackRate || 1;
   const mode = { lock: deck.preservesPitch, vinyl: deck._deskVinyl, driven: deck._deskDriven }; // the same stream comes back: so does the desk's pitch mode
   const gen = _loadGen;
@@ -441,9 +502,16 @@ function _rearmDeck(deck) {
   // The request may have failed BECAUSE its token expired (a device asleep past the
   // token's lifetime): asking again with the same URL would fail the same way and the
   // track would be skipped for nothing. Re-issue it with a token known to be fresh.
-  freshStreamToken().catch(() => null).then((tok) => {
+  freshStreamToken().catch(() => null).then(async (tok) => {
     _rearmPending = false;
     if (gen !== _loadGen || deck !== _activeDeckEl() || deck.src !== old) return; // superseded meanwhile
+    // A streamed mix whose build still runs: a non-progressive request would wait and then be
+    // refused (503) — straight into the skip. Wait for the finished file, with visible state.
+    if (isMixStreamSrc(old)) {
+      const st = await mixStatus(old);
+      if (gen !== _loadGen || deck !== _activeDeckEl() || deck.src !== old) return;
+      if (!(st && st.cached)) { _waitMixFinished(deck, pos); return; }
+    }
     // Paused while we waited: bring the stream back, but leave it paused.
     const go = () => { if (store.playerPlaying) deck.play().catch(() => {}); };
     let src = old;
@@ -506,6 +574,7 @@ function _stallWatchdog() {
   _refusedTicks = 0;
   // A deck holding a load error will never play, whatever its clock says. The error
   // event normally handles it; this is the net under an event that was missed.
+  if (deck._mixRec) { _lastProgressAt = 0; return; }   // a streamed mix in recovery: nothing else touches this deck
   if (deck.error && _isExpectedSrc(deck) && !_advanceInFlight && !_crossfading
       && store.playerPlaying && !store.radioLoading && !_autofillPending && !_rearmPending) {
     _lastProgressAt = 0;
@@ -1320,6 +1389,8 @@ window._androidBridgeReady = function() {
 // slot let the outgoing track's late answer overwrite the incoming track's).
 function _deckDur(deck) {
   const d = deck.duration;
+  const declared = mixKnownDuration(deck.src);           // a streamed mix: see mixstream.js
+  if (declared) return declared;
   if (d && isFinite(d) && d > 0) return d;
   const l = deck._msLearned;
   return (l && l.src === deck.src) ? l.dur : d;
@@ -1327,6 +1398,7 @@ function _deckDur(deck) {
 function _learnDuration(deck, item) {
   const src = deck.src;
   if (!src || src.startsWith('blob:') || deck._msLearning === src || deck._msLearned?.src === src) return;
+  if (item && item.mix_url) return;   // a streamed mix: the length is the search result's (duration_ms)
   if (deck.duration && isFinite(deck.duration)) return;
   deck._msLearning = src;
   const q = new URLSearchParams({ name: _decodeEntities(item.name || ''), artist: _decodeEntities(item.artist || ''), token: streamToken() });
@@ -1388,24 +1460,43 @@ export function seekLocal(to) {
   const d = _activeDeckEl();
   // A progressive stream (duration unknown to the element) has nothing seekable:
   // the click was silently dropped. Reload the finished file and seek in that.
+  // A streamed mix (fragmented MP4 while it is being built) declares a finite length yet
+  // its body has no Range: inside what is buffered the element seeks itself; beyond it
+  // nothing can be answered until the build is done — the listener is told and the music
+  // plays on (reloading would wait for the whole build and end in an error and a skip).
+  if (isMixStreamSrc(d.src) && !_crossfading) {
+    const src0 = d.src;
+    planMixSeek(d, to).then((plan) => {
+      if (d !== _activeDeckEl() || d.src !== src0) return;       // the track changed meanwhile
+      if (plan === 'direct') { try { d.currentTime = to; } catch {} }
+      else if (plan === 'reload') _reloadFinishedAndSeek(d, to);
+      else toastSeekBeyondBuilt();
+    });
+    return;
+  }
   if (!(d.duration && isFinite(d.duration)) && String(d.src).includes('progressive=1') && !_crossfading) {
-    let src = d.src;
-    try { const u = new URL(src); u.searchParams.delete('progressive'); src = u.href; } catch {}
-    const learned = d._msLearned ? { src, dur: d._msLearned.dur } : null;
-    const wasPlaying = !d.paused;
-    const onMeta = () => {
-      d.removeEventListener('loadedmetadata', onMeta);
-      if (d !== _activeDeckEl() || d.src !== src) return;
-      try { d.currentTime = to; } catch {}
-      if (wasPlaying) d.play().catch(() => {});
-    };
-    d.addEventListener('loadedmetadata', onMeta);
-    _setDeckSrc(d, src);
-    if (learned) d._msLearned = learned;
-    if (wasPlaying) d.play().catch(() => {});
+    _reloadFinishedAndSeek(d, to);
     return;
   }
   try { d.currentTime = to; } catch {}
+}
+
+/** Load the finished (non-progressive) file of the stream on `d` and seek in it. */
+function _reloadFinishedAndSeek(d, to, play) {
+  let src = d.src;
+  try { const u = new URL(src); u.searchParams.delete('progressive'); src = u.href; } catch {}
+  const learned = d._msLearned ? { src, dur: d._msLearned.dur } : null;
+  const wasPlaying = play === undefined ? !d.paused : !!play;   // after a media error `paused` says nothing
+  const onMeta = () => {
+    d.removeEventListener('loadedmetadata', onMeta);
+    if (d !== _activeDeckEl() || d.src !== src) return;
+    try { d.currentTime = to; } catch {}
+    if (wasPlaying) d.play().catch(() => {});
+  };
+  d.addEventListener('loadedmetadata', onMeta);
+  _setDeckSrc(d, src);
+  if (learned) d._msLearned = learned;
+  if (wasPlaying) d.play().catch(() => {});
 }
 
 /** Fraction → seconds with the engine's own idea of the duration (learned lengths included). */
@@ -1504,7 +1595,7 @@ function _cancelErrorBackoff() {
   _advanceInFlight = false;
   return true;
 }
-function _skipAfterError() {
+function _skipAfterError(errCode) {
   if (_errRetryTimer || store.remoteTarget) return;
   _errStreak++;
   const failedIdx = store.playerIndex;
@@ -1515,7 +1606,11 @@ function _skipAfterError() {
   // (a refresh that failed once, a device that slept past its lifetime). Get a
   // fresh one before the next attempt builds its URL.
   refreshStreamToken();
-  showToast(_errStreak > 1 ? `Stream error, retrying in ${Math.round(delay / 1000)}s...` : 'Stream error, skipping...');
+  const _codeTxt = errCode ? ` (code ${errCode})` : '';
+  const _generic = _errStreak > 1 ? `Stream error${_codeTxt}, retrying in ${Math.round(delay / 1000)}s...` : `Stream error${_codeTxt}, skipping...`;
+  // The audio element only says "error"; for a streamed mix the server knows why (429, 502, 503).
+  if (failedItem && failedItem.mix_url) explainMixFailure(failedItem, _generic);
+  else showToast(_generic);
   if (localStorage.getItem('ms_dj_debug')) console.warn(`[DJ guard] load failed (streak ${_errStreak}) — next attempt in ${delay}ms`);
   _errRetryTimer = setTimeout(() => {
     _errRetryTimer = null;
@@ -1567,6 +1662,7 @@ async function _loadAndPlayImpl(keepRec) {
   { const it = store.playerQueue[store.playerIndex]; if (_deskStartAt && !(it && _smartKey(it) === _deskStartAt.key)) _deskStartAt = null; } // not the desk's track
   _deskOnLoad(); // the decks are the engine's again: a lent deck comes back, a manual mix ends
   _rearmedSrc = ''; // a new load: its stream may be re-armed once again
+  _rearmPending = false; // a wait for a mix's finished file that this load superseded must not keep the watchdog's error net off
   // Any pre-analysis still running was started for the previous track; after this
   // point its writes to _inDjData / the prediction would describe the wrong one.
   _analyzeGen++;
@@ -1605,6 +1701,11 @@ async function _loadAndPlayImpl(keepRec) {
   const cleanName = _decodeEntities(item.name || '');
   const cleanArtist = _decodeEntities(item.artist || '');
   const mode = store.deviceOutputMode || 'default';
+  // A streamed mix has no title the receiver could resolve to this recording.
+  if (item.mix_url && ((store.castDevice && mode !== 'local') || mode === 'dlna_only')) {
+    showToast('A mix that is not downloaded cannot be cast — download it first', true);
+    return;
+  }
   // DLNA Only mode: auto-connect to renderer on play
   if (mode === 'dlna_only' && !store.castDevice) {
     cast.autoCastAndPlay(item, cleanName, cleanArtist);
@@ -1626,7 +1727,7 @@ async function _loadAndPlayImpl(keepRec) {
   } else {
     _ensureAudioContext();
     if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
-    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}&progressive=1`;
+    const streamUrl = mixPlayUrl(item) || `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}&progressive=1`;
 
     const currentDeck = _activeDeckEl();
     // Fix 4: a track that ended WITHOUT firing the auto trigger leaves currentDeck paused
@@ -2320,12 +2421,16 @@ export async function playRecTrack(item) {
   const cleanName = _decodeEntities(item.name || '');
   const cleanArtist = _decodeEntities(item.artist || '');
   // Cast mode: send to DLNA renderer
+  if (item.mix_url && store.castDevice) {
+    showToast('A mix that is not downloaded cannot be cast — download it first', true);
+    return;
+  }
   if (store.castDevice) {
     cast.castTrack(item, { name: cleanName, artist: cleanArtist, queueIndex: -1 }); // not a queue row
   } else {
     _ensureAudioContext();
     if (_ctx.state !== 'running') _ctx.resume().catch(() => {});
-    const streamUrl = `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}&progressive=1`;
+    const streamUrl = mixPlayUrl(item) || `/api/player/stream?${new URLSearchParams({ name: cleanName, artist: cleanArtist, token: streamToken() })}&quality=${streamQuality()}&progressive=1`;
     const cached = getCachedUrl(cleanName, cleanArtist, item.id);
     const src = cached || streamUrl;
     const curDeck = _activeDeckEl();
@@ -2580,7 +2685,7 @@ function _primeDeck(item, pos) {
   if (_restoreSeek) { _deckA.removeEventListener('loadedmetadata', _restoreSeek); _deckB.removeEventListener('loadedmetadata', _restoreSeek); _restoreSeek = null; }
   const deck = _activeDeckEl();
   const params = new URLSearchParams({ name: item.name || '', artist: item.artist || '', token: streamToken() });
-  const restoreSrc = `/api/player/stream?${params}&quality=${streamQuality()}`;
+  const restoreSrc = mixPlayUrl(item) || `/api/player/stream?${params}&quality=${streamQuality()}`;
   if (deck === _deckA) _expectedSrcA = _absUrl(restoreSrc);
   else _expectedSrcB = _absUrl(restoreSrc);
   _resetPitchMode(deck);
@@ -2599,7 +2704,14 @@ function _primeDeck(item, pos) {
     _restoreSeek = () => {
       deck.removeEventListener('loadedmetadata', _restoreSeek);
       _restoreSeek = null;
-      if (deck.src === want) deck.currentTime = pos;
+      if (deck.src !== want) return;
+      // A streamed mix whose build is not there any more (a deploy empties the cache):
+      // the body cannot be sought yet — wait for the build, with visible state.
+      if (isMixStreamSrc(deck.src)) {
+        const gen0 = _loadGen;     // another load (even of another mix) ends this wait for good
+        resumeWhenBuilt(deck, pos, (p) => _reloadFinishedAndSeek(deck, p, store.playerPlaying), () => deck === _activeDeckEl() && _loadGen === gen0);
+      }
+      else deck.currentTime = pos;
     };
     deck.addEventListener('loadedmetadata', _restoreSeek);
   }
@@ -2723,6 +2835,8 @@ export { _deckA as audio };
 
 // ── Init ──
 export function init() {
+  keepMixAlive(_activeDeckEl);
+  for (const d of [_deckA, _deckB]) { watchMixSrc(d, 'dj'); watchMixEvents(d, 'dj'); }   // what the element says about a streamed mix, to the server's log   // a streamed mix that is playing (or paused) is kept in the server's cache
   // WKWebView/Safari only start an AudioContext from inside a user-activated task, and
   // the engine reaches _ctx.resume() several awaits after the click that caused playback
   // — by then the activation may be spent. Resume straight from the raw gesture too, so
@@ -2849,6 +2963,14 @@ export function init() {
       // already-fired auto trigger (_crossfadeTriggered) is ALREADY handling the advance —
       // don't fire a second one. _advanceInFlight is covered by nextTrack's own latch.
       if (deck !== _activeDeckEl() || _crossfading || _crossfadeTriggered || !deck.src) return;
+      // An `ended` far from the mix's real end (an element that took the edge of what it had
+      // parsed for the end): reload the finished file where it stopped — once per 30 s.
+      if (isPrematureMixEnd(deck, store.playerQueue[store.playerIndex]) && Date.now() - (deck._prematureAt || 0) > 30000) {
+        deck._prematureAt = Date.now();
+        console.warn(`[mix] premature ended at ${deck.currentTime.toFixed(1)}s — reloading from there`);
+        _reloadFinishedAndSeek(deck, deck.currentTime || 0, true);
+        return;
+      }
       _noNextLatch = false; // the track played out; this advance is the real attempt
       if (store.repeatMode === 'one') {
         deck.currentTime = 0;
@@ -2901,6 +3023,16 @@ export function init() {
         }
         _teardownCrossfade();
         _crossfading = false;
+      }
+      // A streamed mix: ONE recovery path owns the deck (any source, progressive or the finished
+      // file). An `error` event while it runs is part of the same failure; one that finds no
+      // error on the element is the stale event of a load we replaced (WebKit fires them after a
+      // src change) and is ignored.
+      if (deck === _activeDeckEl() && isMixStreamSrc(deck.src) && store.playerQueue[store.playerIndex]?.mix_url) {
+        if (deck._mixRec) return;
+        if (!deck.error) { mixLog('error-stale', deck, {}, 'dj'); return; }
+        _recoverMixError(deck);
+        return;
       }
       // A connection that dropped part-way through a song (MEDIA_ERR_NETWORK) is not a
       // broken track. Now that this handler really runs for streams, skipping here
@@ -3606,9 +3738,9 @@ export async function deskLoad(item, { startAt = 0, play = true, index = null, w
   // only for a track loaded to be MIXED (warm): a quick listen must not jump the queue of
   // the engine's own next-track download (3 at a time, newest first), nor cost a second
   // YouTube fetch of a track nobody owns.
-  if (warm) { resumePrefetch(); prefetchTrack(name, artist, item.id); }
+  if (warm) { resumePrefetch(); if (!item.mix_url) prefetchTrack(name, artist, item.id); }   // never a whole set by title
   const cached = getCachedUrl(name, artist, item.id);
-  const src = cached || `/api/player/stream?${new URLSearchParams({ name, artist, token: streamToken() })}&quality=${streamQuality()}`;
+  const src = cached || mixPlayUrl(item) || `/api/player/stream?${new URLSearchParams({ name, artist, token: streamToken() })}&quality=${streamQuality()}`;
   clearPendingSeek(el);
   try { el.pause(); } catch {}
   el.playbackRate = 1;

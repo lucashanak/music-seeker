@@ -331,6 +331,45 @@ def test_without_a_hint_the_saved_queue_is_followed(env):
     assert saved_queue()["current_index"] == 2
 
 
+MIXROW = {"name": "Streamed set", "artist": "DJ Mix", "album": "DJ Sets", "image": "",
+          "duration_ms": 3600000, "mix_url": "https://www.mixcloud.com/dj/set/"}
+
+
+def test_a_streamed_mix_in_the_queue_is_passed_over_not_cast(env):
+    """The cast URL is built from title + artist: for a mix that is only on its site that
+    would be a title lookup (possibly another recording). The follower steps past it, and
+    that is not a dead track: the rows after it still play."""
+    save_queue([A, MIXROW, C], current=0)
+
+    async def main():
+        await client_cast(A, 0)
+        await play_to_end(env)
+    asyncio.run(main())
+    assert env.r.cast == ["Alpha", "Charlie"]
+    assert saved_queue()["current_index"] == 2
+    assert dlna._sessions[SK].get("dead_tracks", 0) == 0
+
+
+def test_a_queue_that_ends_in_a_streamed_mix_just_ends(env):
+    save_queue([A, MIXROW], current=0)
+
+    async def main():
+        await client_cast(A, 0)
+        await play_to_end(env)
+    asyncio.run(main())
+    assert env.r.cast == ["Alpha"]
+
+
+def test_a_hint_naming_a_streamed_mix_is_not_cast(env):
+    save_queue([A, MIXROW, C], current=0)
+
+    async def main():
+        await client_cast(A, 0, nxt=(1, MIXROW))
+        await play_to_end(env)
+    asyncio.run(main())
+    assert "Streamed set" not in env.r.cast
+
+
 def test_a_hint_is_used_once_then_the_queue_takes_over(env):
     save_queue([A, B, C, D], current=0)
 

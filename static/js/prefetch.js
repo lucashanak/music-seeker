@@ -308,7 +308,18 @@ function _processNext() {
   }
 }
 
+// A mix found in search plays from /api/player/mix-stream while the server builds it. It
+// is never prefetched: a blob of a 100-300 MB set is device memory for nothing, and the
+// title-based /api/player/stream this module uses could resolve to another recording.
+// prefetchTrack() is called with a name only, so the queue is asked who the key belongs to.
+function _isStreamedMix(entry) {
+  if (entry.item && entry.item.mix_url) return true;
+  const q = store.playerQueue || [];
+  return q.some(t => t && t.mix_url && _key(t.name, t.artist, t.id) === entry.key);
+}
+
 async function _startFetch(entry) {
+  if (_isStreamedMix(entry)) return;
   const controller = new AbortController();
   const state = { priority: entry.priority, controller, progress: 0, idleAbort: false };
   _fetching.set(entry.key, state);

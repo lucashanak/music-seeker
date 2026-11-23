@@ -48,17 +48,42 @@ def _throttle_search(username: str) -> None:
     q.append(now)
 
 
+# A follow-up page of a search already made costs the sites a page, not a whole search:
+# it has its own budget (a person scrolling to the end of a long list) and the same cap of
+# two yt-dlp processes underneath.
+MORE_LIMIT = 30
+_more: dict[str, deque] = {}
+
+
+def _throttle_more(username: str) -> None:
+    now = time.monotonic()
+    q = _more.setdefault(username, deque())
+    while q and now - q[0] > SEARCH_WINDOW:
+        q.popleft()
+    if len(q) >= MORE_LIMIT:
+        wait = int(SEARCH_WINDOW - (now - q[0])) + 1
+        raise HTTPException(429, f"Too many requests for more mixes — try again in {wait} s")
+    q.append(now)
+
+
 @router.get("/search")
-async def search_mixes(q: str = Query(""), sources: str = Query(""),
+async def search_mixes(q: str = Query(""), sources: str = Query(""), page: int = Query(1, ge=1, le=mix_sources.MAX_PAGE),
+                       sid: str = Query("", max_length=40),
                        user: dict = Depends(auth.get_current_user)):
     _require_mix_perms(user)
     if not q.strip():
         raise HTTPException(400, "Empty query")
-    _throttle_search(user["username"])
     wanted = mix_sources.parse_sources(sources)
     if not wanted:
         raise HTTPException(400, "No known source asked for")
-    return await mix_sources.search(q, wanted)
+    if page == 1:
+        _throttle_search(user["username"])
+        return await mix_sources.search(q, wanted, user["username"], sid)
+    _throttle_more(user["username"])
+    try:
+        return await mix_sources.search_more(q, wanted, page, user["username"], sid)
+    except mix_sources.SearchExpired as e:
+        raise HTTPException(409, str(e))
 
 
 # ── Downloaded mixes ──

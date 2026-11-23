@@ -103,6 +103,16 @@ export function streamToken() {
   return store.streamToken || store.authToken;
 }
 
+/** Stream URL of a mix found in search (an item with `mix_url`), else ''. The exact URL
+ *  plays: /api/player/stream resolves by title and could land on another recording.
+ *  Always progressive — the file is built while it plays (services/mix_stream.py). */
+export function mixPlayUrl(item) {
+  if (!item || !item.mix_url) return '';
+  // dur: the length the search result gave — the server refuses a download clearly shorter.
+  const dur = item.duration_ms > 0 ? `&dur=${Math.round(item.duration_ms / 1000)}` : '';
+  return `/api/player/mix-stream?${new URLSearchParams({ url: item.mix_url, token: streamToken() })}&progressive=1${dur}`;
+}
+
 /** Resolves to a stream token that is not past its staleness age (renewing first). */
 export async function freshStreamToken() {
   if (!store.streamToken || Date.now() - _streamTokenAt > STREAM_TOKEN_STALE_MS) await refreshStreamToken();

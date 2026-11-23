@@ -23,6 +23,8 @@ def create_app() -> FastAPI:
     # overnight leaves nothing to work from. Bounded: one line per track, none per poll.
     # (The logger is named "musicseeker.dlna", not after its module.)
     logging.getLogger("musicseeker.dlna").setLevel(logging.INFO)
+    # Streaming a mix from its site: what was started, learned, finished, failed, cancelled, evicted.
+    logging.getLogger("musicseeker.mixstream").setLevel(logging.INFO)
 
     app = FastAPI(title="MusicSeeker", version=APP_VERSION)
 

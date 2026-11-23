@@ -9,6 +9,7 @@
 // controls, so app.js needs no init call.
 
 import { $, $$, esc, escAttr, showToast, formatSize, showConfirmModal } from './utils.js';
+import { store } from './store.js';
 import { apiJson } from './api.js';
 import { openPanel } from './downloads.js';
 import {
@@ -20,10 +21,21 @@ const SOURCE_LABEL = { soundcloud: 'SoundCloud', youtube: 'YouTube', mixcloud: '
 
 let _wired = false;
 let _filters = _loadFilters();
-let _last = null;          // last search answer
 let _searchGen = 0;
+// Two places draw the same rows: Library → Mixes and the Search page's Mixes type.
+// A view is where one of them lives and the last answer it was given; the ids in
+// its status line carry `idp` so the two never share an id.
+const _view = (o) => ({ last: null, shown: [], q: '', srcs: [], errs: {}, page: 1, done: true, loading: false,
+  stalled: false, paused: false, sid: '', note: '', gen: 0, observer: null, ...o });
+const _libView = _view({ box: '#mixResults', status: '#mixSearchStatus', idp: 'mix' });
+const _searchView = _view({ box: '#searchResults', status: '#mixSearchViewStatus', idp: 'smix', onOpenLib: null });
+// More pages: at most this many requests per scroll trigger, until a screenful of new
+// VISIBLE rows has arrived (the filters run here, so a page may add few).
+const MORE_SCREENFUL = 8;
+const MORE_MAX_PER_TRIGGER = 3;
 let _follows = [];         // [{source, user_id, ...}]
 let _followsGen = 0;
+let _followsLoaded = false;
 let _libGen = 0;
 // Downloads started from this page, by URL: a re-render (a filter change, a new
 // follow) must not hand back an enabled button for a mix already on its way.
@@ -71,7 +83,7 @@ function resultRow(it, idx, { showFollow = true } = {}) {
   const href = safeHref(it.url);
   const started = _started.has(it.url);
   return `
-    <div class="mix-row" data-idx="${idx}">
+    <div class="mix-row" data-idx="${idx}" data-url="${escAttr(it.url)}">
       ${thumb(it.thumbnail)}
       <div class="mix-info">
         <div class="mix-title">${href ? `<a href="${escAttr(href)}" target="_blank" rel="noopener noreferrer">${esc(it.title)}</a>` : esc(it.title)}</div>
@@ -84,7 +96,8 @@ function resultRow(it, idx, { showFollow = true } = {}) {
         ${also}
       </div>
       <div class="mix-actions">
-        <button type="button" class="import-btn import-btn-primary mix-dl" data-act="download"${it.in_library || started ? ' disabled' : ''}>${started ? 'Downloading…' : '&#8681; Download'}</button>
+        <button type="button" class="import-btn import-btn-primary mix-play" data-act="play" aria-label="Play ${escAttr(it.title)}">&#9654; Play</button>
+        <button type="button" class="import-btn mix-dl" data-act="download"${it.in_library || started ? ' disabled' : ''}>${started ? 'Downloading…' : '&#8681; Download'}</button>
         ${canFollow ? `<button type="button" class="import-btn mix-follow-btn" data-act="follow"${followed ? ' disabled' : ''}>${followed ? 'Following' : '+ Follow DJ'}</button>` : ''}
       </div>
     </div>`;
@@ -92,13 +105,38 @@ function resultRow(it, idx, { showFollow = true } = {}) {
 
 function wireRows(container, items) {
   $$('.mix-row', container).forEach((row) => {
+    if (row.dataset.wired) return;          // rows of earlier pages are wired already
     const it = items[Number(row.dataset.idx)];
     if (!it) return;
+    row.dataset.wired = '1';
+    const pl = row.querySelector('[data-act="play"]');
+    if (pl) pl.addEventListener('click', () => playResult(it));
     const dl = row.querySelector('[data-act="download"]');
     if (dl) dl.addEventListener('click', () => downloadMix(it, dl));
     const fol = row.querySelector('[data-act="follow"]');
     if (fol) fol.addEventListener('click', () => followDj(it, fol));
   });
+}
+
+/** Play a search result at once. A mix the user owns plays its library file the usual way
+ *  (the stream resolves it by title + artist); any other plays from its own site through
+ *  /api/player/mix-stream, addressed by the exact URL (`mix_url` on the queue item, which
+ *  is saved with the queue). duration_ms: the deck cannot learn the length of a body that
+ *  is still being built. */
+export function playResult(it) {
+  const item = { name: it.title, artist: it.uploader || '', album: 'DJ Sets', image: it.thumbnail || '',
+    duration_ms: it.duration > 0 ? Math.round(it.duration * 1000) : 0 };
+  if (!it.in_library && safeHref(it.url)) item.mix_url = it.url;
+  // Not castable: refuse BEFORE touching the queue (playTracks replaces it and moves the
+  // index and the title; the engine's own guard would come too late for that).
+  const mode = store.deviceOutputMode || 'default';
+  // Controlling another device: the TARGET may be casting (its report says so).
+  const target = store.remoteTarget ? (store.remoteDevices || {})[store.remoteTarget] : null;
+  if (item.mix_url && ((store.castDevice && mode !== 'local') || mode === 'dlna_only' || (target && target.casting))) {
+    showToast('A mix that is not downloaded cannot be cast — download it first', true);
+    return;
+  }
+  import('./upnext.js').then((u) => u.playTracks([item], 0));
 }
 
 async function downloadMix(it, btn) {
@@ -125,38 +163,198 @@ async function downloadMix(it, btn) {
 
 // ── Search ──
 
-function renderResults() {
-  const box = $('#mixResults');
-  const status = $('#mixSearchStatus');
-  if (!box || !status) return;
-  if (!_last) { box.innerHTML = ''; status.innerHTML = ''; return; }
-  const r = applyMixFilters(_last.results || [], _filters);
-  const total = (_last.results || []).length;
+/** Take a first page as the start of `view`'s search (everything later pages add accumulates). */
+/** A fresh id for each search: the server keeps one search's paging per (user, id), so two tabs
+ *  with the same query never reset each other. */
+const newSid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+function startView(view, q, data, sid) {
+  view.gen++;
+  if (view.observer) { try { view.observer.disconnect(); } catch {} view.observer = null; }
+  view.last = { ...data, results: [...(data.results || [])] };
+  view.q = q;
+  view.sid = sid || '';
+  view.paused = false;
+  view.srcs = data.sources || [];
+  view.errs = { ...(data.errors || {}) };
+  view.page = data.page || 1;
+  view.done = data.done !== false && !Object.values(data.more || {}).some(Boolean);
+  view.loading = false;
+  view.stalled = false;
+  view.note = '';
+  view.shown = [];
+}
+
+function hiddenNote(r) {
   const hidden = [];
   if (r.hiddenQuality) hidden.push(`${r.hiddenQuality} hidden by quality`);
   if (r.hiddenLength) hidden.push(`${r.hiddenLength} hidden by length`);
   if (r.hiddenSource) hidden.push(`${r.hiddenSource} from switched-off sources`);
-  const errs = Object.entries(_last.errors || {})
+  return hidden;
+}
+
+/** The status line: counts EVERYTHING loaded so far, says when more is coming or that there
+ *  is no more, and keeps the per-source errors of every page. */
+function renderStatus(view) {
+  const status = $(view.status);
+  const last = view.last;
+  if (!status || !last) return;
+  const idp = view.idp;
+  const r = applyMixFilters(last.results || [], _filters);
+  const total = (last.results || []).length;
+  const hidden = hiddenNote(r);
+  const errs = Object.entries(view.errs || {})
     .filter(([s]) => _filters.sources.includes(s))
     .map(([s, msg]) => `<div class="mix-err">${esc(SOURCE_LABEL[s] || s)}: ${esc(msg)}</div>`).join('');
+  let more = '';
+  if (view.loading) more = '<div class="mix-count mix-more">Loading more…</div>';
+  else if (view.stalled) more = `<div class="mix-count mix-more">${esc(view.note || 'Could not load more.')} <button type="button" class="mix-linkbtn" id="${idp}More">Try again</button></div>`;
+  else if (view.paused) more = `<div class="mix-count mix-more">${hidden.length ? esc(hidden.join(' · ')) : 'Nothing new'} so far — more results are being held back by your filters. <button type="button" class="mix-linkbtn" id="${idp}More">Load more</button></div>`;
+  else if (view.done) more = `<div class="mix-count mix-more" id="${idp}NoMore">${esc(view.note || 'No more results')}${view.page > 1 ? ` · ${view.page} pages` : ''}</div>`;
   status.innerHTML = `
-    <div class="mix-count"><span id="mixShownCount">${r.shown.length}</span> of ${total} shown${hidden.length ? ` · <span id="mixHiddenNote">${esc(hidden.join(' · '))}</span>` : ''}
-      ${(r.hiddenQuality || r.hiddenLength) ? '<button type="button" class="mix-linkbtn" id="mixShowAll">Show all</button>' : ''}</div>
-    ${errs}`;
-  const all = $('#mixShowAll');
+    <div class="mix-count"><span id="${idp}ShownCount">${r.shown.length}</span> of ${total} shown${hidden.length ? ` · <span id="${idp}HiddenNote">${esc(hidden.join(' · '))}</span>` : ''}
+      ${(r.hiddenQuality || r.hiddenLength) ? `<button type="button" class="mix-linkbtn" id="${idp}ShowAll">Show all</button>` : ''}</div>
+    ${more}
+    ${errs}
+    ${view.onOpenLib ? `<div class="mix-count"><button type="button" class="mix-linkbtn" id="${idp}OpenLib">Filters and followed DJs &rarr; Library &rsaquo; Mixes</button></div>` : ''}`;
+  const openLib = $(`#${idp}OpenLib`);
+  if (openLib) openLib.addEventListener('click', () => view.onOpenLib());
+  const retry = $(`#${idp}More`);
+  if (retry) retry.addEventListener('click', () => { view.stalled = false; view.paused = false; view.note = ''; loadMore(view); });
+  const all = $(`#${idp}ShowAll`);
   if (all) all.addEventListener('click', () => {
     _filters.minKbps = 0;
     _filters.minMinutes = 0;
     _saveFilters();
     syncFilterControls();
-    renderResults();
+    renderAll();
   });
+}
+
+/** Everything loaded, drawn afresh under the current filters and sort (a filter or sort change,
+ *  a follow). Rows that are on screen only ever move here — never when a page arrives. */
+function renderResults(view = _libView) {
+  const box = $(view.box);
+  const status = $(view.status);
+  const last = view.last;
+  if (!box || !status) return;
+  if (!last) { if (view === _libView) { box.innerHTML = ''; status.innerHTML = ''; } return; }
+  const r = applyMixFilters(last.results || [], _filters);
+  view.shown = r.shown;
+  renderStatus(view);
   if (!r.shown.length) {
-    box.innerHTML = `<div class="empty-state mix-empty"><p>${total ? 'Nothing passes the filters.' : 'No mixes found.'}</p></div>`;
-    return;
+    const total = (last.results || []).length;
+    box.innerHTML = `<div class="empty-state mix-empty"><p>${total ? 'Nothing passes the filters.' : (view.done ? 'No mixes found.' : 'Looking further…')}</p></div>`;
+  } else {
+    box.innerHTML = r.shown.map((it, i) => resultRow(it, i)).join('');
+    wireRows(box, view.shown);
   }
-  box.innerHTML = r.shown.map((it, i) => resultRow(it, i)).join('');
-  wireRows(box, r.shown);
+  armSentinel(view);
+}
+
+function renderAll() {
+  _libView.paused = false; _searchView.paused = false;     // a filter or sort change is a reason to look again
+  renderResults(_libView);
+  renderResults(_searchView);
+}
+
+// ── More pages ──
+// A sentinel under the last row; when it comes into view (and the view is on screen) the next
+// page is asked for. One request in flight per view, a bounded number per trigger, nothing
+// while the page is hidden, and it stops when a page adds nothing or the sources are dry.
+
+function viewVisible(view) {
+  const box = $(view.box);
+  return !!box && box.offsetParent !== null && !document.hidden;
+}
+
+function armSentinel(view) {
+  const box = $(view.box);
+  if (view.observer) { try { view.observer.disconnect(); } catch {} view.observer = null; }
+  const old = box && box.querySelector('.mix-sentinel');
+  if (old) old.remove();
+  if (!box || !view.last || view.done || view.stalled || view.paused || typeof IntersectionObserver !== 'function') return;
+  const sent = document.createElement('div');
+  sent.className = 'mix-sentinel';
+  sent.setAttribute('aria-hidden', 'true');
+  sent.style.minHeight = '1px';
+  box.appendChild(sent);
+  view.observer = new IntersectionObserver((entries) => {
+    if (entries.some((e) => e.isIntersecting)) loadMore(view);
+  }, { rootMargin: '600px 0px' });
+  view.observer.observe(sent);
+}
+
+/** Rows (and folds) of a page after the first: appended below what is shown, never re-sorted
+ *  into it. Returns how many VISIBLE rows were added. */
+function appendPage(view, data) {
+  const box = $(view.box);
+  const last = view.last;
+  // Copies of a set already sent: fold into that row (its "Also on …" line changes in place).
+  for (const f of data.folds || []) {
+    const row = last.results.find((x) => x.url === f.into);
+    if (row) row.also = [...(row.also || []), ...(f.also || [])];
+    const idx = view.shown.findIndex((x) => x.url === f.into);
+    if (idx >= 0 && box) {
+      if (view.shown[idx] !== row) view.shown[idx] = { ...view.shown[idx], also: [...(view.shown[idx].also || []), ...(f.also || [])] };
+      const el = box.querySelector(`.mix-row[data-idx="${idx}"]`);
+      if (el) { el.outerHTML = resultRow(view.shown[idx], idx); wireRows(box, view.shown); }
+    }
+  }
+  last.results.push(...(data.results || []));
+  Object.assign(view.errs, data.errors || {});
+  view.page = data.page || view.page + 1;
+  view.done = data.done === true;
+  const r = applyMixFilters(data.results || [], _filters);
+  if (box && r.shown.length) {
+    if (box.querySelector('.mix-empty')) box.innerHTML = '';
+    const sent = box.querySelector('.mix-sentinel');
+    const html = r.shown.map((it, i) => resultRow(it, view.shown.length + i)).join('');
+    if (sent) sent.insertAdjacentHTML('beforebegin', html); else box.insertAdjacentHTML('beforeend', html);
+    view.shown.push(...r.shown);
+    wireRows(box, view.shown);
+  }
+  return r.shown.length;
+}
+
+// Coming back to a hidden tab / page re-arms the sentinels (an observer callback that fired
+// while the view was hidden was ignored, and would not fire again by itself).
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { armSentinel(_libView); armSentinel(_searchView); }
+  });
+}
+
+async function loadMore(view) {
+  if (view.loading || view.done || view.stalled || view.paused || !view.last || !view.q) return;
+  if (!viewVisible(view)) return;
+  const gen = view.gen;
+  view.loading = true;
+  renderStatus(view);
+  let visibleAdded = 0, tries = 0;
+  try {
+    while (tries < MORE_MAX_PER_TRIGGER && !view.done && visibleAdded < MORE_SCREENFUL) {
+      tries++;
+      const params = new URLSearchParams({ q: view.q, sources: view.srcs.join(','), page: String(view.page + 1), sid: view.sid });
+      const data = await apiJson(`/api/mixes/search?${params}`);
+      if (gen !== view.gen) return;                 // a new query or another type: this page is nobody's
+      visibleAdded += appendPage(view, data);
+      if (!(data.results || []).length && !(data.folds || []).length) { view.done = true; break; }   // adds nothing: stop
+    }
+    // A trigger's pages all hidden by the filters: do not keep walking the sources unattended —
+    // say so and let the user choose (Show all / Load more).
+    if (gen === view.gen && !view.done && visibleAdded === 0 && tries >= MORE_MAX_PER_TRIGGER) view.paused = true;
+  } catch (e) {
+    if (gen !== view.gen) return;
+    if (e.status === 409) { view.done = true; view.note = 'This search has expired — search again'; }
+    else { view.stalled = true; view.note = e.status === 429 ? (e.message || 'Too many requests — wait a moment') : 'Could not load more.'; }
+  } finally {
+    if (gen === view.gen) {
+      view.loading = false;
+      renderStatus(view);
+      armSentinel(view);           // re-observe: still in view means the next page is wanted
+    }
+  }
 }
 
 async function runSearch() {
@@ -164,20 +362,22 @@ async function runSearch() {
   const q = (input && input.value || '').trim();
   if (!q) return;
   const gen = ++_searchGen;
+  _libView.gen++;                       // a pending page of the old query is nobody's
   const box = $('#mixResults');
   $('#mixSearchStatus').innerHTML = '<div class="mix-count">Searching SoundCloud, YouTube, Mixcloud and hearthis.at…</div>';
   box.innerHTML = '<div class="skeleton" style="height:180px;"></div>';
   const btn = $('#mixSearchBtn');
   if (btn) btn.disabled = true;
   try {
-    const params = new URLSearchParams({ q, sources: _filters.sources.join(',') });
+    const sid = newSid();
+    const params = new URLSearchParams({ q, sources: _filters.sources.join(','), sid });
     const data = await apiJson(`/api/mixes/search?${params}`);
     if (gen !== _searchGen) return;
-    _last = data;
-    renderResults();
+    startView(_libView, q, data, sid);
+    renderResults(_libView);
   } catch (e) {
     if (gen !== _searchGen) return;
-    _last = null;
+    _libView.gen++; _libView.last = null;
     box.innerHTML = '';
     $('#mixSearchStatus').innerHTML = `<div class="mix-err">${esc(e.message || 'Search failed')}</div>`;
   } finally {
@@ -207,7 +407,7 @@ async function followDj(it, btn) {
     });
     showToast(`Following ${it.uploader}`);
     await loadFollows();
-    renderResults();
+    renderAll();
   } catch (e) {
     btn.disabled = false;
     showToast('Follow failed: ' + (e.message || 'error'), true);
@@ -252,18 +452,19 @@ function followPath(f) {
 
 async function loadFollows() {
   const box = $('#mixFollows');
-  if (!box) return;
   const gen = ++_followsGen;
   let data;
   try {
     data = await apiJson('/api/mixes/follows');
   } catch (e) {
     if (gen !== _followsGen) return;
-    box.innerHTML = `<div class="mix-err">${esc(e.message || 'Could not load followed DJs')}</div>`;
+    if (box) box.innerHTML = `<div class="mix-err">${esc(e.message || 'Could not load followed DJs')}</div>`;
     return;
   }
   if (gen !== _followsGen) return;   // a newer load is on its way
   _follows = data.follows || [];
+  _followsLoaded = true;
+  if (!box) return;
   if (!_follows.length) {
     box.innerHTML = '<p class="mix-hint">Follow a DJ from a search result to see their latest mixes here. With auto-download on, new mixes are fetched every 6 hours — never their back catalogue.</p>';
     return;
@@ -322,7 +523,7 @@ async function unfollow(f) {
     return;
   }
   await loadFollows();
-  renderResults();
+  renderAll();
 }
 
 async function checkNow(btn) {
@@ -445,13 +646,13 @@ function wire() {
     _saveFilters();
     syncFilterControls();
     // A source switched on that the last search did not ask: ask again.
-    if (!on && _last && !(_last.sources || []).includes(s)) runSearch();
-    else renderResults();
+    if (!on && _libView.last && !(_libView.last.sources || []).includes(s)) runSearch();
+    else renderAll();
   }));
   const onSel = (id, key) => $(id).addEventListener('change', (e) => {
     _filters[key] = key === 'sort' ? e.target.value : Number(e.target.value);
     _saveFilters();
-    renderResults();
+    renderAll();
   });
   onSel('#mixMinKbps', 'minKbps');
   onSel('#mixMinMinutes', 'minMinutes');
@@ -465,4 +666,41 @@ export function loadMixesPage() {
   wire();
   loadFollows();
   refreshMixLibrary();
+}
+
+// ── The Search page's "Mixes" type ──
+// Called by search.js only on an explicit submit. `isStale()` is its generation
+// check: a search the user has since replaced must not paint over the newer one.
+
+/** Search DJ sets into `box`, with the status line in `status`. */
+export async function searchMixesInView(q, { box, status, signal, isStale, onOpenLib }) {
+  const v = _searchView;
+  v.onOpenLib = onOpenLib || null;
+  v.gen++; v.last = null;
+  status.style.display = '';
+  status.innerHTML = '<div class="mix-count">Searching SoundCloud, YouTube, Mixcloud and hearthis.at…</div>';
+  box.innerHTML = '<div class="skeleton" style="height:180px;"></div>';
+  const sid = newSid();
+  const params = new URLSearchParams({ q, sources: _filters.sources.join(','), sid });
+  // The follows are drawn as "Following" on the rows: load them once, with the search.
+  const follows = _followsLoaded ? null : loadFollows().catch(() => {});
+  try {
+    const data = await apiJson(`/api/mixes/search?${params}`, { signal });
+    if (follows) await follows;
+    if (isStale()) return;
+    startView(v, q, data, sid);
+    renderResults(v);
+  } catch (e) {
+    if (isStale()) return;
+    box.innerHTML = '';
+    status.innerHTML = `<div class="mix-err">${esc(e.message || 'Search failed')}</div>`;
+  }
+}
+
+/** The Search page left the Mixes type (or searched anew): forget its answer. */
+export function resetSearchView() {
+  _searchView.gen++;                     // drops a page that is still on its way
+  if (_searchView.observer) { try { _searchView.observer.disconnect(); } catch {} _searchView.observer = null; }
+  _searchView.last = null;
+  _searchView.loading = false;
 }
